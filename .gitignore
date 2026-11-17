@@ -1,0 +1,5 @@
+# Agent/editor tooling (local)
+.agents/
+.claude/
+.cursor/
+.windsurf/
