@@ -33,8 +33,9 @@ export function normalisationS(queueBySecond: number[], accidentS: number): numb
   const limit = Math.max(1.2 * before, before + 1)
   const over = queueBySecond.findIndex((q, s) => s >= accidentS && q > limit)
   if (over === -1) return 0
+  // queueBySecond[i] is the queue at the end of second i + 1
   for (let s = over; s + NORMAL_HOLD_S <= queueBySecond.length; s++) {
-    if (queueBySecond.slice(s, s + NORMAL_HOLD_S).every((q) => q <= limit)) return s - accidentS
+    if (queueBySecond.slice(s, s + NORMAL_HOLD_S).every((q) => q <= limit)) return s + 1 - accidentS
   }
   return null
 }
@@ -49,28 +50,33 @@ export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 25
 
   const arrivals: Arrival[] = []
   engine.onArrival((a) => arrivals.push(a))
+  // what the engine itself did with the accident, not what this runner meant to do
+  const blockages: { routeId: string; distance: number; ativo: boolean; ts: number }[] = []
+  engine.onBlockage((e) => blockages.push({ routeId: e.blockage.routeId, distance: e.blockage.distance, ativo: e.ativo, ts: e.ts }))
+  // alternatives: the routes without the accident, sampled every 10 s in every scenario (AD-030)
+  const altFlowMax: Record<string, number> = {}
   const queueBySecond: number[] = []
   let maxFraction = 0
-  let altFlowMax: number | null = null
-  let altCapacity: number | null = null
   const total = RUN_MS / TICK_MS
   for (let tick = 1; tick <= total; tick++) {
     if (engine.getState().timeMs === ACCIDENT.startMs) engine.addBlockage(ACCIDENT.routeId, ACCIDENT.distance)
     sim.tick()
     const { timeMs, diversion } = engine.getState()
     if (timeMs % 1000 === 0) queueBySecond.push(engine.queueTotal())
-    if (diversion) {
-      maxFraction = Math.max(maxFraction, diversion.fraction)
-      if (timeMs % 10_000 === 0) {
-        const alt = sim.capacity.routes()[diversion.to]
-        if (alt && (altFlowMax === null || alt.fluxo > altFlowMax)) {
-          altFlowMax = alt.fluxo
-          altCapacity = alt.capacidade
-        }
+    if (diversion) maxFraction = Math.max(maxFraction, diversion.fraction)
+    if (timeMs % 10_000 === 0) {
+      for (const [id, r] of Object.entries(sim.capacity.routes())) {
+        if (id !== ACCIDENT.routeId) altFlowMax[id] = Math.max(altFlowMax[id] ?? 0, r.fluxo)
       }
     }
     if (tick % chunkTicks === 0) yield tick / total
   }
+  // saturation: each alternative's peak flow over its capacity learned by the end of the run
+  const finalRoutes = sim.capacity.routes()
+  const altCapacity: Record<string, number | null> = Object.fromEntries(Object.keys(altFlowMax).map((id) => [id, finalRoutes[id]?.capacidade ?? null]))
+  const ratios = Object.keys(altFlowMax)
+    .filter((id) => altCapacity[id])
+    .map((id) => (100 * altFlowMax[id]) / (altCapacity[id] as number))
   sim.stop()
 
   const s = engine.getState()
@@ -81,14 +87,14 @@ export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 25
     tempoParadoMedioS: mean(arrivals.map((a) => a.paradoS)),
     filaMaxima: Math.max(0, ...queueBySecond),
     tempoNormalizarS: normalisationS(queueBySecond, ACCIDENT.startMs / 1000),
-    saturacaoAlternativaPct: altFlowMax !== null && altCapacity ? (100 * altFlowMax) / altCapacity : null,
+    saturacaoAlternativaPct: ratios.length ? Math.max(...ratios) : null,
     desviadosPct: s.spawnedTotal ? (100 * s.divertedTotal) / s.spawnedTotal : 0,
   }
   return {
     ...metrics,
     trace: {
       seed,
-      accident: { ...ACCIDENT },
+      blockages,
       spawned: s.spawnedTotal,
       diverted: s.divertedTotal,
       adaptiveSignals: scenario === 'desvio-parcial',

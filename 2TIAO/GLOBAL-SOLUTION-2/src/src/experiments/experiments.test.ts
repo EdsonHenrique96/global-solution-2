@@ -106,7 +106,11 @@ describe('experiments', () => {
       const runs = Object.fromEntries(SCENARIOS.map((s) => [s, runScenario(s, 7)])) as Record<string, RunMetrics & { trace: Record<string, unknown> }>
       for (const s of SCENARIOS) {
         expect(runs[s].trace.seed).toBe(7)
-        expect(runs[s].trace.accident).toEqual({ routeId: 'central', distance: 500, startMs: 300_000, durationMs: 120_000 })
+        // the engine's own blockage events: central, 500 m, from 300 s to 420 s
+        expect(runs[s].trace.blockages).toEqual([
+          { routeId: 'central', distance: 500, ativo: true, ts: 300_000 },
+          { routeId: 'central', distance: 500, ativo: false, ts: 420_000 },
+        ])
         // same seed -> same demand
         expect(runs[s].trace.spawned).toBe(runs['sem-sistema'].trace.spawned)
       }
@@ -132,8 +136,8 @@ describe('experiments', () => {
         queueBySecond: number[]
         spawned: number
         diverted: number
-        altFlowMax: number | null
-        altCapacity: number | null
+        altFlowMax: Record<string, number>
+        altCapacity: Record<string, number | null>
       }
       const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
       expect(t.arrivals.length).toBeGreaterThan(50)
@@ -152,7 +156,7 @@ describe('experiments', () => {
       let expected: number | null = null
       for (let s = over; s + 30 <= t.queueBySecond.length; s++) {
         if (t.queueBySecond.slice(s, s + 30).every((q) => q <= limit)) {
-          expected = s - 300
+          expected = s + 1 - 300 // queueBySecond[s] is second s + 1
           break
         }
       }
@@ -162,11 +166,19 @@ describe('experiments', () => {
       const flat = Array(400).fill(1)
       expect(normalisationS(flat, 300)).toBe(0)
       const bump = [...Array(300).fill(1), ...Array(20).fill(1), ...Array(40).fill(9), ...Array(60).fill(1)]
-      expect(normalisationS(bump, 300)).toBe(60)
+      // over from second 321 to 360, back under at second 361: 61 s after the accident at 300 s
+      expect(normalisationS(bump, 300)).toBe(61)
       const stuck = [...Array(300).fill(1), ...Array(100).fill(9)]
       expect(normalisationS(stuck, 300)).toBeNull()
-      if (t.altFlowMax !== null && t.altCapacity) expect(r.saturacaoAlternativaPct).toBeCloseTo((100 * t.altFlowMax) / t.altCapacity, 9)
-      else expect(r.saturacaoAlternativaPct).toBeNull()
+      // saturation (AD-030): the routes without the accident, peak flow over end-of-run capacity, the higher
+      expect(Object.keys(t.altFlowMax).sort()).toEqual(['norte', 'sul'])
+      expect(t.altCapacity.norte).toBeGreaterThan(0)
+      expect(t.altCapacity.sul).toBeGreaterThan(0)
+      const expectedSat = Math.max(...['norte', 'sul'].map((id) => (100 * t.altFlowMax[id]) / (t.altCapacity[id] as number)))
+      expect(r.saturacaoAlternativaPct).toBeCloseTo(expectedSat, 9)
+      expect(r.saturacaoAlternativaPct).toBeGreaterThan(0)
+      // measured with no diversion too
+      expect(runScenario('sem-sistema', 3).saturacaoAlternativaPct).toBeGreaterThan(0)
     })
   })
 
