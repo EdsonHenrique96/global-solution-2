@@ -60,60 +60,140 @@ export function phaseColor(phase: Phase, timeMs: number): string {
   return Math.floor(timeMs / 500) % 2 === 0 ? PALETTE.moderado : COLORS.street
 }
 
-/** The centre of the grid. */
-export function gridCenter(network: RoadNetwork): Point {
-  const { minX, minY, maxX, maxY } = network.bounds
-  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+/**
+ * The schematic grid: each block of the real grid is cut into two triangles, and each triangle is
+ * mapped affinely onto its place in a regular grid of columns and rows (1-4). Every corner lands
+ * exactly on its column and row, so alamedas run horizontal and ruas vertical as in the prototype's
+ * map; points outside the grid use the nearest triangle. The coordinates stay the real ones.
+ */
+interface Triangle {
+  real: [Point, Point, Point]
+  grid: [Point, Point, Point]
 }
 
-/** Keeps the view's centre inside the grid (AC 48); at 1× it is the grid's centre. */
+const grids = new WeakMap<RoadNetwork, Triangle[]>()
+
+function triangles(network: RoadNetwork): Triangle[] {
+  const cached = grids.get(network)
+  if (cached) return cached
+  const at = new Map(network.intersections.map((i) => [`${i.row},${i.col}`, i.position]))
+  const out: Triangle[] = []
+  for (let r = 1; r < 4; r++) {
+    for (let c = 1; c < 4; c++) {
+      const A = at.get(`${r},${c}`)
+      const B = at.get(`${r},${c + 1}`)
+      const C = at.get(`${r + 1},${c + 1}`)
+      const D = at.get(`${r + 1},${c}`)
+      if (!A || !B || !C || !D) continue
+      const g = (col: number, row: number) => ({ x: col, y: row })
+      out.push({ real: [A, B, C], grid: [g(c, r), g(c + 1, r), g(c + 1, r + 1)] })
+      out.push({ real: [A, C, D], grid: [g(c, r), g(c + 1, r + 1), g(c, r + 1)] })
+    }
+  }
+  grids.set(network, out)
+  return out
+}
+
+/** Barycentric weights of p in triangle t. */
+function weights(p: Point, t: readonly [Point, Point, Point]): [number, number, number] {
+  const [a, b, c] = t
+  const det = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y) || 1
+  const w0 = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / det
+  const w1 = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / det
+  return [w0, w1, 1 - w0 - w1]
+}
+
+/** Maps p from one side of the triangles to the other: the containing triangle, else the nearest. */
+function through(tris: readonly Triangle[], p: Point, from: 'real' | 'grid'): Point {
+  const to = from === 'real' ? 'grid' : 'real'
+  let best: { t: Triangle; w: [number, number, number]; worst: number } | null = null
+  for (const t of tris) {
+    const w = weights(p, t[from])
+    const worst = Math.min(...w)
+    if (!best || worst > best.worst) best = { t, w, worst }
+    if (worst >= -1e-9) break
+  }
+  if (!best) return p
+  const [a, b, c] = best.t[to]
+  const [w0, w1, w2] = best.w
+  return { x: w0 * a.x + w1 * b.x + w2 * c.x, y: w0 * a.y + w1 * b.y + w2 * c.y }
+}
+
+/** The centre of the grid: the map point the schematic grid puts at column and row 2.5. */
+export function gridCenter(network: RoadNetwork): Point {
+  const tris = triangles(network)
+  if (tris.length === 0) {
+    const { minX, minY, maxX, maxY } = network.bounds
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+  }
+  return through(tris, { x: 2.5, y: 2.5 }, 'grid')
+}
+
+/** Where a map point sits on the schematic grid: column and row, 1-4 inside the grid. */
+export function gridOf(network: RoadNetwork, p: Point): Point {
+  return through(triangles(network), p, 'real')
+}
+
+/** Keeps the view's centre inside the grid, columns and rows 1-4 (AC 48); at 1× it is the grid's centre. */
 export function clampView(network: RoadNetwork, view: MapView): MapView {
   if (view.zoom <= 1) return { zoom: 1, center: gridCenter(network) }
-  const { minX, minY, maxX, maxY } = network.bounds
-  return { zoom: view.zoom, center: { x: Math.min(maxX, Math.max(minX, view.center.x)), y: Math.min(maxY, Math.max(minY, view.center.y)) } }
+  const g = gridOf(network, view.center)
+  const inside = { x: Math.min(4, Math.max(1, g.x)), y: Math.min(4, Math.max(1, g.y)) }
+  if (inside.x === g.x && inside.y === g.y) return view
+  return { zoom: view.zoom, center: through(triangles(network), inside, 'grid') }
 }
 
-/** Margin around the corners in the drawing, metres. */
-const MARGIN_M = 60
+/** Margin around the outer streets in the drawing, in blocks: the streets run on to the edge. */
+const MARGIN_BLOCKS = 0.32
 
-/** The angle the alamedas run at (Al. Santos, west to east): the drawing turns by minus this so they lie horizontal. */
-export function gridAngle(network: RoadNetwork): number {
-  const at = (id: string) => network.intersections.find((i) => i.id === id)?.position
-  const a = at('I11')
-  const b = at('I14')
-  return a && b ? Math.atan2(b.y - a.y, b.x - a.x) : 0
+/** Mean length of a block along the alamedas (dx) and along the ruas (dy), metres. */
+function blockSize(network: RoadNetwork): Point {
+  const at = new Map(network.intersections.map((i) => [`${i.row},${i.col}`, i.position]))
+  let h = 0
+  let v = 0
+  let nh = 0
+  let nv = 0
+  for (const i of network.intersections) {
+    const right = at.get(`${i.row},${i.col + 1}`)
+    const below = at.get(`${i.row + 1},${i.col}`)
+    if (right) {
+      h += Math.hypot(right.x - i.position.x, right.y - i.position.y)
+      nh += 1
+    }
+    if (below) {
+      v += Math.hypot(below.x - i.position.x, below.y - i.position.y)
+      nv += 1
+    }
+  }
+  return { x: nh ? h / nh : 1, y: nv ? v / nv : 1 }
 }
-
-const turn = (v: Point, angle: number): Point => ({ x: v.x * Math.cos(angle) - v.y * Math.sin(angle), y: v.x * Math.sin(angle) + v.y * Math.cos(angle) })
 
 /**
- * Fits the grid into the canvas, centred, turned so the alamedas lie horizontal and stretched to
- * fill the canvas like the prototype's schematic map; then applies the view's zoom and centre.
- * `scale` is the smaller of the two axes' px per metre; `turnScreen` takes a vector on the screen
- * (px) to map metres.
+ * Fits the schematic grid into the canvas, centred and stretched to fill it like the prototype's
+ * map, then applies the view's zoom and centre. `scale` is about the smaller of the two axes' px
+ * per metre.
  */
 export function fitTransform(network: RoadNetwork, width: number, height: number, view?: MapView) {
-  const angle = -gridAngle(network)
-  const c = gridCenter(network)
-  const turned = network.intersections.map((i) => turn({ x: i.position.x - c.x, y: i.position.y - c.y }, angle))
-  const w = Math.max(...turned.map((p) => p.x)) - Math.min(...turned.map((p) => p.x)) + MARGIN_M * 2
-  const h = Math.max(...turned.map((p) => p.y)) - Math.min(...turned.map((p) => p.y)) + MARGIN_M * 2
+  const tris = triangles(network)
+  const span = 3 + MARGIN_BLOCKS * 2
   const zoom = view?.zoom ?? 1
-  const sx = Math.max(0, (width - PADDING * 2) / w) * zoom
-  const sy = Math.max(0, (height - PADDING * 2) / h) * zoom
-  const scale = Math.min(sx, sy)
-  const center = view?.center ?? c
+  const sx = Math.max(0, (width - PADDING * 2) / span) * zoom
+  const sy = Math.max(0, (height - PADDING * 2) / span) * zoom
+  const block = blockSize(network)
+  const scale = Math.min(sx / block.x, sy / block.y)
+  const centerMap = view?.center ?? gridCenter(network)
+  const center = through(tris, centerMap, 'real')
+  const map = (p: Point): Point => {
+    const g = through(tris, p, 'real')
+    return { x: width / 2 + (g.x - center.x) * sx, y: height / 2 + (g.y - center.y) * sy }
+  }
+  const unmap = (p: Point): Point => through(tris, { x: (p.x - width / 2) / (sx || 1) + center.x, y: (p.y - height / 2) / (sy || 1) + center.y }, 'grid')
   return {
     scale,
-    map: (p: Point): Point => {
-      const q = turn({ x: p.x - center.x, y: p.y - center.y }, angle)
-      return { x: width / 2 + q.x * sx, y: height / 2 + q.y * sy }
-    },
-    unmap: (p: Point): Point => {
-      const q = turn({ x: (p.x - width / 2) / (sx || 1), y: (p.y - height / 2) / (sy || 1) }, -angle)
-      return { x: q.x + center.x, y: q.y + center.y }
-    },
-    turnScreen: (v: Point): Point => turn({ x: v.x / (sx || 1), y: v.y / (sy || 1) }, -angle),
+    map,
+    unmap,
+    /** The map point that comes to the canvas centre when the map is dragged by (dx, dy) px. */
+    dragCenter: (dx: number, dy: number): Point => unmap({ x: width / 2 - dx, y: height / 2 - dy }),
   }
 }
 

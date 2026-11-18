@@ -515,7 +515,6 @@
 
 .map-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -523,11 +522,25 @@
   border-bottom: 1px solid var(--border);
 }
 
+.map-head .card-title {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
 .map-tools {
   display: flex;
-  flex-wrap: wrap;
+  flex: none;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.map-tools .toggles {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+.map-tools .toggles button {
+  padding: 0 10px;
 }
 
 .divider {
@@ -593,7 +606,6 @@
 
 .map-foot {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -605,7 +617,34 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.map-foot .legend-item {
+  gap: 4px;
+  font-size: 11px;
+}
+
+.map-foot .legend {
+  column-gap: 8px;
+}
+
+.map-foot .legend:last-child {
+  flex: none;
+  flex-wrap: nowrap;
+}
+
+.map-foot .legend-swatch {
+  width: 14px;
+}
+
+.map-foot .legend > .muted {
+  font-size: 11px;
+}
+
+.map-foot {
+  padding: 12px 14px;
 }
 
 .legend-item {

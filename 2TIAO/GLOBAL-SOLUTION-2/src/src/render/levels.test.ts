@@ -195,12 +195,34 @@ describe('levels', () => {
 
   it('C46 ranks the 8 streets by their worst segment', () => {
     const segments = buildSegments(buildCityNetwork())
-    const pcts = [95, 84, 79, 66, 41, 43, null, 66]
-    const readings = Object.fromEntries(segments.map((s) => [s.id, reading(s.id, { nivel: 'sem dado', pct: null })]))
-    const rows = streetRows(segments, readings).map((r, i) => ({ ...r, worst: reading(r.worst.id, { pct: pcts[i], nivel: pcts[i] === null ? 'aprendendo' : 'livre' }) }))
+    const of = (rua: string) => segments.filter((s) => s.rua === rua).map((s) => s.id)
+    const readings = Object.fromEntries(segments.map((s) => [s.id, reading(s.id, { nivel: 'sem dado', pct: null, capacidade: null })]))
+    const set = (rua: string, i: number, over: Partial<SegmentReading>) => (readings[of(rua)[i]] = reading(of(rua)[i], over))
+    set('Al. Santos', 0, { pct: 95, nivel: 'critico' })
+    set('Al. Jaú', 2, { pct: 84, nivel: 'intenso' })
+    set('Al. Itu', 1, { pct: 79, nivel: 'intenso' })
+    set('Al. Franca', 0, { pct: 66, nivel: 'moderado' })
+    set('R. da Consolação', 3, { pct: 41, nivel: 'livre' })
+    set('R. Bela Cintra', 4, { pct: 43, nivel: 'livre' })
+    set('R. Augusta', 5, { pct: 66, nivel: 'moderado' })
+    // R. Haddock Lobo has learned nothing: last, with no pct
+    set('R. Haddock Lobo', 0, { pct: null, nivel: 'aprendendo', capacidade: null })
+    const rows = streetRows(segments, readings)
     expect(rows).toHaveLength(8)
     const ranked = rankStreets(rows)
-    expect(ranked.map((r) => r.worst.pct)).toEqual([95, 84, 79, 66, 66, 43, 41, null])
-    expect(ranked.at(-1)!.rua).toBe(rows[6].rua)
+    expect(ranked.map((r) => r.pct)).toEqual([95, 84, 79, 66, 66, 43, 41, null])
+    expect(ranked.at(-1)!.rua).toBe('R. Haddock Lobo')
+    // a street with a learned 85% block and a slow block still learning ranks by its 85%, above a
+    // street at 20%; its label (and a click) still goes to the critical block
+    const mixed = Object.fromEntries(segments.map((s) => [s.id, reading(s.id, { nivel: 'sem dado', pct: null, capacidade: null })]))
+    mixed[of('Al. Jaú')[0]] = reading(of('Al. Jaú')[0], { pct: 85, nivel: 'intenso' })
+    mixed[of('Al. Jaú')[1]] = reading(of('Al. Jaú')[1], { pct: null, nivel: 'critico', capacidade: null, velocidade: 8 })
+    mixed[of('Al. Santos')[0]] = reading(of('Al. Santos')[0], { pct: 20, nivel: 'livre' })
+    const m = rankStreets(streetRows(segments, mixed))
+    expect(m.slice(0, 2).map((r) => [r.rua, r.pct])).toEqual([
+      ['Al. Jaú', 85],
+      ['Al. Santos', 20],
+    ])
+    expect(m[0].worst.id).toBe(of('Al. Jaú')[1])
   })
 })

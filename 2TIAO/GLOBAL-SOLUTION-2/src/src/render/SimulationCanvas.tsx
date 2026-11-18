@@ -191,8 +191,7 @@ export function SimulationCanvas(props: Props) {
       pan.moved = true
       const view = currentView()
       if (!view || view.zoom <= 1) return
-      const d = fitNow().turnScreen({ x: dx, y: dy })
-      const next = clampView(engine.getState().network, { zoom: view.zoom, center: { x: view.center.x - d.x, y: view.center.y - d.y } })
+      const next = clampView(engine.getState().network, { zoom: view.zoom, center: fitNow().dragCenter(dx, dy) })
       pan.x = e.clientX
       pan.y = e.clientY
       panView = next

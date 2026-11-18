@@ -76,20 +76,27 @@ export const STREETS: readonly string[] = [...ALAMEDAS, ...RUAS]
 
 export interface StreetRow {
   rua: string
+  /** The segment the street's label shows and a click selects (AC 14). */
   worst: SegmentReading
+  /** The street's highest flow over learned capacity, %; null when no segment of it has learned one. */
+  pct: number | null
 }
 
-/** Each street with its most saturated segment (AD-048). */
+/** Each street with its most saturated segment (AD-048) and its highest learned pct. */
 export function streetRows(segments: readonly Segment[], readings: Record<string, SegmentReading>): StreetRow[] {
   return STREETS.map((rua) => {
     const own = segments.filter((s) => s.rua === rua).map((s) => readings[s.id])
-    return { rua, worst: [...own].sort(compareSaturation)[0] }
+    const pcts = own.map((r) => r.pct).filter((p): p is number => p !== null)
+    return { rua, worst: [...own].sort(compareSaturation)[0], pct: pcts.length ? Math.max(...pcts) : null }
   })
 }
 
-/** "Vias mais saturadas": by the worst segment's pct, highest first; streets without a pct last. */
+/**
+ * "Vias mais saturadas": by the street's highest learned pct, highest first; a street with no
+ * learned capacity goes last (AC 46), even when its worst segment is a slow one still learning.
+ */
 export function rankStreets(rows: readonly StreetRow[]): StreetRow[] {
-  return [...rows].sort((a, b) => (b.worst.pct ?? -1) - (a.worst.pct ?? -1) || compareSaturation(a.worst, b.worst))
+  return [...rows].sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1) || compareSaturation(a.worst, b.worst))
 }
 
 /** The two lines of a street label (AC 13, AC 15). */

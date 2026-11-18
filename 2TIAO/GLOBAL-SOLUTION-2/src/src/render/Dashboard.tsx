@@ -5,7 +5,7 @@ import type { HistoryPoint } from '../decision/SegmentHistory'
 import { segmentName } from '../sensors/segments'
 import type { Point } from '../sim/types'
 import type { ConnectionStatus } from '../telemetry/transport'
-import { placeLabels } from './labels'
+import { labelRect, placeLabels, placeNotes } from './labels'
 import { labelLines, NIVEIS, perMin, type SegmentReading, type StreetRow } from './levels'
 
 export type Tab = 'mapa' | 'cameras' | 'semaforos' | 'relatorios'
@@ -194,6 +194,10 @@ const KIND_COLOR: Record<Incident['kind'], string> = {
   congestionamento: NIVEIS.intenso.color,
 }
 
+/** Unit icon border: online, offline (AD-054). */
+const UNIT_ON = '#7FB5FF'
+const UNIT_OFF = '#5B6676'
+
 const ago = (ms: number) => `há ${Math.max(0, Math.floor(ms / 60_000))} min`
 
 /** What sits on top of the canvas: a label per street, the unit icons and the incident markers with their notes. */
@@ -202,13 +206,23 @@ export function MapOverlay({ map, base, width, height, corners, streets, selecte
     const q = map(p)
     return { left: q.x, top: q.y }
   }
+  const unitBoxes = (m: (p: Point) => Point) => (showUnits ? units.map((u) => ({ x: m(u.position).x - 16, y: m(u.position).y - 16, w: 32, h: 32 })) : [])
+  const markersOn = (m: (p: Point) => Point) => (showIncidents ? incidents.map((i) => ({ key: i.incident.key, at: m(i.position) })) : [])
+  // notes first, on the 1x view, so the labels keep clear of them and of the markers
+  const baseMarkers = markersOn(base.map)
+  const baseNotes = placeNotes(baseMarkers, unitBoxes(base.map), width, height)
   const spots = placeLabels(
     streets.map((s) => s.rua),
     corners,
     base,
     width,
     height,
+    [
+      ...Object.values(baseNotes).map((p) => ({ x: p.x, y: p.y, w: 240, h: 92 })),
+      ...baseMarkers.map((m) => ({ x: m.at.x - 16, y: m.at.y - 16, w: 32, h: 32 })),
+    ],
   )
+  const notes = placeNotes(markersOn(map), [...streets.map((s) => labelRect(map(spots[s.rua]))), ...unitBoxes(map)], width, height)
   return (
     <div className="map-overlay">
       {streets.map(({ rua, worst }) => {
@@ -246,7 +260,14 @@ export function MapOverlay({ map, base, width, height, corners, streets, selecte
         units.map((u) => {
           const name = `${u.id} · ${u.at} · ${u.online ? 'online' : 'offline'}`
           return (
-            <span key={u.id} role="img" aria-label={name} title={name} className={`unit-icon ${u.online ? 'on' : 'off'}`} style={place(u.position)}>
+            <span
+              key={u.id}
+              role="img"
+              aria-label={name}
+              title={name}
+              className={`unit-icon ${u.online ? 'on' : 'off'}`}
+              style={{ ...place(u.position), borderColor: u.online ? UNIT_ON : UNIT_OFF }}
+            >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M16 10l5-3v10l-5-3" />
                 <rect x="2" y="6" width="14" height="12" rx="2" />
@@ -258,8 +279,7 @@ export function MapOverlay({ map, base, width, height, corners, streets, selecte
         incidents.map(({ incident, position, place: where, detail }) => {
           const q = map(position)
           const color = KIND_COLOR[incident.kind]
-          const left = q.x + 240 + 18 > width ? q.x - 240 - 18 : q.x + 18
-          const top = Math.min(Math.max(8, q.y - 70), Math.max(8, height - 100))
+          const { x: left, y: top } = notes[incident.key]
           return (
             <div key={incident.key} className="incident-on-map" style={{ ['--sev' as string]: color }}>
               <span className="incident-marker" data-testid={`marker-${incident.key}`} style={{ left: q.x, top: q.y }} role="img" aria-label={INCIDENT_TITLES[incident.kind]}>
@@ -403,7 +423,7 @@ export function StreetRanking({ rows, selected, onSelect }: { rows: readonly Str
         <h2>Vias mais saturadas</h2>
         <span className="muted">fluxo ÷ capacidade</span>
       </div>
-      {rows.map(({ rua, worst }) => (
+      {rows.map(({ rua, worst, pct }) => (
         <button
           key={rua}
           type="button"
@@ -414,9 +434,9 @@ export function StreetRanking({ rows, selected, onSelect }: { rows: readonly Str
         >
           <span className="rank-name">{rua}</span>
           <span className="track" aria-hidden="true">
-            <span style={{ width: `${Math.min(100, worst.pct ?? 0)}%`, background: NIVEIS[worst.nivel].color }} />
+            <span style={{ width: `${Math.min(100, pct ?? 0)}%`, background: NIVEIS[worst.nivel].color }} />
           </span>
-          <span className="rank-pct">{worst.pct === null ? '—' : `${worst.pct}%`}</span>
+          <span className="rank-pct">{pct === null ? '—' : `${pct}%`}</span>
         </button>
       ))}
     </section>

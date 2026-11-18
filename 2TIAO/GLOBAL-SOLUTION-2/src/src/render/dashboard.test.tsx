@@ -7,7 +7,7 @@ import { SimulationEngine } from '../sim/SimulationEngine'
 import type { Point } from '../sim/types'
 import { FakeTransport } from '../telemetry/testing'
 import { DashboardHeader } from './Dashboard'
-import { clampView, fitTransform, gridCenter, type MapView } from './draw'
+import { clampView, fitTransform, gridCenter, gridOf, type MapView } from './draw'
 
 interface Call {
   op: string
@@ -320,6 +320,7 @@ describe('operations dashboard', () => {
     // the units publish one reading per 10 s window through the broker
     advance(10_000)
     expect(screen.getAllByRole('img', { name: / · online$/ })).toHaveLength(12)
+    for (const icon of screen.getAllByRole('img', { name: / · online$/ })) expect(icon).toHaveStyle({ borderColor: '#7FB5FF' })
     expect(screen.getByTestId('card-cameras')).toHaveTextContent('12 / 12')
     expect(screen.getByTestId('card-cameras')).toHaveTextContent('todas enviando leitura')
     cleanupAndOffline()
@@ -418,7 +419,20 @@ describe('operations dashboard', () => {
     expect(byTitle('Semáforo intermitente')).toHaveTextContent(`Semáforo intermitentehá 0 min${corner(engine, 'I32').nome}Amarelo piscante · normaliza às ${hhmm(f.endsAtMs)}`)
     expect(byTitle('Congestionamento persistente')).toHaveTextContent(/^Congestionamento persistentehá \d+ min/)
     expect(byTitle('Congestionamento persistente')).toHaveTextContent(`${segmentName('I12>I13')}Desvio ativo · `)
-    expect(byTitle('Congestionamento persistente')).toHaveTextContent(/motoristas notificados$/)
+    // the jam's count is the diversion's notified drivers in this window, as Relatórios shows it
+    const window = screen.getByTestId('diversion-state').textContent!.match(/(\d+) notificados na janela/)![1]
+    expect(byTitle('Congestionamento persistente').textContent).toMatch(new RegExp(`Desvio ativo · ${window} motoristas notificados$`))
+    // each marker, note and card in its type's colour, as in the prototype (AD-065)
+    const colour = { colisao: '#F0565B', obra: '#F59544', semaforo: '#F5D04E', congestionamento: '#F59544' }
+    const sev = (el: HTMLElement) => (el.closest('[style*="--sev"]') as HTMLElement).style.getPropertyValue('--sev')
+    const jam = screen.getAllByTestId(/^marker-congestionamento:/)[0]
+    expect(sev(screen.getByTestId(`marker-colisao:${b.id}`))).toBe(colour.colisao)
+    expect(sev(screen.getByTestId(`marker-obra:${z.id}`))).toBe(colour.obra)
+    expect(sev(screen.getByTestId(`marker-semaforo:${f.id}`))).toBe(colour.semaforo)
+    expect(sev(jam)).toBe(colour.congestionamento)
+    expect(sev(byTitle('Obra na pista'))).toBe(colour.obra)
+    expect(sev(within(panel()).getByTestId(`incident-obra:${z.id}`))).toBe(colour.obra)
+    expect(within(panel()).getByTestId(`incident-obra:${z.id}`)).toHaveTextContent('Moderado')
     // each with its marker at its place
     const at = screenOf(engine, pointOnSegment(engine.segment('I33>I34')!, 40))
     const marker = screen.getByTestId(`marker-colisao:${b.id}`)
@@ -611,6 +625,20 @@ describe('operations dashboard', () => {
     expect(screen.getByRole('link', { name: 'Semáforos' })).toHaveAttribute('aria-current', 'page')
   })
 
+  it('C44 the travel time card shows the network mean in minutes', { timeout: 60_000 }, () => {
+    const { engine } = setup({ rate: 120 })
+    expect(screen.getByTestId('card-viagem')).toHaveTextContent('Tempo médio de viagem—sem histórico de 1 h')
+    let waited = 0
+    while (engine.travelStats().lastMinuteAvgS === null && waited < 300_000) {
+      advance(10_000)
+      waited += 10_000
+    }
+    const s = engine.travelStats().lastMinuteAvgS!
+    expect(s).not.toBeNull()
+    const min = (s / 60).toLocaleString('pt-BR', { maximumFractionDigits: 1 })
+    expect(screen.getByTestId('card-viagem')).toHaveTextContent(`Tempo médio de viagem${min} minsem histórico de 1 h`)
+  })
+
   it('C45 the notified drivers card counts drivers with an active app', () => {
     const { transport } = setup({ rate: 120 })
     const card = () => screen.getByTestId('card-notificados')
@@ -730,6 +758,7 @@ function cleanupAndOffline() {
   setup({ cameras: true, connected: false })
   advance(30_000)
   expect(screen.getAllByRole('img', { name: / · offline$/ })).toHaveLength(12)
+  for (const icon of screen.getAllByRole('img', { name: / · offline$/ })) expect(icon).toHaveStyle({ borderColor: '#5B6676' })
   expect(screen.getByTestId('card-cameras')).toHaveTextContent('0 / 12')
   expect(screen.getByTestId('card-cameras')).toHaveTextContent(/U\d{2} sem sinal há 0 min/)
 }
@@ -738,14 +767,31 @@ describe('map view', () => {
   it('C48 pans only when zoomed and keeps the centre inside the grid', () => {
     const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
     const net = engine.getState().network
-    const { minX, minY, maxX, maxY } = net.bounds
+    const at = (id: string) => net.intersections.find((i) => i.id === id)!.position
     // at 1x the view is the whole grid, whatever is asked
-    expect(clampView(net, { zoom: 1, center: { x: maxX + 500, y: minY } })).toEqual({ zoom: 1, center: gridCenter(net) })
-    // zoomed in, the centre stays inside the bounds
-    expect(clampView(net, { zoom: 2, center: { x: maxX + 500, y: minY - 500 } }).center).toEqual({ x: maxX, y: minY })
-    expect(clampView(net, { zoom: 3, center: { x: minX - 1, y: maxY + 1 } }).center).toEqual({ x: minX, y: maxY })
-    const inside = { x: (minX + maxX) / 3, y: (minY + maxY) / 2 }
+    expect(clampView(net, { zoom: 1, center: at('I44') })).toEqual({ zoom: 1, center: gridCenter(net) })
+    expect(gridOf(net, gridCenter(net)).x).toBeCloseTo(2.5, 6)
+    // zoomed in, a centre far outside stops on the grid's edge: columns and rows 1-4
+    const far = { x: at('I11').x - 5000, y: at('I11').y - 5000 }
+    const g = gridOf(net, clampView(net, { zoom: 2, center: far }).center)
+    expect(g.x).toBeGreaterThanOrEqual(1 - 1e-9)
+    expect(g.y).toBeGreaterThanOrEqual(1 - 1e-9)
+    expect(Math.min(g.x, g.y)).toBeCloseTo(1, 6)
+    for (const z of [1.5, 2, 3]) {
+      const c = gridOf(net, clampView(net, { zoom: z, center: { x: at('I44').x + 3000, y: at('I44').y + 3000 } }).center)
+      expect(Math.max(c.x, c.y)).toBeCloseTo(4, 6)
+      expect(c.x).toBeLessThanOrEqual(4 + 1e-9)
+      expect(c.y).toBeLessThanOrEqual(4 + 1e-9)
+    }
+    // a centre inside stays
+    const inside = at('I22')
     expect(clampView(net, { zoom: 1.5, center: inside }).center).toEqual(inside)
+    // each corner lands exactly on its column and row
+    for (const i of net.intersections) {
+      const p = gridOf(net, i.position)
+      expect(p.x).toBeCloseTo(i.col, 6)
+      expect(p.y).toBeCloseTo(i.row, 6)
+    }
   })
 
   it('C48 dragging at 1x moves nothing and a zoomed drag stops at the grid edge', () => {
@@ -765,16 +811,12 @@ describe('map view', () => {
     expect(pos()).toEqual(before)
     // zoomed in, a drag far past the edge stops there: dragging further moves nothing more
     fireEvent.click(screen.getByRole('button', { name: 'Aproximar' }))
-    // one axis stops first and the view slides along that edge until the other stops too
-    for (let i = 0; i < 100; i++) drag(5000, 3000)
+    drag(5000, 3000)
     const stopped = pos()
     drag(5000, 3000)
     expect(near(pos().x, stopped.x, 0.01) && near(pos().y, stopped.y, 0.01)).toBe(true)
-    // and the grid is still in view: its centre point is on the canvas
-    const c = screenOf(engine, gridCenter(engine.getState().network), { zoom: 1.5, center: clampView(engine.getState().network, { zoom: 1.5, center: { x: -1e9, y: -1e9 } }).center })
-    expect(Number.isFinite(c.x)).toBe(true)
-    const { minX, minY } = engine.getState().network.bounds
-    const corner0 = screenOf(engine, { x: minX, y: minY }, { zoom: 1.5, center: { x: minX, y: minY } })
-    expect(near(corner0.x, W / 2) && near(corner0.y, H / 2)).toBe(true)
+    // dragged right and down, the view stops with the north-west corner of the grid at the centre
+    const nw = screenOf(engine, corner(engine, 'I11').position, { zoom: 1.5, center: corner(engine, 'I11').position })
+    expect(near(nw.x, W / 2) && near(nw.y, H / 2)).toBe(true)
   })
 })
