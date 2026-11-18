@@ -73,6 +73,12 @@ describe('sensors', () => {
       const index = new CoverageIndex(segments)
       index.setCameras([cam('far', 5000, 5000)])
       for (const s of segments) expect(index.entries(s.id)).toEqual([])
+      // close enough for the R-tree to propose central I1-I2, but the cone looks away from it
+      const away = cam('away', 500, 320, 180, 60, 100)
+      const near = new CoverageIndex(segments)
+      near.setCameras([away])
+      expect(segmentCoverage(segments.find((x) => x.id === 'central-I1-I2')!.points, cameraPolygon(away))).toBe(0)
+      expect(near.entries('central-I1-I2')).toEqual([])
     })
 
     it('rebuilds the index only when a camera changes', () => {
@@ -129,6 +135,25 @@ describe('sensors', () => {
     })
 
     it('reports per segment only where coverage is at least 0.3', () => {
+      // looking east from (650,300): central I1-I2 0.125 and chegada 0.25 are in the index but below 0.3
+      const edge = cam('C8', 650, 300, 90, 70, 200)
+      const edgeIndex = new CoverageIndex(segments)
+      edgeIndex.setCameras([edge])
+      const covOf = (id: string) => edgeIndex.entries(id)[0]?.cobertura ?? 0
+      expect(covOf('central-I1-I2')).toBeGreaterThan(0)
+      expect(covOf('central-I1-I2')).toBeLessThan(0.3)
+      expect(covOf('chegada')).toBeGreaterThan(0)
+      expect(covOf('chegada')).toBeLessThan(0.3)
+      expect(covOf('central-I2-M')).toBeCloseTo(1, 6)
+      const edgeReader = new SensorReader({ noisePct: 0 })
+      const [er] = window(edgeReader, [edge], edgeIndex, () => [
+        { x: 680, y: 300, speedKmh: 30, segmentId: 'central-I1-I2' },
+        { x: 750, y: 300, speedKmh: 40, segmentId: 'central-I2-M' },
+        { x: 840, y: 300, speedKmh: 45, segmentId: 'chegada' },
+      ])
+      expect(er.porTrecho.map((t) => t.trecho)).toEqual(['central-I2-M'])
+      expect(er.contagem).toBe(3) // the camera still counts every car in its cone
+
       // a cone that covers most of central I1-I2 and only a sliver of central I2-M
       const c = cam('C9', 450, 330, 90, 70, 210)
       const index = new CoverageIndex(segments)
@@ -179,6 +204,37 @@ describe('sensors', () => {
       expect(payload.tipo).toBe('fixo')
       expect(Object.keys(payload.porTrecho[0])).toEqual(['trecho', 'contagem', 'velocidadeMediaKmh', 'comprimentoCobertoM', 'cobertura'])
       expect(payload.porTrecho[0]).toEqual({ trecho: 'central-I1-I2', contagem: 3, velocidadeMediaKmh: 40, comprimentoCobertoM: 215.2, cobertura: 0.538 })
+
+      // a real noisy reading through the publisher: count and speed of each segment get the noise,
+      // covered length and coverage do not
+      const c2 = cam('C2', 420, 330, 90, 70, 260)
+      const index = new CoverageIndex(segments)
+      index.setCameras([c2])
+      const exactLen = Math.round(index.entries('central-I1-I2')[0].cobertura * 400 * 10) / 10
+      const reader = new SensorReader({ noisePct: 30, windowMs: 100 })
+      const publisher = new TelemetryPublisher(transport)
+      const cars = Array.from({ length: 100 }, () => ({ x: 560, y: 300, speedKmh: 100, segmentId: 'central-I1-I2' }))
+      const counts: number[] = []
+      const speeds: number[] = []
+      for (let i = 1; i <= 300; i++) {
+        for (const r of reader.observe(100, i * 100, [c2], index, cars)) publisher.publish(r)
+      }
+      for (const m of transport.published.slice(1)) {
+        const seg = JSON.parse(m.payload).porTrecho[0]
+        counts.push(seg.contagem)
+        speeds.push(seg.velocidadeMediaKmh)
+        expect(seg.comprimentoCobertoM).toBe(exactLen)
+        expect(seg.cobertura).toBe(Math.round(index.entries('central-I1-I2')[0].cobertura * 1000) / 1000)
+      }
+      expect(counts).toHaveLength(300)
+      for (const v of [...counts, ...speeds]) {
+        expect(v).toBeGreaterThanOrEqual(70)
+        expect(v).toBeLessThanOrEqual(130)
+      }
+      expect(Math.min(...counts)).toBeLessThan(80)
+      expect(Math.max(...counts)).toBeGreaterThan(120)
+      expect(Math.min(...speeds)).toBeLessThan(80)
+      expect(Math.max(...speeds)).toBeGreaterThan(120)
     })
   })
 })

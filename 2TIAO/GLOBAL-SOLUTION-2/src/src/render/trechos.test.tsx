@@ -116,6 +116,8 @@ describe('render', () => {
       // central I1->I2 congested, north I3->M learns a curve and is flowing
       act(() => {
         transport.deliver('transito/sensores/C2/telemetria', message('C2', [{ trecho: 'central-I1-I2', contagem: 30, velocidadeMediaKmh: 8, comprimentoCobertoM: 215, cobertura: 0.54 }]))
+        // sul I4->M at 30 km/h: carregado
+        transport.deliver('transito/sensores/C3/telemetria', message('C3', [{ trecho: 'sul-I4-M', contagem: 4, velocidadeMediaKmh: 30, comprimentoCobertoM: 215, cobertura: 0.54 }]))
         for (let i = 20; i >= 1; i--) {
           const k = 5 * i
           transport.deliver('transito/sensores/C1/telemetria', message('C1', [{ trecho: 'norte-I3-M', contagem: k, velocidadeMediaKmh: 50 * (1 - k / 100), comprimentoCobertoM: 1000, cobertura: 0.5 }]))
@@ -124,6 +126,7 @@ describe('render', () => {
       frame = redraw()
       expect(huesOf(frame, map, [300, 300], [700, 300])).toContain('vermelho')
       expect(huesOf(frame, map, [500, 120], [820, 300])).toContain('verde')
+      expect(huesOf(frame, map, [500, 480], [820, 300])).toContain('amarelo')
       // each segment of a route has its own colour: central F->I1 is still grey
       expect(huesOf(frame, map, [180, 300], [300, 300])).toEqual(['cinza'])
 
@@ -133,9 +136,14 @@ describe('render', () => {
       fireEvent.mouseUp(window, { clientX: p.x, clientY: p.y + 3 })
       expect(within(panel).getByTestId('capacity-via')).toHaveTextContent('Norte I3→M')
       expect(within(panel).getByTestId('capacity-estado')).toHaveTextContent('fluindo')
+      // 20 samples on v = 50 (1 - k/100): capacity 1250 +- 15; slack = capacity - 237.5
+      const num = (id: string) =>
+        Number(within(panel).getByTestId(id).textContent!.replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.'))
+      expect(num('capacity-capacidade')).toBeGreaterThanOrEqual(1235)
+      expect(num('capacity-capacidade')).toBeLessThanOrEqual(1265)
       expect(within(panel).getByTestId('capacity-capacidade')).toHaveTextContent('veíc/h')
       expect(within(panel).getByTestId('capacity-fluxo')).toHaveTextContent('237,5 veíc/h')
-      expect(within(panel).getByTestId('capacity-folga')).toHaveTextContent('veíc/h')
+      expect(num('capacity-folga')).toBeCloseTo(num('capacity-capacidade') - 237.5, 0)
       expect(within(panel).getByTestId('fitted-curve')).toBeInTheDocument()
       frame = redraw()
       expect(huesOf(frame, map, [500, 120], [820, 300])).toContain('branco')
@@ -201,6 +209,67 @@ describe('render', () => {
       fireEvent.mouseMove(window, { clientX: outside.x, clientY: outside.y })
       fireEvent.mouseUp(window, { clientX: outside.x, clientY: outside.y })
       expect(engine.getState().cameras.find((c) => c.id === 'C2')!.position).toEqual({ x: 1000, y: 0 })
+    })
+  })
+
+  describe('CapacityPanel', () => {
+    it('plots the last 200 samples and the fitted curve with the capacity point', () => {
+      const transport = new FakeTransport(true)
+      render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={transport} />)
+      const panel = screen.getByRole('region', { name: /capacidade do trecho/i })
+      const send = (k: number) =>
+        transport.deliver(
+          'transito/sensores/C2/telemetria',
+          message('C2', [{ trecho: 'central-I1-I2', contagem: k, velocidadeMediaKmh: 50 * (1 - k / 100), comprimentoCobertoM: 1000, cobertura: 1 }]),
+        )
+      expect(within(panel).queryAllByTestId('sample-point')).toHaveLength(0)
+      // three early samples at densities that never come back
+      act(() => [12, 22, 33].forEach(send))
+      expect(within(panel).getAllByTestId('sample-point')).toHaveLength(3)
+      expect(within(panel).queryByTestId('fitted-curve')).toBeNull()
+      act(() => {
+        for (let i = 0; i < 200; i++) send(5 + (i % 19) * 5)
+      })
+      const points = within(panel).getAllByTestId('sample-point')
+      expect(points).toHaveLength(200)
+      const ks = points.map((p) => Number(p.getAttribute('data-k')))
+      for (const k of [12, 22, 33]) expect(ks).not.toContain(k)
+      const curve = within(panel).getByTestId('fitted-curve')
+      const vertices = [...curve.getAttribute('d')!.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])])
+      const baseline = vertices[0][1]
+      expect(vertices[vertices.length - 1][1]).toBeCloseTo(baseline, 0)
+      const apex = vertices.reduce((a, b) => (b[1] < a[1] ? b : a))
+      const mark = within(panel).getByTestId('capacity-point')
+      expect(apex[0]).toBeCloseTo(Number(mark.getAttribute('cx')), 0)
+      expect(apex[1]).toBeCloseTo(Number(mark.getAttribute('cy')), 0)
+      expect(Number(mark.getAttribute('data-k'))).toBeCloseTo(50, 0)
+    })
+  })
+
+  describe('SimulationCanvas', () => {
+    it('a press on a camera drags it without changing the selected segment and a click away keeps the selection', () => {
+      const engine = new SimulationEngine({ ratePerMinute: 0 })
+      render(<App engine={engine} transport={new FakeTransport(true)} />)
+      const canvas = document.querySelector('canvas')!
+      const panel = screen.getByRole('region', { name: /capacidade do trecho/i })
+      const map = mapper(lastFrame())
+      expect(within(panel).getByTestId('capacity-via')).toHaveTextContent('Central I1→I2')
+
+      // move C1 onto the north road (500,120), then press it there: the press grabs the camera
+      engine.moveCamera('C1', { x: 500, y: 120 })
+      const c1 = map(500, 120)
+      const to = map(500, 200)
+      fireEvent.mouseDown(canvas, { clientX: c1.x, clientY: c1.y, button: 0 })
+      fireEvent.mouseMove(window, { clientX: to.x, clientY: to.y })
+      fireEvent.mouseUp(window, { clientX: to.x, clientY: to.y })
+      expect(engine.getState().cameras.find((c) => c.id === 'C1')!.position.y).toBeCloseTo(200, 6)
+      expect(within(panel).getByTestId('capacity-via')).toHaveTextContent('Central I1→I2')
+
+      // far from every road (80 m below the south road)
+      const away = map(500, 560)
+      fireEvent.mouseDown(canvas, { clientX: away.x, clientY: away.y, button: 0 })
+      fireEvent.mouseUp(window, { clientX: away.x, clientY: away.y })
+      expect(within(panel).getByTestId('capacity-via')).toHaveTextContent('Central I1→I2')
     })
   })
 })

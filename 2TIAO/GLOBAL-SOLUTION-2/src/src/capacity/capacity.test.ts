@@ -212,6 +212,14 @@ describe('capacity', () => {
         chegada: estimate('carregado', 30, 700, null, null),
       }
       expect(summariseRoute('central', segs, est)).toEqual({ estado: 'congestionado', velocidade: 12, fluxo: 500, capacidade: 900, folga: 400 })
+      // the slowest segment does not set capacity and slack: they are the minimum over the route
+      const split = {
+        ...blank,
+        'central-F-I1': estimate('fluindo', 48, 300, 900, 600),
+        'central-I1-I2': estimate('congestionado', 12, 500, 1500, 1000),
+        'central-I2-M': estimate('fluindo', 47, 200, 1300, 1100),
+      }
+      expect(summariseRoute('central', segs, split)).toEqual({ estado: 'congestionado', velocidade: 12, fluxo: 500, capacidade: 900, folga: 600 })
       // the shared arrival stretch is part of every route
       expect(summariseRoute('norte', segs, est)).toEqual({ estado: 'carregado', velocidade: 30, fluxo: 700, capacidade: null, folga: null })
     })
