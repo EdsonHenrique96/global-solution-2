@@ -172,6 +172,20 @@ describe('capacity', () => {
       expect(stale.estado).toBe('sem dados')
       expect(stale.capacidade).toBe(capacity)
       expect(stale.amostras).toHaveLength(20)
+
+      // validity follows the most recent ts: a late, older reading does not rewind it
+      now = 230_000
+      transport.deliver(
+        'transito/drones/D1/telemetria',
+        message('D1', 230_000, [{ via: 'central', contagem: 10, velocidadeMediaKmh: 45, comprimentoM: 1000 }]),
+      )
+      transport.deliver(
+        'transito/drones/D2/telemetria',
+        message('D2', 5_000, [{ via: 'central', contagem: 80, velocidadeMediaKmh: 10, comprimentoM: 1000 }]),
+      )
+      const latest = service.snapshot().central
+      expect(latest.estado).toBe('fluindo')
+      expect(latest.velocidade).toBe(45)
     })
 
     it('learns nothing while disconnected and resumes after reconnecting', () => {

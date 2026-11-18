@@ -67,7 +67,8 @@ export class CapacityModel {
     const k = input.contagem / ((input.comprimentoM / 1000) * LANES)
     const v = input.velocidadeMediaKmh
     const q = v === null ? 0 : k * v
-    this.last = { k, v, q, ts }
+    // a reading that arrives late still trains the fit, but never rewinds the current state
+    if (this.last === null || ts >= this.last.ts) this.last = { k, v, q, ts }
     if (v === null) return
     this.samples.push({ k, q })
     if (this.samples.length > MAX_PLOTTED) this.samples.shift()

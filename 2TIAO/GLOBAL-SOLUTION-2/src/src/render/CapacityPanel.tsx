@@ -90,7 +90,7 @@ function Chart({
         {Math.round(kMax)}
       </text>
       {samples.map((s, i) => (
-        <circle key={i} data-testid="sample-point" cx={x(s.k)} cy={y(s.q)} r={2.5} className="sample" />
+        <circle key={i} data-testid="sample-point" data-k={s.k} data-q={s.q} cx={x(s.k)} cy={y(s.q)} r={2.5} className="sample" />
       ))}
       {curve && (
         <>

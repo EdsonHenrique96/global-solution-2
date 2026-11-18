@@ -229,17 +229,40 @@ describe('render', () => {
         )
 
       expect(within(panel).queryAllByTestId('sample-point')).toHaveLength(0)
-      act(() => [10, 20, 30].forEach(send))
+      // three early samples at densities that never come back (12, 22, 33 veíc/km)
+      act(() => [12, 22, 33].forEach(send))
       expect(within(panel).getAllByTestId('sample-point')).toHaveLength(3)
       expect(within(panel).queryByTestId('fitted-curve')).toBeNull()
       expect(within(panel).queryByTestId('capacity-point')).toBeNull()
 
       act(() => {
-        for (let i = 0; i < 247; i++) send(5 + (i % 19) * 5)
+        for (let i = 0; i < 200; i++) send(5 + (i % 19) * 5)
       })
-      expect(within(panel).getAllByTestId('sample-point')).toHaveLength(200)
+      const points = within(panel).getAllByTestId('sample-point')
+      expect(points).toHaveLength(200)
+      // the oldest are the ones dropped: the last 200 are all multiples of 5
+      const ks = points.map((p) => Number(p.getAttribute('data-k')))
+      for (const k of [12, 22, 33]) expect(ks).not.toContain(k)
+      expect(ks.every((k) => k % 5 === 0)).toBe(true)
+      for (const p of points) {
+        const k = Number(p.getAttribute('data-k'))
+        expect(Number(p.getAttribute('data-q'))).toBeCloseTo(k * 50 * (1 - k / 100), 6)
+      }
+
+      // the drawn curve is the fitted parabola: it starts and ends on q = 0 and peaks at the capacity point
       const curve = within(panel).getByTestId('fitted-curve')
-      expect(curve.getAttribute('d')).toMatch(/^M/)
+      const vertices = [...curve.getAttribute('d')!.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)].map((m) => [
+        Number(m[1]),
+        Number(m[2]),
+      ])
+      expect(vertices.length).toBeGreaterThan(10)
+      const baseline = vertices[0][1]
+      expect(vertices[vertices.length - 1][1]).toBeCloseTo(baseline, 0)
+      const apex = vertices.reduce((a, b) => (b[1] < a[1] ? b : a))
+      const capMark = within(panel).getByTestId('capacity-point')
+      expect(apex[0]).toBeCloseTo(Number(capMark.getAttribute('cx')), 0)
+      expect(apex[1]).toBeCloseTo(Number(capMark.getAttribute('cy')), 0)
+      expect(apex[1]).toBeLessThan(baseline)
       const capPoint = within(panel).getByTestId('capacity-point')
       // the capacity point sits at k_j / 2 = 50 veíc/km on the chart's density axis
       expect(Number(capPoint.getAttribute('data-k'))).toBeCloseTo(50, 0)
