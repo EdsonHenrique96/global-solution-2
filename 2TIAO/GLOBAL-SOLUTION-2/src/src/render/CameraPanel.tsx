@@ -5,16 +5,18 @@ interface Props {
   onChange: (id: string, change: Partial<Pick<FixedCamera, 'heading' | 'fov' | 'range'>>) => void
   onAdd: () => void
   onRemove: (id: string) => void
+  /** The unit "Ver câmera" opened this tab for. */
+  selected?: string | null
 }
 
 /** The camera+radar units the operator configures: camera and radar turn together (AC 12). */
-export function CameraPanel({ cameras, onChange, onAdd, onRemove }: Props) {
+export function CameraPanel({ cameras, onChange, onAdd, onRemove, selected }: Props) {
   return (
     <section className="cameras" aria-label="Unidades câmera+radar">
       <h2>Unidades câmera+radar</h2>
       <ul>
         {cameras.map((c) => (
-          <li key={c.id} data-testid={`camera-${c.id}`}>
+          <li key={c.id} data-testid={`camera-${c.id}`} aria-current={c.id === selected ? 'true' : undefined} className={c.id === selected ? 'selected' : undefined}>
             <strong>{c.id}</strong>
             <label>
               Direção (°)

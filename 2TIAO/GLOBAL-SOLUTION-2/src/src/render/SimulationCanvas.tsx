@@ -1,45 +1,61 @@
 import { useEffect, useRef } from 'react'
-import type { RouteStatus } from '../capacity/CapacityModel'
 import { pointOnSegment } from '../sensors/segments'
 import type { SimulationEngine } from '../sim/SimulationEngine'
-import { BLOCKAGE_PICK_PX, cameraGrabRadius, distanceToSegment, drawScene, fitTransform, ROUTE_PICK_PX } from './draw'
+import {
+  BLOCKAGE_PICK_PX,
+  cameraGrabRadius,
+  clampView,
+  CORNER_PICK_PX,
+  distanceToSegment,
+  drawScene,
+  fitTransform,
+  ROUTE_PICK_PX,
+  type MapView,
+} from './draw'
+import type { Nivel } from './levels'
+
+export type IncidentMode = 'acidente' | 'obra' | 'semaforo'
+
+/** Where a click in an incident mode landed: a point on a segment, or a corner ("Semáforo"). */
+export type IncidentTarget = { segmentId: string; distance: number } | { intersectionId: string }
 
 interface Props {
   engine: SimulationEngine
-  /** Read on every frame: the state of each road segment. */
-  segmentStatus?: () => Record<string, RouteStatus>
+  /** Read on every frame: the density level of each road segment. */
+  segmentLevel?: () => Record<string, Nivel>
   selectedSegment?: string
   onSelectSegment?: (segmentId: string) => void
-  /** In accident mode a click on a segment blocks it there, and a click on a marker removes it. */
-  accidentMode?: boolean
-  onAccident?: (segmentId: string, distance: number) => void
+  /** The "Densidade" layer (on by default). */
+  density?: boolean
+  view?: MapView
+  /** Dragging the map while zoomed in moves the view. */
+  onPan?: (view: MapView) => void
+  /** In an incident mode a click creates that incident; in "acidente" a click on a marker removes it. */
+  incidentMode?: IncidentMode | null
+  onIncident?: (mode: IncidentMode, target: IncidentTarget) => void
   onRemoveBlockage?: (id: number) => void
-  layer?: 'estado' | 'cobertura'
   /** The segment under the mouse (null when none), with the mouse position in the canvas, px. */
   onHoverSegment?: (hover: { segmentId: string; x: number; y: number } | null) => void
+  /** The canvas size in CSS pixels, on mount and on every resize. */
+  onResize?: (width: number, height: number) => void
 }
+
+/** Pointer travel (px) below which a press and release on the map is a click, not a drag. */
+const CLICK_SLOP_PX = 4
 
 /**
  * Fills its container with a canvas and redraws the simulation on every animation frame.
  * A camera+radar unit can be dragged with the mouse; it is dropped where the button is released.
+ * Zoomed in, dragging the map moves the view.
  */
-export function SimulationCanvas({
-  engine,
-  segmentStatus,
-  selectedSegment,
-  onSelectSegment,
-  accidentMode,
-  onAccident,
-  onRemoveBlockage,
-  layer,
-  onHoverSegment,
-}: Props) {
+export function SimulationCanvas(props: Props) {
+  const { engine } = props
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Latest props for the long-lived listeners and frame loop below.
-  const overlayRef = useRef({ segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage, layer, onHoverSegment })
+  const propsRef = useRef(props)
   useEffect(() => {
-    overlayRef.current = { segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage, layer, onHoverSegment }
+    propsRef.current = props
   })
 
   useEffect(() => {
@@ -51,20 +67,17 @@ export function SimulationCanvas({
     let width = 0
     let height = 0
     let dpr = 1
+    // the view while a drag moves it, ahead of the page's next render
+    let panView: MapView | null = null
+    const currentView = () => panView ?? propsRef.current.view
 
     const draw = () => {
-      const { segmentStatus: status, selectedSegment: selected, layer: shown } = overlayRef.current
-      const state = engine.getState()
-      drawScene(ctx, state, width, height, dpr, {
-        segmentStatus: status?.(),
-        selectedSegment: selected,
-        layer: shown,
-        segmentCoverage:
-          shown === 'cobertura'
-            ? Object.fromEntries(
-                state.segments.map((seg) => [seg.id, Math.max(0, ...engine.coverage.entries(seg.id).map((e) => e.cobertura))]),
-              )
-            : undefined,
+      const p = propsRef.current
+      drawScene(ctx, engine.getState(), width, height, dpr, {
+        segmentLevel: p.segmentLevel?.(),
+        selectedSegment: p.selectedSegment,
+        density: p.density,
+        view: currentView(),
       })
     }
 
@@ -76,28 +89,17 @@ export function SimulationCanvas({
       canvas.height = Math.round(height * dpr)
       canvas.style.width = `${width}px`
       canvas.style.height = `${height}px`
+      propsRef.current.onResize?.(width, height)
       draw()
     }
 
+    const fitNow = () => fitTransform(engine.getState().network, width, height, currentView())
     const toNetwork = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect()
-      const fit = fitTransform(engine.getState().network, width, height)
+      const fit = fitNow()
       return { fit, point: fit.unmap({ x: e.clientX - rect.left, y: e.clientY - rect.top }) }
     }
 
-    let dragging: string | null = null
-    const onMove = (e: MouseEvent) => {
-      if (!dragging) return
-      engine.moveCamera(dragging, toNetwork(e).point)
-      draw()
-    }
-    const onUp = (e: MouseEvent) => {
-      onMove(e)
-      dragging = null
-      canvas.style.cursor = ''
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
     const nearestSegment = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
       const screen = fit.map(point)
       return engine
@@ -114,7 +116,7 @@ export function SimulationCanvas({
     }
 
     const pickSegment = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
-      const onSelect = overlayRef.current.onSelectSegment
+      const onSelect = propsRef.current.onSelectSegment
       const segment = nearestSegment(fit, point)
       if (onSelect && segment) {
         onSelect(segment.id)
@@ -122,27 +124,89 @@ export function SimulationCanvas({
       }
     }
 
-    const accident = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
-      const { onAccident: add, onRemoveBlockage: remove } = overlayRef.current
+    const incident = (mode: IncidentMode, fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
+      const { onIncident: add, onRemoveBlockage: remove } = propsRef.current
       const state = engine.getState()
       const screen = fit.map(point)
-      const hit = state.blockages.find((b) => {
-        const segment = state.segments.find((s) => s.id === b.segmentId)
-        if (!segment) return false
-        const c = fit.map(pointOnSegment(segment, b.distance))
-        return Math.hypot(c.x - screen.x, c.y - screen.y) <= BLOCKAGE_PICK_PX
-      })
-      if (hit) remove?.(hit.id)
-      else {
-        const segment = nearestSegment(fit, point)
-        if (segment) {
-          // where along the segment the click fell, metres
-          const [a, b] = segment.points
-          const t = ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) / (segment.length * segment.length)
-          add?.(segment.id, Math.min(1, Math.max(0, t)) * segment.length)
+      if (mode === 'semaforo') {
+        const corner = state.network.intersections
+          .map((i) => ({ i, d: Math.hypot(fit.map(i.position).x - screen.x, fit.map(i.position).y - screen.y) }))
+          .filter(({ d }) => d <= CORNER_PICK_PX)
+          .sort((a, b) => a.d - b.d)[0]
+        if (corner) add?.(mode, { intersectionId: corner.i.id })
+        draw()
+        return
+      }
+      if (mode === 'acidente') {
+        const hit = state.blockages.find((b) => {
+          const segment = state.segments.find((s) => s.id === b.segmentId)
+          if (!segment) return false
+          const c = fit.map(pointOnSegment(segment, b.distance))
+          return Math.hypot(c.x - screen.x, c.y - screen.y) <= BLOCKAGE_PICK_PX
+        })
+        if (hit) {
+          remove?.(hit.id)
+          draw()
+          return
         }
       }
+      const segment = nearestSegment(fit, point)
+      if (segment) {
+        // where along the segment the click fell, metres
+        const [a, b] = segment.points
+        const t = ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) / (segment.length * segment.length)
+        add?.(mode, { segmentId: segment.id, distance: Math.min(1, Math.max(0, t)) * segment.length })
+      }
       draw()
+    }
+
+    const click = (e: MouseEvent) => {
+      const { fit, point } = toNetwork(e)
+      const mode = propsRef.current.incidentMode
+      if (mode) incident(mode, fit, point)
+      else pickSegment(fit, point)
+    }
+
+    let dragging: string | null = null
+    const onMove = (e: MouseEvent) => {
+      if (!dragging) return
+      engine.moveCamera(dragging, toNetwork(e).point)
+      draw()
+    }
+    const onUp = (e: MouseEvent) => {
+      onMove(e)
+      dragging = null
+      canvas.style.cursor = ''
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    // Zoomed in: a press on the map either clicks (released in place) or drags the view.
+    let pan: { x: number; y: number; moved: boolean; start: MouseEvent } | null = null
+    const onPanMove = (e: MouseEvent) => {
+      if (!pan) return
+      const dx = e.clientX - pan.x
+      const dy = e.clientY - pan.y
+      if (!pan.moved && Math.hypot(dx, dy) < CLICK_SLOP_PX) return
+      pan.moved = true
+      const view = currentView()
+      if (!view || view.zoom <= 1) return
+      const d = fitNow().turnScreen({ x: dx, y: dy })
+      const next = clampView(engine.getState().network, { zoom: view.zoom, center: { x: view.center.x - d.x, y: view.center.y - d.y } })
+      pan.x = e.clientX
+      pan.y = e.clientY
+      panView = next
+      propsRef.current.onPan?.(next)
+      draw()
+    }
+    const onPanUp = (e: MouseEvent) => {
+      onPanMove(e)
+      if (pan && !pan.moved) click(pan.start)
+      pan = null
+      panView = null
+      canvas.style.cursor = ''
+      window.removeEventListener('mousemove', onPanMove)
+      window.removeEventListener('mouseup', onPanUp)
     }
 
     const onDown = (e: MouseEvent) => {
@@ -154,16 +218,23 @@ export function SimulationCanvas({
         .cameras.map((d) => ({ d, dist: Math.hypot(d.position.x - point.x, d.position.y - point.y) }))
         .filter(({ dist }) => dist <= grab)
         .sort((a, b) => a.dist - b.dist)[0]
-      if (!hit) {
-        if (overlayRef.current.accidentMode) accident(fit, point)
-        else pickSegment(fit, point)
+      if (hit) {
+        e.preventDefault()
+        dragging = hit.d.id
+        canvas.style.cursor = 'grabbing'
+        window.addEventListener('mousemove', onMove)
+        window.addEventListener('mouseup', onUp)
         return
       }
-      e.preventDefault()
-      dragging = hit.d.id
-      canvas.style.cursor = 'grabbing'
-      window.addEventListener('mousemove', onMove)
-      window.addEventListener('mouseup', onUp)
+      if ((currentView()?.zoom ?? 1) > 1) {
+        e.preventDefault()
+        pan = { x: e.clientX, y: e.clientY, moved: false, start: e }
+        canvas.style.cursor = 'grabbing'
+        window.addEventListener('mousemove', onPanMove)
+        window.addEventListener('mouseup', onPanUp)
+        return
+      }
+      click(e)
     }
 
     let frame = 0
@@ -173,14 +244,14 @@ export function SimulationCanvas({
     }
 
     const onHover = (e: MouseEvent) => {
-      const report = overlayRef.current.onHoverSegment
-      if (!report || dragging) return
+      const report = propsRef.current.onHoverSegment
+      if (!report || dragging || pan) return
       const { fit, point } = toNetwork(e)
       const segment = nearestSegment(fit, point)
       const rect = canvas.getBoundingClientRect()
       report(segment ? { segmentId: segment.id, x: e.clientX - rect.left, y: e.clientY - rect.top } : null)
     }
-    const onLeave = () => overlayRef.current.onHoverSegment?.(null)
+    const onLeave = () => propsRef.current.onHoverSegment?.(null)
 
     resize()
     window.addEventListener('resize', resize)
@@ -192,6 +263,8 @@ export function SimulationCanvas({
       window.removeEventListener('resize', resize)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('mousemove', onPanMove)
+      window.removeEventListener('mouseup', onPanUp)
       canvas.removeEventListener('mousedown', onDown)
       canvas.removeEventListener('mousemove', onHover)
       canvas.removeEventListener('mouseleave', onLeave)
@@ -201,7 +274,7 @@ export function SimulationCanvas({
 
   return (
     <div ref={wrapRef} className="sim-canvas">
-      <canvas ref={canvasRef} aria-label="Mapa da cidade: vias, semáforos e unidades câmera+radar" role="img" />
+      <canvas ref={canvasRef} aria-label="Mapa da cidade: vias coloridas pela densidade e semáforos" role="img" />
     </div>
   )
 }

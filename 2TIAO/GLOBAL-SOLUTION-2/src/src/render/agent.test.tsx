@@ -57,6 +57,7 @@ describe('render', () => {
         throw new LlmUnavailable('503')
       }
       render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={new FakeTransport(true)} llm={down} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
       const pagePanel = screen.getAllByRole('region', { name: 'Agente' }).at(-1)!
       expect(within(pagePanel).getByTestId('agent-mode')).toHaveTextContent('modo LLM')
       await act(async () => {

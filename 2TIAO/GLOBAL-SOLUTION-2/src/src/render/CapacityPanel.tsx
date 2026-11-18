@@ -1,4 +1,4 @@
-import type { Estimate, RouteStatus } from '../capacity/CapacityModel'
+import { SPEED_LIMIT_KMH, type Estimate, type RouteStatus } from '../capacity/CapacityModel'
 import type { FusedSegment } from '../fusion/FusionService'
 import type { CoverageEntry } from '../sensors/coverage'
 import { segmentName } from '../sensors/segments'
@@ -23,31 +23,82 @@ const orNone = (v: number | null | undefined, unit: string) => (v === null || v 
 /** The selected segment's metrics (AC 16) and its flow x density curve forming live. */
 export function CapacityPanel({ segmentId, estimate, status, fused, coverage = [] }: Props) {
   const estado = status ?? estimate?.estado ?? 'sem dados'
+  const known = estimate && estado !== 'sem dados'
+  // share of the learned capacity in use: flow over capacity
+  const ocupacao = known && estimate.capacidade ? Math.round((estimate.fluxo / estimate.capacidade) * 100) : null
+  const velocidade = fused?.velocidadeMedia ?? null
+  const pctLimite = velocidade === null ? null : Math.round((velocidade / SPEED_LIMIT_KMH) * 100)
   return (
-    <section className="capacity" aria-label="Métricas do trecho">
-      <h2>
-        <span data-testid="capacity-via">{segmentName(segmentId)}</span>
-      </h2>
-      <dl className="capacity-facts">
-        <dt>Estado</dt>
-        <dd data-testid="capacity-estado" className={`estado ${estado.replace(' ', '-')}`}>
+    <section className="capacity card" aria-label="Métricas do trecho">
+      <div className="card-head">
+        <div className="card-title">
+          <span className="eyebrow">Fluxo × densidade do trecho selecionado</span>
+          <h2 className="display">
+            <span data-testid="capacity-via">{segmentName(segmentId)}</span>
+          </h2>
+        </div>
+        <span data-testid="capacity-estado" className={`pill estado ${estado.replace(' ', '-')}`}>
           {estado === 'sem dados' ? SEM_DADO : estado}
-        </dd>
-        <dt>Unidade</dt>
-        <dd data-testid="capacity-unidade">{coveringUnit(coverage)}</dd>
-        <dt>Contagem (câmera)</dt>
-        <dd data-testid="capacity-contagem">{orNone(fused?.contagem, 'veíc')}</dd>
-        <dt>Velocidade (radar)</dt>
-        <dd data-testid="capacity-velocidade">{orNone(fused?.velocidadeMedia, 'km/h')}</dd>
-        <dt>Densidade</dt>
-        <dd data-testid="capacity-densidade">{orNone(fused?.densidade, 'veíc/km')}</dd>
-        <dt>Fluxo</dt>
-        <dd data-testid="capacity-fluxo">{estimate && estado !== 'sem dados' ? `${fmt(estimate.fluxo)} veíc/h` : SEM_DADO}</dd>
-        <dt>Capacidade</dt>
-        <dd data-testid="capacity-capacidade">{estimate?.capacidade == null ? 'aprendendo' : `${fmt(estimate.capacidade)} veíc/h`}</dd>
-        <dt>Folga</dt>
-        <dd data-testid="capacity-folga">{estimate?.folga == null ? 'aprendendo' : `${fmt(estimate.folga)} veíc/h`}</dd>
+        </span>
+      </div>
+
+      <div className="meter">
+        <div className="meter-label">
+          <span>Ocupação da capacidade (fluxo ÷ capacidade)</span>
+          <strong>{ocupacao === null ? (estimate?.capacidade == null ? 'aprendendo' : '—') : `${ocupacao}%`}</strong>
+        </div>
+        <div className="track">
+          <span className={`estado-bg ${estado.replace(' ', '-')}`} style={{ width: `${Math.min(100, ocupacao ?? 0)}%` }} />
+        </div>
+      </div>
+
+      <dl className="capacity-facts">
+        <div>
+          <dt>Fluxo</dt>
+          <dd data-testid="capacity-fluxo">{known ? `${fmt(estimate.fluxo)} veíc/h` : SEM_DADO}</dd>
+        </div>
+        <div>
+          <dt>Capacidade</dt>
+          <dd data-testid="capacity-capacidade">{estimate?.capacidade == null ? 'aprendendo' : `${fmt(estimate.capacidade)} veíc/h`}</dd>
+        </div>
+        <div>
+          <dt>Velocidade (radar)</dt>
+          <dd data-testid="capacity-velocidade" className={pctLimite === null ? undefined : `estado ${estado.replace(' ', '-')}`}>
+            {orNone(velocidade, 'km/h')}
+          </dd>
+          {pctLimite !== null && <small>{pctLimite}% do limite de {SPEED_LIMIT_KMH} km/h</small>}
+        </div>
+        <div>
+          <dt>Folga</dt>
+          <dd data-testid="capacity-folga">{estimate?.folga == null ? 'aprendendo' : `${fmt(estimate.folga)} veíc/h`}</dd>
+        </div>
+        <div>
+          <dt>Contagem (câmera)</dt>
+          <dd data-testid="capacity-contagem">{orNone(fused?.contagem, 'veíc')}</dd>
+        </div>
+        <div>
+          <dt>Densidade</dt>
+          <dd data-testid="capacity-densidade">{orNone(fused?.densidade, 'veíc/km')}</dd>
+        </div>
+        <div className="wide">
+          <dt>Unidade</dt>
+          <dd data-testid="capacity-unidade">{coveringUnit(coverage)}</dd>
+        </div>
       </dl>
+
+      <div className="chart-head">
+        <span>Fluxo × densidade</span>
+        <span className="chart-legend">
+          <span>
+            <i className="swatch dot" />
+            Leituras
+          </span>
+          <span>
+            <i className="swatch line" />
+            Curva ajustada
+          </span>
+        </span>
+      </div>
       <Chart samples={estimate?.amostras ?? []} vf={estimate?.vf ?? null} kj={estimate?.kj ?? null} capacidade={estimate?.capacidade ?? null} />
     </section>
   )
@@ -109,6 +160,10 @@ function Chart({
       ))}
       {curve && (
         <>
+          <line x1={PAD.left} x2={W - PAD.right} y1={y(capacidade)} y2={y(capacidade)} className="capacity-line" />
+          <text x={W - PAD.right} y={y(capacidade) - 4} textAnchor="end" className="tick">
+            capacidade {Math.round(capacidade)} veíc/h
+          </text>
           <path data-testid="fitted-curve" d={path} className="fit" />
           <circle
             data-testid="capacity-point"

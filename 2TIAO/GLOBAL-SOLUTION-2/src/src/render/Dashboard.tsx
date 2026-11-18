@@ -1,0 +1,588 @@
+import type { CSSProperties, ReactNode } from 'react'
+import { SPEED_LIMIT_KMH } from '../capacity/CapacityModel'
+import { INCIDENT_TITLES, type Incident } from '../decision/IncidentLog'
+import type { HistoryPoint } from '../decision/SegmentHistory'
+import { segmentName } from '../sensors/segments'
+import type { Point } from '../sim/types'
+import type { ConnectionStatus } from '../telemetry/transport'
+import { placeLabels } from './labels'
+import { labelLines, NIVEIS, perMin, type SegmentReading, type StreetRow } from './levels'
+
+export type Tab = 'mapa' | 'cameras' | 'semaforos' | 'relatorios'
+
+const TABS: readonly { id: Tab; label: string }[] = [
+  { id: 'mapa', label: 'Mapa ao vivo' },
+  { id: 'cameras', label: 'Câmeras' },
+  { id: 'semaforos', label: 'Semáforos' },
+  { id: 'relatorios', label: 'Relatórios' },
+]
+
+const pad = (n: number) => String(n).padStart(2, '0')
+
+/** Simulated time as hh:mm:ss (the run starts at 00:00:00). */
+function clock(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  return `${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`
+}
+
+/** Simulated time as hh:mm; negative times wrap to the previous day. */
+function hhmm(ms: number): string {
+  const day = 24 * 3_600_000
+  const m = Math.floor((((ms % day) + day) % day) / 60_000)
+  return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`
+}
+
+interface HeaderProps {
+  connection: ConnectionStatus
+  simTimeMs: number
+  pending: number
+  active: Tab
+  onNavigate: (tab: Tab) => void
+}
+
+export function DashboardHeader({ connection, simTimeMs, pending, active, onNavigate }: HeaderProps) {
+  const live = connection === 'connected'
+  return (
+    <header className="topbar">
+      <div className="brand">
+        <div className="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="7" y="2" width="10" height="20" rx="3" />
+            <circle cx="12" cy="7" r="1.6" />
+            <circle cx="12" cy="12" r="1.6" />
+            <circle cx="12" cy="17" r="1.6" />
+          </svg>
+        </div>
+        <div className="brand-text">
+          <h1>Centro de Operações de Tráfego</h1>
+          <span>Região Jardins · São Paulo</span>
+        </div>
+      </div>
+      <nav aria-label="Seções" className="tabs">
+        {TABS.map((t) => (
+          <a
+            key={t.id}
+            href={`#${t.id}`}
+            aria-current={active === t.id ? 'page' : undefined}
+            onClick={(e) => {
+              e.preventDefault()
+              onNavigate(t.id)
+            }}
+          >
+            {t.label}
+          </a>
+        ))}
+      </nav>
+      <div className="topbar-right">
+        <div className={`live ${live ? 'on' : 'off'}`} title={live ? 'Broker MQTT conectado' : 'Broker MQTT desconectado'}>
+          <span className="live-dot" />
+          <span className="live-label">{live ? 'AO VIVO' : 'OFFLINE'}</span>
+          <span className="live-clock" data-testid="sim-clock">
+            {clock(simTimeMs)}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label={pending > 0 ? `Notificações: ${pending} aguardando aprovação` : 'Notificações'}
+          onClick={() => onNavigate('semaforos')}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+          </svg>
+          {pending > 0 && <span className="badge" data-testid="bell-dot" />}
+        </button>
+      </div>
+    </header>
+  )
+}
+
+interface StatProps {
+  label: string
+  value: ReactNode
+  unit?: string
+  note?: ReactNode
+  /** Colour of the note. */
+  tone?: 'ok' | 'warn' | 'alert' | 'bad'
+  /** Paints the value red. */
+  alarm?: boolean
+  size?: 'md' | 'lg'
+  testId?: string
+}
+
+export function StatCard({ label, value, unit, note, tone, alarm, size = 'md', testId }: StatProps) {
+  return (
+    <div className={`stat ${size}`} data-testid={testId}>
+      <span className="stat-label">{label}</span>
+      <span className={`stat-value ${alarm ? 'tone-bad' : ''}`}>
+        {value}
+        {unit && <span className="stat-unit"> {unit}</span>}
+      </span>
+      {note && <span className={`stat-note ${tone ? `tone-${tone}` : ''}`}>{note}</span>}
+    </div>
+  )
+}
+
+/** Below the map: the density levels and the unit icons. */
+export function MapLegend() {
+  return (
+    <div className="map-foot">
+      <div className="legend" aria-label="Legenda da densidade">
+        <span className="muted">Densidade (fluxo ÷ capacidade)</span>
+        {(['livre', 'moderado', 'intenso', 'critico', 'aprendendo', 'sem dado'] as const).map((k) => (
+          <span key={k} className="legend-item">
+            <span className={`legend-swatch ${k === 'sem dado' ? 'dashed' : ''}`} style={{ color: NIVEIS[k].color, background: k === 'sem dado' ? undefined : NIVEIS[k].color }} />
+            {NIVEIS[k].label}
+            {NIVEIS[k].range && <span className="faint">{NIVEIS[k].range}</span>}
+          </span>
+        ))}
+      </div>
+      <div className="legend">
+        <span className="legend-item">
+          <span className="legend-cam on" />
+          Câmera online
+        </span>
+        <span className="legend-item">
+          <span className="legend-cam off" />
+          Offline
+        </span>
+      </div>
+    </div>
+  )
+}
+
+export interface MapUnit {
+  id: string
+  position: Point
+  online: boolean
+  /** Nearest corner's name. */
+  at: string
+}
+
+/** An incident placed on the map. */
+export interface MapIncident {
+  incident: Incident
+  position: Point
+  place: string
+  detail: string
+}
+
+interface OverlayProps {
+  /** Map metres -> canvas px, the canvas's own transform. */
+  map: (p: Point) => Point
+  /** The same at 1×, where the street labels are laid out. */
+  base: { map: (p: Point) => Point; unmap: (p: Point) => Point }
+  width: number
+  height: number
+  corners: Record<string, Point>
+  streets: readonly StreetRow[]
+  selected: string
+  onSelect: (segmentId: string) => void
+  units: readonly MapUnit[]
+  incidents: readonly MapIncident[]
+  nowMs: number
+  showUnits: boolean
+  showIncidents: boolean
+}
+
+/** Each incident type's colour on the map and in the panel, as in the prototype; the pill still says its level. */
+const KIND_COLOR: Record<Incident['kind'], string> = {
+  colisao: NIVEIS.critico.color,
+  obra: NIVEIS.intenso.color,
+  semaforo: NIVEIS.moderado.color,
+  congestionamento: NIVEIS.intenso.color,
+}
+
+const ago = (ms: number) => `há ${Math.max(0, Math.floor(ms / 60_000))} min`
+
+/** What sits on top of the canvas: a label per street, the unit icons and the incident markers with their notes. */
+export function MapOverlay({ map, base, width, height, corners, streets, selected, onSelect, units, incidents, nowMs, showUnits, showIncidents }: OverlayProps) {
+  const place = (p: Point): CSSProperties => {
+    const q = map(p)
+    return { left: q.x, top: q.y }
+  }
+  const spots = placeLabels(
+    streets.map((s) => s.rua),
+    corners,
+    base,
+    width,
+    height,
+  )
+  return (
+    <div className="map-overlay">
+      {streets.map(({ rua, worst }) => {
+        const at = map(spots[rua])
+        const l = labelLines(worst)
+        const color = NIVEIS[worst.nivel].color
+        const on = worst.id === selected
+        return (
+          <button
+            key={rua}
+            type="button"
+            className={`street-label ${on ? 'on' : ''}`}
+            data-testid={`street-${rua}`}
+            aria-pressed={on}
+            style={{ left: at.x, top: at.y }}
+            onClick={() => onSelect(worst.id)}
+          >
+            <span className="street-name">
+              <i className="dot" data-testid="street-dot" style={{ background: color }} />
+              {rua}
+            </span>
+            <span className="street-flow">
+              <strong data-testid="street-atual" style={{ color }}>
+                {l.atual}
+              </strong>{' '}
+              / {l.suporta}
+            </span>
+            <span className="street-speed">
+              Pista {SPEED_LIMIT_KMH} · Média {l.media} km/h
+            </span>
+          </button>
+        )
+      })}
+      {showUnits &&
+        units.map((u) => {
+          const name = `${u.id} · ${u.at} · ${u.online ? 'online' : 'offline'}`
+          return (
+            <span key={u.id} role="img" aria-label={name} title={name} className={`unit-icon ${u.online ? 'on' : 'off'}`} style={place(u.position)}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M16 10l5-3v10l-5-3" />
+                <rect x="2" y="6" width="14" height="12" rx="2" />
+              </svg>
+            </span>
+          )
+        })}
+      {showIncidents &&
+        incidents.map(({ incident, position, place: where, detail }) => {
+          const q = map(position)
+          const color = KIND_COLOR[incident.kind]
+          const left = q.x + 240 + 18 > width ? q.x - 240 - 18 : q.x + 18
+          const top = Math.min(Math.max(8, q.y - 70), Math.max(8, height - 100))
+          return (
+            <div key={incident.key} className="incident-on-map" style={{ ['--sev' as string]: color }}>
+              <span className="incident-marker" data-testid={`marker-${incident.key}`} style={{ left: q.x, top: q.y }} role="img" aria-label={INCIDENT_TITLES[incident.kind]}>
+                !
+              </span>
+              <div role="note" className="incident-note" style={{ left, top }}>
+                <div className="note-head">
+                  <span className="note-title">{INCIDENT_TITLES[incident.kind]}</span>
+                  <span className="note-ago">{ago(nowMs - incident.startMs)}</span>
+                </div>
+                <span className="note-place">{where}</span>
+                <span className="note-detail">{detail}</span>
+              </div>
+            </div>
+          )
+        })}
+    </div>
+  )
+}
+
+interface IncidentsProps {
+  incidents: readonly MapIncident[]
+  nowMs: number
+  /** The unit covering the incident, or null. */
+  unitFor: (incident: Incident) => string | null
+  onSelect: (incident: Incident) => void
+  onEnd: (incident: Incident) => void
+  onCamera: (unitId: string) => void
+  onHistory: () => void
+}
+
+/** What needs the operator now, critical first then the newest. */
+export function IncidentsPanel({ incidents, nowMs, unitFor, onSelect, onEnd, onCamera, onHistory }: IncidentsProps) {
+  return (
+    <section className="incidents card" aria-label="Incidentes">
+      <div className="card-head">
+        <h2>Incidentes</h2>
+        <a
+          href="#historico"
+          className="link"
+          onClick={(e) => {
+            e.preventDefault()
+            onHistory()
+          }}
+        >
+          Ver histórico
+        </a>
+      </div>
+      {incidents.length === 0 && <p className="empty">Nenhum incidente ativo.</p>}
+      {incidents.map(({ incident: i, place, detail }) => {
+        const unit = unitFor(i)
+        return (
+          <article key={i.key} className="incident" data-testid={`incident-${i.key}`} style={{ ['--sev' as string]: KIND_COLOR[i.kind] }}>
+            <div className="incident-head">
+              <span className="incident-title">
+                <i className="dot" />
+                {INCIDENT_TITLES[i.kind]}
+              </span>
+              <span className="pill sev">{NIVEIS[i.nivel].label}</span>
+            </div>
+            <span className="incident-place">
+              {place} · {ago(nowMs - i.startMs)}
+            </span>
+            <span className="incident-detail">{detail}</span>
+            <div className="incident-actions">
+              <button type="button" className="btn sm" onClick={() => onSelect(i)}>
+                Ver trecho
+              </button>
+              {(i.kind === 'colisao' || i.kind === 'obra') && (
+                <button type="button" className="btn sm" onClick={() => onEnd(i)}>
+                  Liberar via
+                </button>
+              )}
+              {i.kind === 'semaforo' && (
+                <button type="button" className="btn sm" onClick={() => onEnd(i)}>
+                  Normalizar semáforo
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn sm"
+                disabled={unit === null}
+                title={unit === null ? 'Nenhuma câmera cobre este local' : `${unit} cobre este local`}
+                onClick={() => unit && onCamera(unit)}
+              >
+                Ver câmera
+              </button>
+            </div>
+          </article>
+        )
+      })}
+    </section>
+  )
+}
+
+/** Ended incidents, newest first (Relatórios). */
+export function IncidentHistory({ incidents, placeOf }: { incidents: readonly Incident[]; placeOf: (i: Incident) => string }) {
+  const minutes = (ms: number) => {
+    const s = Math.round(ms / 1000)
+    return s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`
+  }
+  return (
+    <section id="historico" className="card history" aria-label="Histórico de incidentes">
+      <div className="card-head">
+        <h2>Histórico de incidentes</h2>
+        <span className="muted">{incidents.length ? `${incidents.length} encerrados` : 'nenhum encerrado'}</span>
+      </div>
+      {incidents.length === 0 ? (
+        <p className="empty">Nenhum incidente encerrado ainda.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Local</th>
+              <th>Início</th>
+              <th>Duração</th>
+            </tr>
+          </thead>
+          <tbody>
+            {incidents.map((i) => (
+              <tr key={`${i.key}:${i.startMs}`} data-testid="history-row">
+                <td>{INCIDENT_TITLES[i.kind]}</td>
+                <td>{placeOf(i)}</td>
+                <td>{clock(i.startMs)}</td>
+                <td>{minutes((i.endMs ?? i.startMs) - i.startMs)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  )
+}
+
+/** "Vias mais saturadas": the 8 streets by their worst segment. */
+export function StreetRanking({ rows, selected, onSelect }: { rows: readonly StreetRow[]; selected: string; onSelect: (segmentId: string) => void }) {
+  return (
+    <section className="ranking card" aria-label="Vias mais saturadas">
+      <div className="card-head">
+        <h2>Vias mais saturadas</h2>
+        <span className="muted">fluxo ÷ capacidade</span>
+      </div>
+      {rows.map(({ rua, worst }) => (
+        <button
+          key={rua}
+          type="button"
+          className={`rank-row ${worst.id === selected ? 'on' : ''}`}
+          data-testid={`rank-${rua}`}
+          aria-pressed={worst.id === selected}
+          onClick={() => onSelect(worst.id)}
+        >
+          <span className="rank-name">{rua}</span>
+          <span className="track" aria-hidden="true">
+            <span style={{ width: `${Math.min(100, worst.pct ?? 0)}%`, background: NIVEIS[worst.nivel].color }} />
+          </span>
+          <span className="rank-pct">{worst.pct === null ? '—' : `${worst.pct}%`}</span>
+        </button>
+      ))}
+    </section>
+  )
+}
+
+const W = 360
+const FLOW_H = 150
+const SPEED_H = 80
+const WINDOW_MS = 2 * 3_600_000
+
+interface SelectedProps {
+  reading: SegmentReading
+  history: readonly HistoryPoint[]
+  nowMs: number
+  onCameras: () => void
+  onSignals: () => void
+}
+
+/** The selected segment: level, occupancy, four figures and its last 2 h (AC 35-40). */
+export function SelectedRoad({ reading: r, history, nowMs, onCameras, onSignals }: SelectedProps) {
+  const lv = NIVEIS[r.nivel]
+  const speedPct = r.velocidade === null ? null : Math.round((r.velocidade / SPEED_LIMIT_KMH) * 100)
+  const speedColor = speedPct === null ? undefined : speedPct < 40 ? NIVEIS.critico.color : speedPct < 70 ? NIVEIS.moderado.color : NIVEIS.livre.color
+  const from = nowMs - WINDOW_MS
+  const x = (t: number) => ((t - from) / WINDOW_MS) * W
+  const shown = history.filter((p) => p.t >= from)
+  const flows = shown.filter((p) => p.fluxo !== null)
+  const speeds = shown.filter((p) => p.velocidade !== null)
+  const cap = r.capacidade === null ? null : perMin(r.capacidade)
+  const maxY = Math.max(1, cap ?? 0, ...flows.map((p) => perMin(p.fluxo!))) * 1.2
+  const fy = (v: number) => FLOW_H - (v / maxY) * FLOW_H
+  const flowLine = flows.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${fy(perMin(p.fluxo!)).toFixed(1)}`).join(' ')
+  const sMax = SPEED_LIMIT_KMH * 1.15
+  const sy = (v: number) => SPEED_H - (Math.min(v, sMax) / sMax) * SPEED_H
+  const speedLine = speeds.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t).toFixed(1)},${sy(p.velocidade!).toFixed(1)}`).join(' ')
+  const lastFlow = flows.at(-1)
+  const lastSpeed = speeds.at(-1)
+  const empty = <p className="empty">Sem histórico ainda.</p>
+  return (
+    <section className="selected card" aria-label="Via selecionada">
+      <div className="card-head top">
+        <div className="card-title">
+          <span className="eyebrow">Via selecionada</span>
+          <h2 className="display" data-testid="selected-name">
+            {segmentName(r.id)}
+          </h2>
+        </div>
+        <span className="pill" data-testid="selected-level" style={{ color: lv.color, background: lv.bg }}>
+          {lv.label}
+        </span>
+      </div>
+
+      <div className="meter">
+        <div className="meter-label">
+          <span>Ocupação da capacidade</span>
+          <strong data-testid="selected-pct">{r.pct === null ? (r.nivel === 'aprendendo' ? 'aprendendo' : '—') : `${r.pct}%`}</strong>
+        </div>
+        <div className="track big">
+          <span data-testid="selected-bar" style={{ width: `${Math.min(100, r.pct ?? 0)}%`, background: lv.color }} />
+        </div>
+      </div>
+
+      <dl className="facts">
+        <div>
+          <dt>Fluxo atual</dt>
+          <dd data-testid="selected-fluxo">
+            {r.fluxo === null ? '—' : perMin(r.fluxo)} <small>carros/min</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Capacidade</dt>
+          <dd data-testid="selected-capacidade">{cap === null ? 'aprendendo' : <>{cap} <small>carros/min</small></>}</dd>
+        </div>
+        <div>
+          <dt>Velocidade da pista</dt>
+          <dd data-testid="selected-pista">
+            {SPEED_LIMIT_KMH} <small>km/h</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Velocidade média</dt>
+          <dd data-testid="selected-media" style={{ color: speedColor }}>
+            {r.velocidade === null ? '—' : Math.round(r.velocidade)} <small>km/h{speedPct !== null && ` · ${speedPct}% do limite`}</small>
+          </dd>
+        </div>
+      </dl>
+
+      <div className="chart">
+        <div className="chart-head">
+          <span>Fluxo × capacidade · últimas 2 h</span>
+          <span className="chart-legend">
+            <span>
+              <i className="swatch line accent" />
+              Fluxo
+            </span>
+            <span>
+              <i className="swatch dashed" />
+              Capacidade
+            </span>
+          </span>
+        </div>
+        {flows.length === 0 ? (
+          empty
+        ) : (
+          <>
+            <svg viewBox={`0 0 ${W} ${FLOW_H}`} className="series" role="img" aria-label={`Fluxo de ${segmentName(r.id)} nas últimas 2 h`}>
+              <line x1="0" y1={FLOW_H} x2={W} y2={FLOW_H} className="axis" />
+              <line x1="0" y1={FLOW_H / 2} x2={W} y2={FLOW_H / 2} className="grid" />
+              <path d={`${flowLine} L${x(lastFlow!.t).toFixed(1)},${FLOW_H} L${x(flows[0].t).toFixed(1)},${FLOW_H} Z`} className="flow-area" />
+              <path d={flowLine} className="flow-line" data-testid="flow-line" />
+              {cap !== null && (
+                <>
+                  <line x1="0" y1={fy(cap)} x2={W} y2={fy(cap)} className="limit" data-testid="capacity-line" />
+                  <text x="4" y={fy(cap) - 6} className="tick">
+                    {cap}/min
+                  </text>
+                </>
+              )}
+              <circle cx={x(lastFlow!.t)} cy={fy(perMin(lastFlow!.fluxo!))} r="4" className="flow-dot" />
+            </svg>
+            <div className="time-marks" data-testid="time-marks">
+              <span>{hhmm(nowMs - WINDOW_MS)}</span>
+              <span>{hhmm(nowMs - 80 * 60_000)}</span>
+              <span>{hhmm(nowMs - 40 * 60_000)}</span>
+              <span>agora</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="chart">
+        <div className="chart-head">
+          <span>Velocidade média × limite da pista</span>
+          <span className="chart-legend">
+            <span>
+              <i className="swatch line yellow" />
+              Média
+            </span>
+            <span>
+              <i className="swatch dashed" />
+              Limite
+            </span>
+          </span>
+        </div>
+        {speeds.length === 0 ? (
+          empty
+        ) : (
+          <svg viewBox={`0 0 ${W} ${SPEED_H}`} className="series" role="img" aria-label={`Velocidade média de ${segmentName(r.id)}, limite de ${SPEED_LIMIT_KMH} km/h`}>
+            <line x1="0" y1={SPEED_H} x2={W} y2={SPEED_H} className="axis" />
+            <line x1="0" y1={sy(SPEED_LIMIT_KMH)} x2={W} y2={sy(SPEED_LIMIT_KMH)} className="limit" data-testid="limit-line" data-kmh={SPEED_LIMIT_KMH} />
+            <path d={speedLine} className="speed-line" data-testid="speed-line" />
+            <circle cx={x(lastSpeed!.t)} cy={sy(lastSpeed!.velocidade!)} r="4" className="speed-dot" />
+          </svg>
+        )}
+      </div>
+
+      <div className="card-actions">
+        <button type="button" className="btn primary" onClick={onCameras}>
+          Ver câmeras da via
+        </button>
+        <button type="button" className="btn" onClick={onSignals}>
+          Ajustar semáforos
+        </button>
+      </div>
+    </section>
+  )
+}
+

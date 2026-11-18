@@ -1,6 +1,7 @@
 import type { Axis } from './types'
 
-export type Phase = 'verde' | 'amarelo' | 'vermelho'
+/** 'piscante': flashing yellow, the corner is out of its cycle (AD-056). */
+export type Phase = 'verde' | 'amarelo' | 'vermelho' | 'piscante'
 
 /** One intersection's light: the phase of the alameda approaches (H) and of the rua approaches (V). */
 export interface LightState {

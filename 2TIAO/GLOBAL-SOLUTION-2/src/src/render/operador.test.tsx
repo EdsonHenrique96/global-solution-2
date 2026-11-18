@@ -8,7 +8,7 @@ import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { lightAt } from '../sim/trafficLight'
 import type { Point } from '../sim/types'
 import { FakeTransport } from '../telemetry/testing'
-import { coverageBand, fitTransform } from './draw'
+import { fitTransform } from './draw'
 import { MetricsPanel } from './MetricsPanel'
 
 interface Call {
@@ -50,76 +50,19 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function redraw(): Call[] {
-  calls.length = 0
-  act(() => {
-    window.dispatchEvent(new Event('resize'))
-  })
-  const start = calls.map((c) => c.op).lastIndexOf('clearRect')
-  return start === -1 ? [] : calls.slice(start)
-}
-const near = (a: number, b: number) => Math.abs(a - b) < 0.5
 const screenOf = (engine: SimulationEngine, p: Point) => fitTransform(engine.getState().network, 1000, 600).map(p)
-/** The last stroke drawn exactly along a segment's lane. */
-function lane(engine: SimulationEngine, frame: Call[], id: string) {
-  const [a, b] = engine.segment(id)!.points.map((p) => screenOf(engine, p))
-  let cur: [number, number][] = []
-  let found: { style: unknown; dashed: boolean } | undefined
-  for (const { op, args, strokeStyle, dash } of frame) {
-    if (op === 'beginPath') cur = []
-    else if (op === 'moveTo' || op === 'lineTo') cur.push([args[0] as number, args[1] as number])
-    else if (op === 'stroke' && cur.length === 2 && near(cur[0][0], a.x) && near(cur[0][1], a.y) && near(cur[1][0], b.x) && near(cur[1][1], b.y)) {
-      found = { style: strokeStyle, dashed: Array.isArray(dash) && dash.length > 0 }
-    }
-  }
-  return found!
-}
-const cones = (frame: Call[]) => frame.filter((c) => c.op === 'closePath').length
 const press = (canvas: HTMLCanvasElement, from: Point, to: Point = from) => {
   fireEvent.mouseDown(canvas, { clientX: from.x, clientY: from.y, button: 0 })
   fireEvent.mouseMove(window, { clientX: to.x, clientY: to.y })
   fireEvent.mouseUp(window, { clientX: to.x, clientY: to.y })
 }
 
-const BAND_COLORS = { 'sem cobertura': '#ef4444', baixa: '#f97316', parcial: '#facc15', total: '#22c55e' }
-
 describe('render', () => {
-  describe('coverage layer', () => {
-    it('paints each segment by its best coverage band and switches back to state', () => {
-      const engine = new SimulationEngine({ ratePerMinute: 0 })
-      render(<App engine={engine} transport={new FakeTransport(true)} />)
-      expect(screen.getByRole('button', { name: 'Estado' })).toHaveAttribute('aria-pressed', 'true')
-      expect(screen.getByRole('button', { name: 'Cobertura' })).toHaveAttribute('aria-pressed', 'false')
-      const best = (id: string) => Math.max(0, ...engine.coverage.entries(id).map((e) => e.cobertura))
-      fireEvent.click(screen.getByRole('button', { name: 'Cobertura' }))
-      const frame = redraw()
-      const bands = new Set<string>()
-      for (const s of engine.getState().segments) {
-        const band = coverageBand(best(s.id))
-        bands.add(band)
-        const l = lane(engine, frame, s.id)
-        expect(l.style, s.id).toBe(BAND_COLORS[band])
-        expect(l.dashed, s.id).toBe(band === 'sem cobertura')
-      }
-      // the default units leave some segments full, some uncovered and some in between
-      expect(bands.has('total') && bands.has('sem cobertura')).toBe(true)
-      fireEvent.click(screen.getByRole('button', { name: 'Estado' }))
-      const back = redraw()
-      for (const s of engine.getState().segments) expect(lane(engine, back, s.id).style).toBe('#94a3b8')
-    })
-
-    it('draws the unit cones and beams in both layers', () => {
-      render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={new FakeTransport(true)} />)
-      expect(cones(redraw())).toBe(24)
-      fireEvent.click(screen.getByRole('button', { name: 'Cobertura' }))
-      expect(cones(redraw())).toBe(24)
-    })
-  })
-
   describe('units', () => {
     it('adds the next unit at the centre and removes a unit with its coverage', () => {
       const engine = new SimulationEngine({ ratePerMinute: 0 })
       render(<App engine={engine} transport={new FakeTransport(true)} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
       const panel = screen.getByRole('region', { name: 'Unidades câmera+radar' })
       fireEvent.click(within(panel).getByRole('button', { name: 'Adicionar unidade' }))
       const { minX, minY, maxX, maxY } = engine.getState().network.bounds
@@ -131,7 +74,6 @@ describe('render', () => {
         range: 130,
       })
       expect(within(panel).getByTestId('camera-U13')).toBeInTheDocument()
-      expect(cones(redraw())).toBe(26)
 
       fireEvent.click(within(within(panel).getByTestId('camera-U02')).getByRole('button', { name: 'Remover' }))
       expect(engine.getState().cameras.map((c) => c.id)).not.toContain('U02')
@@ -148,8 +90,8 @@ describe('render', () => {
       const engine = new SimulationEngine({ ratePerMinute: 0 })
       render(<App engine={engine} transport={new FakeTransport(true)} />)
       const canvas = document.querySelector('canvas')!
-      const panel = screen.getByRole('region', { name: 'Métricas do trecho' })
-      expect(within(panel).getByTestId('capacity-via')).toHaveTextContent(segmentName('I12>I13'))
+      const panel = screen.getByRole('region', { name: 'Via selecionada' })
+      expect(within(panel).getByTestId('selected-name')).toHaveTextContent(segmentName('I12>I13'))
       const u1 = engine.getState().cameras.find((c) => c.id === 'U01')!.position
       const target = pointOnSegment(engine.segment('I22>I23')!, 60)
       const rebuilds = engine.coverage.rebuilds
@@ -158,30 +100,39 @@ describe('render', () => {
       expect(moved.x).toBeCloseTo(target.x, 0)
       expect(moved.y).toBeCloseTo(target.y, 0)
       expect(engine.coverage.rebuilds).toBeGreaterThan(rebuilds)
-      expect(within(panel).getByTestId('capacity-via')).toHaveTextContent(segmentName('I12>I13'))
+      expect(within(panel).getByTestId('selected-name')).toHaveTextContent(segmentName('I12>I13'))
       // dropped outside the map, it stays on the nearest edge
       press(canvas, screenOf(engine, moved), { x: 2000, y: -500 })
-      const { maxX, minY } = engine.getState().network.bounds
-      expect(engine.getState().cameras.find((c) => c.id === 'U01')!.position).toEqual({ x: maxX, y: minY })
+      const { minX, minY, maxX, maxY } = engine.getState().network.bounds
+      const outside = fitTransform(engine.getState().network, 1000, 600).unmap({ x: 2000, y: -500 })
+      expect(outside.x > maxX || outside.x < minX || outside.y > maxY || outside.y < minY).toBe(true)
+      expect(engine.getState().cameras.find((c) => c.id === 'U01')!.position).toEqual({
+        x: Math.min(maxX, Math.max(minX, outside.x)),
+        y: Math.min(maxY, Math.max(minY, outside.y)),
+      })
     })
   })
 
   describe('accident', () => {
     it('clicking the marker in accident mode removes the blockage', () => {
+      vi.useFakeTimers()
       const engine = new SimulationEngine({ ratePerMinute: 0 })
       render(<App engine={engine} transport={new FakeTransport(true)} />)
       const canvas = document.querySelector('canvas')!
-      engine.addBlockage('I23>I24', 60)
+      const b = engine.addBlockage('I23>I24', 60)
+      act(() => {
+        vi.advanceTimersByTime(TICK_MS)
+      })
       const p = screenOf(engine, pointOnSegment(engine.segment('I23>I24')!, 60))
-      const marker = () => redraw().find((c) => c.op === 'fillRect' && c.fillStyle === '#dc2626')
-      expect(marker()).toBeDefined()
+      const marker = () => screen.queryByTestId(`marker-colisao:${b.id}`)
+      expect(marker()).not.toBeNull()
       // outside accident mode the click does not remove it
       press(canvas, p)
       expect(engine.getState().blockages).toHaveLength(1)
       fireEvent.click(screen.getByRole('button', { name: 'Acidente' }))
       press(canvas, p)
       expect(engine.getState().blockages).toHaveLength(0)
-      expect(marker()).toBeUndefined()
+      expect(marker()).toBeNull()
     })
   })
 
@@ -191,6 +142,7 @@ describe('render', () => {
       const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
       const transport = new FakeTransport(true)
       render(<App engine={engine} transport={transport} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
       const toggle = screen.getByRole('button', { name: /desvio parcial/i })
       expect(toggle).toHaveAttribute('aria-pressed', 'true')
       fireEvent.click(toggle)
@@ -211,6 +163,7 @@ describe('render', () => {
       vi.useFakeTimers()
       const engine = new SimulationEngine({ ratePerMinute: 0 })
       render(<App engine={engine} transport={new FakeTransport(true)} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
       const toggle = screen.getByRole('button', { name: /controle de semáforos/i })
       expect(toggle).toHaveAttribute('aria-pressed', 'false')
       const fixed = () => {
@@ -305,6 +258,7 @@ describe('render', () => {
       vi.useFakeTimers()
       const transport = new FakeTransport(true)
       render(<App engine={new SimulationEngine({ ratePerMinute: 0, cameras: [] })} transport={transport} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Relatórios' }))
       const panel = screen.getByRole('region', { name: 'Métricas do trecho' })
       let ts = 0
       const send = (k: number) =>
@@ -341,14 +295,14 @@ describe('render', () => {
     it('titles the page for the traffic control centre and never says drone', () => {
       vi.useFakeTimers()
       render(<App engine={new SimulationEngine({ ratePerMinute: 30 })} transport={new FakeTransport(true)} />)
-      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Central de trânsito — Jardins')
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Centro de Operações de Tráfego')
       act(() => {
         vi.advanceTimersByTime(30_000)
       })
       expect(document.body.textContent).not.toMatch(/drone/i)
       for (const el of document.querySelectorAll('[aria-label]')) expect(el.getAttribute('aria-label')).not.toMatch(/drone/i)
       const html = readFileSync(`${process.cwd()}/index.html`, 'utf8')
-      expect(html).toMatch(/<title>Central de trânsito — gestão de tráfego<\/title>/)
+      expect(html).toMatch(/<title>Centro de Operações de Tráfego — Jardins<\/title>/)
       expect(html).not.toMatch(/drone/i)
       const pkg = JSON.parse(readFileSync(`${process.cwd()}/package.json`, 'utf8'))
       expect(pkg.name).toBe('transito-inteligente')

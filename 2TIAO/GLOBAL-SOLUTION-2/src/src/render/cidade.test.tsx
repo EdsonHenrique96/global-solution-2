@@ -8,8 +8,7 @@ import { pointOnSegment, segmentName } from '../sensors/segments'
 import { SimulationEngine } from '../sim/SimulationEngine'
 import type { Point } from '../sim/types'
 import { FakeTransport } from '../telemetry/testing'
-import { fitTransform, segmentStyle } from './draw'
-import { RoadTable } from './RoadTable'
+import { fitTransform, laneStyle } from './draw'
 import { fusedStatus, sortRoads } from './roads'
 import { coveringUnit, segmentTooltip } from './tooltip'
 
@@ -92,7 +91,7 @@ function laneStrokes(engine: SimulationEngine, frame: Call[], id: string) {
 const STREETS = ['Al. Santos', 'Al. Jaú', 'Al. Itu', 'Al. Franca', 'R. da Consolação', 'R. Bela Cintra', 'R. Haddock Lobo', 'R. Augusta']
 
 describe('render cidade', () => {
-  it('accident mode click on a segment adds a blockage drawn on the map', () => {
+  it('accident mode click on a segment adds a blockage marked on the map', () => {
     const engine = new SimulationEngine({ ratePerMinute: 0 })
     render(<App engine={engine} transport={new FakeTransport(true)} />)
     const canvas = document.querySelector('canvas')!
@@ -104,18 +103,15 @@ describe('render cidade', () => {
     expect(engine.getState().blockages).toHaveLength(1)
     expect(b.segmentId).toBe('I12>I13')
     expect(Math.abs(b.distance - 70)).toBeLessThan(2)
-    const marker = onLane(engine, 'I12>I13', b.distance)
-    const frame = redraw()
-    const square = frame.find((c) => c.op === 'fillRect' && c.fillStyle === '#dc2626')!
-    expect(square).toBeDefined()
-    const [x, y, w, h] = square.args as number[]
-    expect(near(x + w / 2, marker.x) && near(y + h / 2, marker.y)).toBe(true)
-    expect(frame.some((c) => c.op === 'fillText' && c.args[0] === '✕')).toBe(true)
+    const at = onLane(engine, 'I12>I13', b.distance)
+    const marker = screen.getByTestId(`marker-colisao:${b.id}`)
+    expect(near(parseFloat(marker.style.left), at.x) && near(parseFloat(marker.style.top), at.y)).toBe(true)
   })
 
   it('changing a unit heading in the panel recomputes coverage', () => {
     const engine = new SimulationEngine({ ratePerMinute: 0 })
     render(<App engine={engine} transport={new FakeTransport(true)} />)
+    fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
     const covers = (id: string) => engine.coverage.entries(id).some((e) => e.sensorId === 'U01' && e.cobertura >= COVERAGE_MIN)
     expect(covers('I11>I12')).toBe(true)
     const net = engine.getState().network.intersections
@@ -128,7 +124,7 @@ describe('render cidade', () => {
     expect(within(screen.getByTestId('camera-U01')).getByLabelText(/Direção/)).toHaveValue(toJau)
   })
 
-  it('draws only roads street names lights units and blockages', { timeout: 60_000 }, () => {
+  it('draws only roads lights street labels unit icons and incidents', { timeout: 60_000 }, () => {
     vi.useFakeTimers()
     const engine = new SimulationEngine({ ratePerMinute: 120, noisePct: 0 })
     render(<App engine={engine} transport={new FakeTransport(true)} />)
@@ -139,26 +135,28 @@ describe('render cidade', () => {
     const frame = redraw()
     // every lane of every segment, each direction its own line
     for (const s of engine.getState().segments) expect(laneStrokes(engine, frame, s.id).length, s.id).toBeGreaterThanOrEqual(1)
-    const texts = frame.filter((c) => c.op === 'fillText').map((c) => String(c.args[0]))
-    for (const name of STREETS) expect(texts).toContain(name)
-    for (const u of engine.getState().cameras) expect(texts).toContain(u.id)
-    expect(texts.some((t) => /origem|destino/i.test(t))).toBe(false)
+    // street labels and unit icons sit on top of the canvas (AD-048, AD-062)
+    for (const name of STREETS) expect(screen.getByTestId(`street-${name}`)).toHaveTextContent(name)
+    for (const u of engine.getState().cameras) expect(screen.getByRole('img', { name: new RegExp(`^${u.id} · `) })).toBeInTheDocument()
+    expect(frame.filter((c) => c.op === 'fillText')).toHaveLength(0)
+    expect(document.querySelector('.map-overlay')!.textContent).not.toMatch(/origem|destino/i)
     // lights: one dot per phase at each of the 16 corners
     expect(frame.filter((c) => c.op === 'arc')).toHaveLength(32)
-    // units: a camera cone and a radar beam each
-    expect(frame.filter((c) => c.op === 'closePath')).toHaveLength(2 * 12)
-    // filled squares: the background and the 12 unit bodies; no car, no blockage yet
-    expect(frame.filter((c) => c.op === 'fillRect')).toHaveLength(1 + 12)
+    // no camera cone nor radar beam (AD-062)
+    expect(frame.filter((c) => c.op === 'closePath')).toHaveLength(0)
+    // filled squares: only the background; no car
+    expect(frame.filter((c) => c.op === 'fillRect')).toHaveLength(1)
     // no background map
     expect(frame.some((c) => c.op === 'drawImage')).toBe(false)
   })
 
-  it('colours each segment by its fused state', () => {
-    expect(segmentStyle('fluindo')).toEqual({ color: '#22c55e', dash: [] })
-    expect(segmentStyle('carregado')).toEqual({ color: '#facc15', dash: [] })
-    expect(segmentStyle('congestionado')).toEqual({ color: '#ef4444', dash: [] })
-    expect(segmentStyle('sem dados').color).toBe('#94a3b8')
-    expect(segmentStyle('sem dados').dash.length).toBeGreaterThan(0)
+  it('colours each segment by its density level', () => {
+    expect(laneStyle('livre')).toEqual({ color: '#3DBE7A', dash: [] })
+    expect(laneStyle('moderado')).toEqual({ color: '#F5D04E', dash: [] })
+    expect(laneStyle('intenso')).toEqual({ color: '#F59544', dash: [] })
+    expect(laneStyle('critico')).toEqual({ color: '#F0565B', dash: [] })
+    expect(laneStyle('sem dado').color).toBe('#5B6676')
+    expect(laneStyle('sem dado').dash.length).toBeGreaterThan(0)
     // the state is the AD-006 rule on the newest fused reading; none for 20 s -> sem dados
     const f = (v: number | null, at: number | null) => ({ contagem: 1, densidade: 1, velocidadeMedia: v, alertas: [], demandaOD: null, fontes: [], confianca: 1, atualizadoEm: at, estimado: false })
     expect(fusedStatus(f(40, 50_000), 60_000)).toBe('fluindo')
@@ -176,7 +174,7 @@ describe('render cidade', () => {
     const frame = redraw()
     for (const s of engine.getState().segments) {
       const lane = laneStrokes(engine, frame, s.id).at(-1)!
-      expect(lane.style).toBe('#94a3b8')
+      expect(lane.style).toBe('#5B6676')
       expect(lane.dashed).toBe(true)
     }
   })
@@ -191,10 +189,11 @@ describe('render cidade', () => {
     })
     const frame = redraw()
     const at = (id: string) => laneStrokes(engine, frame, id).at(-1)!
-    expect(at('I12>I13')).toEqual({ points: expect.anything(), style: '#ef4444', dashed: false })
-    expect(at('I13>I12')).toEqual({ points: expect.anything(), style: '#22c55e', dashed: false })
-    expect(at('I22>I23')).toEqual({ points: expect.anything(), style: '#facc15', dashed: false })
-    expect(at('I23>I22').style).toBe('#94a3b8')
+    // 3 km/h is below half the limit: critical; the other direction is still learning its capacity
+    expect(at('I12>I13')).toEqual({ points: expect.anything(), style: '#F0565B', dashed: false })
+    expect(at('I13>I12')).toEqual({ points: expect.anything(), style: '#8A96A8', dashed: false })
+    expect(at('I22>I23')).toEqual({ points: expect.anything(), style: '#8A96A8', dashed: false })
+    expect(at('I23>I22')).toEqual({ points: expect.anything(), style: '#5B6676', dashed: true })
   })
 
   it('hovering a segment shows its tooltip with metrics and alerts', { timeout: 60_000 }, () => {
@@ -254,6 +253,8 @@ describe('render cidade', () => {
     const p = onLane(engine, id, 60)
     fireEvent.mouseDown(canvas, { clientX: p.x, clientY: p.y, button: 0 })
     fireEvent.mouseUp(window, { clientX: p.x, clientY: p.y })
+    expect(within(screen.getByRole('region', { name: 'Via selecionada' })).getByTestId('selected-name')).toHaveTextContent(segmentName(id))
+    fireEvent.click(screen.getByRole('link', { name: 'Relatórios' }))
     const panel = screen.getByRole('region', { name: 'Métricas do trecho' })
     expect(within(panel).getByTestId('capacity-via')).toHaveTextContent(segmentName(id))
     expect(within(panel).getByTestId('capacity-unidade')).toHaveTextContent(/^U03 \(\d+%\)$/)
@@ -265,7 +266,7 @@ describe('render cidade', () => {
     expect(within(panel).getByText('Velocidade (radar)')).toBeInTheDocument()
   })
 
-  it('orders the road table from worst to best', () => {
+  it('orders roads from worst to best', () => {
     const rows = [
       { id: 'a', estado: 'fluindo' as const, velocidade: 45 },
       { id: 'b', estado: 'sem dados' as const, velocidade: null },
@@ -275,36 +276,13 @@ describe('render cidade', () => {
       { id: 'f', estado: 'fluindo' as const, velocidade: null },
     ]
     expect(sortRoads(rows).map((r) => r.id)).toEqual(['e', 'c', 'd', 'a', 'f', 'b'])
-    // the table renders the 48 segments in that order
-    const engine = new SimulationEngine({ ratePerMinute: 0 })
-    const ids = engine.getState().segments.map((s) => s.id)
-    const fused = (v: number | null) => ({ contagem: null, densidade: null, velocidadeMedia: v, alertas: [], demandaOD: null, fontes: [], confianca: 0, atualizadoEm: null, estimado: false })
-    const status: Record<string, 'fluindo' | 'carregado' | 'congestionado' | 'sem dados'> = Object.fromEntries(ids.map((id) => [id, 'sem dados' as const]))
-    const fusedState = Object.fromEntries(ids.map((id) => [id, fused(null)]))
-    Object.assign(status, { 'I11>I12': 'congestionado', 'I22>I23': 'congestionado', 'I33>I34': 'carregado' })
-    Object.assign(fusedState, { 'I11>I12': fused(20), 'I22>I23': fused(12), 'I33>I34': fused(30) })
-    render(<RoadTable segmentIds={ids} status={status} fused={fusedState} units={{}} selected="" onSelect={() => {}} />)
-    const order = screen.getAllByRole('row').slice(1).map((r) => r.getAttribute('data-testid'))
-    expect(order).toHaveLength(48)
-    expect(order.slice(0, 3)).toEqual(['road-I22>I23', 'road-I11>I12', 'road-I33>I34'])
-  })
-
-  it('clicking a table row selects and highlights the segment', () => {
-    const engine = new SimulationEngine({ ratePerMinute: 0 })
-    render(<App engine={engine} transport={new FakeTransport(true)} />)
-    const id = 'I33>I34'
-    fireEvent.click(screen.getByTestId(`road-${id}`))
-    expect(screen.getByTestId(`road-${id}`)).toHaveAttribute('aria-selected', 'true')
-    expect(within(screen.getByRole('region', { name: 'Métricas do trecho' })).getByTestId('capacity-via')).toHaveTextContent(segmentName(id))
-    const halo = laneStrokes(engine, redraw(), id).filter((s) => s.style === '#f8fafc')
-    expect(halo).toHaveLength(1)
   })
 
   it('shows sem dado before the first reading', () => {
     render(<App engine={new SimulationEngine({ ratePerMinute: 30 })} transport={new FakeTransport(true)} />)
-    const rows = screen.getAllByRole('row').filter((r) => r.getAttribute('data-testid')?.startsWith('road-'))
-    expect(rows).toHaveLength(48)
-    for (const r of rows) expect(r).toHaveTextContent('sem dado')
+    for (const name of STREETS) expect(screen.getByTestId(`rank-${name}`)).toHaveTextContent('—')
+    expect(screen.getByTestId('selected-level')).toHaveTextContent('Sem dado')
+    fireEvent.click(screen.getByRole('link', { name: 'Relatórios' }))
     const panel = screen.getByRole('region', { name: 'Métricas do trecho' })
     expect(within(panel).getByTestId('capacity-estado')).toHaveTextContent('sem dado')
     expect(within(panel).getByTestId('capacity-contagem')).toHaveTextContent('sem dado')

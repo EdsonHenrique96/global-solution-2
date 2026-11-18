@@ -56,6 +56,24 @@ export interface SegmentEntry {
 }
 
 export const BLOCKAGE_MS = 120_000
+
+/** A work zone: cars on the segment drive at most WORK_ZONE_KMH (AD-055). */
+export interface WorkZone {
+  id: number
+  segmentId: string
+  endsAtMs: number
+}
+
+/** A corner whose light flashes yellow on both phases: cars take turns at the corner (AD-056). */
+export interface FlashingLight {
+  id: number
+  intersectionId: string
+  endsAtMs: number
+}
+
+export const WORK_ZONE_MS = 600_000
+export const WORK_ZONE_KMH = 20
+export const FLASHING_MS = 600_000
 /** Below this speed a car counts as queued. */
 export const QUEUE_SPEED_MS = 5 / 3.6
 /** How far before a stop line a light's queue is measured. */
@@ -76,6 +94,8 @@ export interface SimulationState {
   segments: readonly Segment[]
   noisePct: number
   blockages: readonly Blockage[]
+  workZones: readonly WorkZone[]
+  flashing: readonly FlashingLight[]
   adaptiveSignals: boolean
   /** Cars that took a new path after a notification. */
   reroutedTotal: number
@@ -149,6 +169,9 @@ export class SimulationEngine {
   private readonly signals: SignalController
   private blockages: Blockage[] = []
   private blockageId = 1
+  private workZones: WorkZone[] = []
+  private flashing: FlashingLight[] = []
+  private incidentId = 1
   private readonly arrivalListeners = new Set<(a: Arrival) => void>()
   private readonly blockageListeners = new Set<(e: { blockage: Blockage; ativo: boolean; ts: number }) => void>()
   private readonly arrivals: Arrival[] = []
@@ -297,10 +320,43 @@ export class SimulationEngine {
   }
 
   private lights(timeMs: number): LightState[] {
-    if (this.lightMode === 'always-green') {
-      return this.network.intersections.map((i) => ({ intersectionId: i.id, h: 'verde', v: 'verde', remainingS: Infinity }))
-    }
-    return this.signals.lights(timeMs)
+    const base: LightState[] =
+      this.lightMode === 'always-green'
+        ? this.network.intersections.map((i) => ({ intersectionId: i.id, h: 'verde', v: 'verde', remainingS: Infinity }))
+        : this.signals.lights(timeMs)
+    if (this.flashing.length === 0) return base
+    const flashing = new Map(this.flashing.map((f) => [f.intersectionId, f]))
+    return base.map((l) => {
+      const f = flashing.get(l.intersectionId)
+      return f ? { intersectionId: l.intersectionId, h: 'piscante', v: 'piscante', remainingS: (f.endsAtMs - timeMs) / 1000 } : l
+    })
+  }
+
+  /** Cars on the segment drive at most 20 km/h for `durationMs` (10 min by default, AD-055). */
+  addWorkZone(segmentId: string, durationMs = WORK_ZONE_MS): WorkZone {
+    const z: WorkZone = { id: this.incidentId++, segmentId, endsAtMs: this.timeMs + durationMs }
+    this.workZones.push(z)
+    return z
+  }
+
+  removeWorkZone(id: number): void {
+    this.workZones = this.workZones.filter((z) => z.id !== id)
+  }
+
+  /** The corner's light flashes yellow on both phases for `durationMs` (10 min by default, AD-056). */
+  addFlashing(intersectionId: string, durationMs = FLASHING_MS): FlashingLight {
+    const f: FlashingLight = { id: this.incidentId++, intersectionId, endsAtMs: this.timeMs + durationMs }
+    this.flashing = [...this.flashing.filter((x) => x.intersectionId !== intersectionId), f]
+    return f
+  }
+
+  removeFlashing(id: number): void {
+    this.flashing = this.flashing.filter((f) => f.id !== id)
+  }
+
+  /** Desired speed on a segment: the car's own, at most 20 km/h in a work zone. */
+  private desiredSpeed(car: CarState, segmentId: string): number {
+    return this.workZones.some((z) => z.segmentId === segmentId) ? Math.min(car.speed, WORK_ZONE_KMH / 3.6) : car.speed
   }
 
   /** The next green of one phase of a light, in seconds (adaptive control only). */
@@ -485,10 +541,11 @@ export class SimulationEngine {
         this.redDecision.delete(car.id)
       }
 
-      const accLeader = idmAcceleration(car.velocity, car.speed, gap, car.velocity - leadV)
+      const v0 = this.desiredSpeed(car, seg.id)
+      const accLeader = idmAcceleration(car.velocity, v0, gap, car.velocity - leadV)
       const acc = Math.max(-MAX_DECEL, Math.min(accLeader, accLine))
       const room = Math.min(Number.isFinite(gap) ? gap - IDM.s0 : Infinity, lineRoom, blockRoom, yieldRoom)
-      const next = step(car.distance, car.velocity, acc, car.speed, dt, room)
+      const next = step(car.distance, car.velocity, acc, v0, dt, room)
       const driven = next.x - car.distance
       const emitted = stepEmission(driven, dt)
       this.co2TotalG += emitted.co2G
@@ -525,7 +582,7 @@ export class SimulationEngine {
       const over = car.distance - L
       const room = (tail.get(nextId) ?? Infinity) - over
       if (room >= IDM.length + IDM.s0) {
-        const entered = { ...car, seg: car.seg + 1, distance: over }
+        const entered = { ...car, seg: car.seg + 1, distance: over, velocity: Math.min(car.velocity, this.desiredSpeed(car, nextId)) }
         tail.set(nextId, Math.min(tail.get(nextId) ?? Infinity, over))
         stillIn.push(entered)
         this.redDecision.delete(car.id)
@@ -542,6 +599,8 @@ export class SimulationEngine {
     const expired = this.blockages.filter((b) => b.endsAtMs <= this.timeMs)
     this.blockages = this.blockages.filter((b) => b.endsAtMs > this.timeMs)
     for (const b of expired) this.emitBlockage(b, false)
+    this.workZones = this.workZones.filter((z) => z.endsAtMs > this.timeMs)
+    this.flashing = this.flashing.filter((f) => f.endsAtMs > this.timeMs)
     this.signals.advance(this.timeMs, (id, axis) => this.queueAt(id, axis))
 
     const readings = this.sensor.observe(dtMs, this.timeMs, this.cameras, this.coverage, this.observations())
@@ -682,7 +741,7 @@ export class SimulationEngine {
       }
       // enter at the highest speed whose IDM response to the car ahead is no harder than -b and
       // that the room ahead can absorb within one headway
-      let v = car.speed
+      let v = this.desiredSpeed(car, segId)
       if (Number.isFinite(last)) {
         const gap = last - IDM.length
         v = Math.min(v, Math.max(0, gap - IDM.s0) / IDM.T)
@@ -717,6 +776,8 @@ export class SimulationEngine {
       segments: this.segments,
       noisePct: this.sensor.getNoise(),
       blockages: this.blockages,
+      workZones: this.workZones,
+      flashing: this.flashing,
       adaptiveSignals: this.signals.isAdaptive(),
       reroutedTotal: this.reroutedTotal,
       co2TotalG: this.co2TotalG,

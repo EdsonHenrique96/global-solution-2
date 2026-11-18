@@ -76,8 +76,9 @@ describe('render', () => {
       const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
       const fit = fitTransform(engine.getState().network, size.width, size.height)
       const corners = engine.getState().network.intersections
+      // along the alameda as drawn on the screen
       const h = (() => {
-        const [a, b] = [corners[0].position, corners[1].position]
+        const [a, b] = [fit.map(corners[0].position), fit.map(corners[1].position)]
         const len = Math.hypot(b.x - a.x, b.y - a.y)
         return { x: (b.x - a.x) / len, y: (b.y - a.y) / len }
       })()
@@ -99,7 +100,7 @@ describe('render', () => {
         for (const i of corners) {
           const c = fit.map(i.position)
           // the H dot sits on the alameda side of the corner, the V dot on the rua side
-          const off = Math.max(5, 7 * fit.scale)
+          const off = Math.max(8, 9 * fit.scale)
           const hFill = dotNear(frame, c.x - h.x * off, c.y - h.y * off)
           const l = lightAt(i.id, t)
           expect(hueOf(hFill), `${i.id} H at ${t}`).toBe(l.h)
@@ -120,6 +121,7 @@ describe('render', () => {
       const engine = new SimulationEngine({ ratePerMinute: 120 })
       const transport = new FakeTransport(true)
       render(<App engine={engine} transport={transport} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
 
       const slider = screen.getByRole('slider', { name: /ruído da leitura/i })
       expect(slider).toHaveValue('10')
@@ -166,6 +168,7 @@ describe('render', () => {
     it('shows the latest reading per sensor and the last 20 messages newest first', () => {
       const transport = new FakeTransport(true)
       render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={transport} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
       const panel = screen.getByRole('complementary', { name: /telemetria/i })
       expect(within(panel).getByText('MQTT conectado')).toBeInTheDocument()
 
@@ -201,6 +204,7 @@ describe('render', () => {
       const produced: Reading[] = []
       engine.onReading((r) => produced.push(r))
       render(<App engine={engine} transport={transport} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
       const panel = screen.getByRole('complementary', { name: /telemetria/i })
 
       expect(within(panel).getByText('MQTT desconectado — tentando reconectar')).toBeInTheDocument()
@@ -232,6 +236,7 @@ describe('render', () => {
       vi.useFakeTimers()
       const transport = new FakeTransport(false)
       render(<App engine={new SimulationEngine({ ratePerMinute: 30 })} transport={transport} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
       const panel = screen.getByRole('complementary', { name: /telemetria/i })
       act(() => {
         vi.advanceTimersByTime(10_000)

@@ -1,13 +1,16 @@
 import { AppFleet } from '../apps/AppFleet'
-import { AppNotifier } from '../apps/AppNotifier'
+import { AppNotifier, NOTIFICATIONS_FILTER } from '../apps/AppNotifier'
 import { CapacityService } from '../capacity/CapacityService'
 import { wireAlerts } from '../fusion/AlertPublisher'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
-import { wireTelemetry } from '../telemetry/TelemetryPublisher'
+import { averageSpeed, readSegment } from '../render/levels'
+import { TELEMETRY_FILTER, wireTelemetry } from '../telemetry/TelemetryPublisher'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { DiversionController, diversionSize, type DiversionState } from './DiversionController'
 import { candidatesFor, evaluate, outOfReach, selectNotified, type Evaluation } from './DriverRerouter'
+import { IncidentLog } from './IncidentLog'
 import { MetricsRecorder, SAMPLE_EVERY_MS } from './MetricsRecorder'
+import { HISTORY_EVERY_MS, SegmentHistory } from './SegmentHistory'
 
 export type DiversionMode = 'parcial' | 'todos'
 
@@ -47,6 +50,12 @@ export class Simulation {
   readonly metrics: MetricsRecorder
   readonly fleet: AppFleet
   readonly notifier: AppNotifier
+  readonly history = new SegmentHistory()
+  readonly incidents = new IncidentLog()
+  /** Simulated time of each unit's last reading that came through the broker. */
+  readonly unitLastReading: Record<string, number> = {}
+  /** Route-change notices that went out through the broker to the drivers' map apps. */
+  notifiedTotal = 0
   private readonly transport: TelemetryTransport
   private readonly controller = new DiversionController()
   private diversionEnabled = true
@@ -74,9 +83,22 @@ export class Simulation {
     if (!this.unwire) {
       const offTelemetry = wireTelemetry(this.engine, this.transport)
       const offAlerts = wireAlerts(this.engine, this.transport)
+      const offPresence = this.transport.subscribe(TELEMETRY_FILTER, (_t, payload) => {
+        try {
+          const msg = JSON.parse(payload) as { sensorId?: unknown; ts?: unknown }
+          if (typeof msg.sensorId === 'string' && typeof msg.ts === 'number') this.unitLastReading[msg.sensorId] = msg.ts
+        } catch {
+          // not a reading
+        }
+      })
+      const offNotices = this.transport.subscribe(NOTIFICATIONS_FILTER, () => {
+        this.notifiedTotal += 1
+      })
       this.unwire = () => {
         offTelemetry()
         offAlerts()
+        offPresence()
+        offNotices()
       }
     }
   }
@@ -111,7 +133,27 @@ export class Simulation {
     this.engine.tick(TICK_MS)
     this.fleet.tick()
     this.metrics.record()
-    if (this.engine.getState().timeMs % SAMPLE_EVERY_MS === 0) this.decide()
+    const t = this.engine.getState().timeMs
+    if (t % SAMPLE_EVERY_MS === 0) this.decide()
+    if (t % HISTORY_EVERY_MS === 0) this.recordHistory(t)
+    this.refreshIncidents()
+  }
+
+  /** Brings the incident log up to date now (after the operator ends one by hand). */
+  refreshIncidents(): void {
+    this.incidents.update(this.engine.getState(), this.diversion)
+  }
+
+  private recordHistory(t: number): void {
+    const estimates = this.capacity.snapshot()
+    const fused = this.capacity.fusion.state()
+    const readings = this.capacity.segments.map((s) => readSegment(s.id, estimates[s.id], fused[s.id], t))
+    const travel = this.engine.travelStats().lastMinuteAvgS
+    this.history.record(
+      t,
+      Object.fromEntries(readings.map((r) => [r.id, { fluxo: r.fluxo, capacidade: r.capacidade, velocidade: r.velocidade }])),
+      { avgSpeed: averageSpeed(readings), travelMin: travel === null ? null : travel / 60 },
+    )
   }
 
   /**

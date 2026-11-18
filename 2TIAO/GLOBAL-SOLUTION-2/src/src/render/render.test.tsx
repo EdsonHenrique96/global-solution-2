@@ -115,6 +115,7 @@ describe('render', () => {
       vi.useFakeTimers()
       const engine = new SimulationEngine({ ratePerMinute: 0 })
       render(<App engine={engine} />)
+      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
       act(() => {
         vi.advanceTimersByTime(5000)
       })
@@ -137,6 +138,7 @@ describe('render', () => {
     it('starts with a default spawn rate greater than zero', () => {
       vi.useFakeTimers()
       render(<App />)
+      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
       const slider = screen.getByRole('slider', { name: /carros por minuto/i })
       expect(Number((slider as HTMLInputElement).value)).toBeGreaterThan(0)
 

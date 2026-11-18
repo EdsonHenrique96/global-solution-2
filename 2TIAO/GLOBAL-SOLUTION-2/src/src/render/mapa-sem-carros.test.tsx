@@ -61,10 +61,8 @@ describe('render', () => {
 
       // every drawing call, with its arguments, is identical: nothing on the map depends on the cars
       expect(busy.frame).toEqual(empty.frame)
-      // and the frame is not trivially empty: 2 light dots at each of the 16 corners, and the 12
-      // units' camera cones and radar beams are there
+      // and the frame is not trivially empty: 2 light dots at each of the 16 corners
       expect(busy.frame.filter((c) => c.op === 'arc')).toHaveLength(32)
-      expect(busy.frame.filter((c) => c.op === 'closePath')).toHaveLength(24)
     })
   })
 
