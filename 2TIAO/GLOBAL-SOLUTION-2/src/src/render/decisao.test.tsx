@@ -244,6 +244,21 @@ describe('render', () => {
       expect(screen.getByTestId('metric-diverted')).toHaveTextContent('13,3%')
     })
 
+    it('shows the confidence and the coverage warning of the diversion', () => {
+      const { rerender } = render(
+        <MetricsPanel
+          metrics={snapshot}
+          diversion={{ status: 'ativo', from: 'central', to: 'norte', n: 120, p: 0.4, confianca: 0.25, aviso: 'rota alternativa com trechos sem cobertura' }}
+        />,
+      )
+      expect(screen.getByTestId('diversion-confidence')).toHaveTextContent('0,25')
+      expect(screen.getByRole('alert')).toHaveTextContent('rota alternativa com trechos sem cobertura')
+      // fully covered alternative: confidence shown, no warning
+      rerender(<MetricsPanel metrics={snapshot} diversion={{ status: 'ativo', from: 'central', to: 'norte', n: 120, p: 0.4, confianca: 1 }} />)
+      expect(screen.getByTestId('diversion-confidence')).toHaveTextContent('1,00')
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+
     it('shows the diversion state including no alternative with slack', () => {
       render(<MetricsPanel metrics={snapshot} diversion={{ status: 'sem-alternativa', from: 'central' }} />)
       expect(screen.getByTestId('diversion-state')).toHaveTextContent('sem rota alternativa com folga')

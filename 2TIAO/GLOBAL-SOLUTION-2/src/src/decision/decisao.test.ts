@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { RouteStatus } from '../capacity/CapacityModel'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
-import { DiversionController, diversionSize, type RouteView } from './DiversionController'
-import { Simulation } from './Simulation'
+import { DiversionController, diversionSize, type DiversionState, type RouteView } from './DiversionController'
+import { routeConfidence, routeDemand, Simulation } from './Simulation'
 
 const view = (estado: RouteStatus, velocidade: number | null, extra: Partial<RouteView> = {}): RouteView => ({
   estado,
@@ -212,6 +212,56 @@ describe('decision', () => {
       expect(on.divertedBefore).toBe(0)
       expect(on.activeFromCentralAfter).toBe(true)
       expect(on.mean).toBeLessThanOrEqual(off.mean * 1.01)
+    })
+  })
+
+  describe('fusion', () => {
+    it('uses OD demand for the diversion and N 0 without it', () => {
+      const run = (rate: number, until: number) => {
+        const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: rate, noisePct: 0 }), transport: new FakeTransport(true) })
+        sim.start()
+        for (let t = 0; t < until; t += TICK_MS) sim.tick()
+        sim.stop()
+        return sim
+      }
+      // before the first 60 s window there is no OD demand
+      expect(run(15, 50_000).demand()).toEqual({ central: 0, norte: 0, sul: 0 })
+      // 15 trips per minute -> 900 veh/h, a third per route
+      const d = run(15, 60_000).demand()
+      for (const id of ['central', 'norte', 'sul']) expect(d[id]).toBeCloseTo(300, 6)
+      // 4 trips per minute: the OD cell is dropped (fewer than 5), demand unknown -> 0
+      expect(run(4, 120_000).demand()).toEqual({ central: 0, norte: 0, sul: 0 })
+      // the generator rate is not what the diversion reads: a pure function over the fused state
+      const segs = run(15, 60_000).capacity.segments
+      const fused = Object.fromEntries(segs.map((x) => [x.id, { demandaOD: x.id === 'norte-F-I3' ? 123 : null } as never]))
+      expect(routeDemand(['central', 'norte'], fused, segs)).toEqual({ central: 0, norte: 123 })
+      // with demand 0 the controller sizes N 0
+      expect(diversionSize(0, 0, 900)).toEqual({ n: 0, p: 0 })
+    })
+
+    it('reports the confidence of the alternative route and warns below 0.8', () => {
+      const segs = new Simulation({ transport: new FakeTransport(true) }).capacity.segments
+      const fusedWith = (c: number) => Object.fromEntries(segs.map((x) => [x.id, { confianca: c } as never]))
+      expect(routeConfidence('norte', fusedWith(1), segs)).toBe(1)
+      const partial = { ...fusedWith(1), 'norte-F-I3': { confianca: 0.5 } as never }
+      expect(routeConfidence('norte', partial, segs)).toBe(0.5)
+      expect(routeConfidence('central', partial, segs)).toBe(1)
+      const missing = Object.fromEntries(Object.entries(fusedWith(1)).filter(([id]) => id !== 'norte-F-I3'))
+      expect(routeConfidence('norte', missing, segs)).toBe(0)
+
+      // in the accident scenario B has uncovered segments: confidence 0 and the warning
+      const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 15, noisePct: 0 }), transport: new FakeTransport(true) })
+      sim.start()
+      let seen: Extract<DiversionState, { status: 'ativo' }> | null = null
+      for (let t = 0; t < 600_000; t += TICK_MS) {
+        if (sim.engine.getState().timeMs === 300_000) sim.engine.addBlockage('central', 500)
+        sim.tick()
+        if (sim.diversion.status === 'ativo' && !seen) seen = sim.diversion
+      }
+      sim.stop()
+      expect(seen).not.toBeNull()
+      expect(seen!.confianca).toBe(0)
+      expect(seen!.aviso).toBe('rota alternativa com trechos sem cobertura')
     })
   })
 })

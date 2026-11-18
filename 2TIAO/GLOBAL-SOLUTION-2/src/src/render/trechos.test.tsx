@@ -94,8 +94,12 @@ function hueOf(colour: unknown): string {
   if (Math.max(r, g, b) - Math.min(r, g, b) < 60 && r > 110) return 'cinza'
   return 'other'
 }
-const message = (sensorId: string, porTrecho: unknown[]) =>
-  JSON.stringify({ sensorId, tipo: 'fixo', ts: 0, janelaS: 10, contagem: 0, velocidadeMediaKmh: null, ruidoPct: 0, porTrecho })
+// each reading gets its own window timestamp: the fusion keeps one measurement per segment and window
+let windowTs = 0
+const message = (sensorId: string, porTrecho: unknown[]) => {
+  windowTs += 1
+  return JSON.stringify({ sensorId, tipo: 'fixo', ts: windowTs, janelaS: 10, contagem: 0, velocidadeMediaKmh: null, ruidoPct: 0, porTrecho })
+}
 
 describe('render', () => {
   describe('segments', () => {

@@ -21,7 +21,16 @@ export type DiversionState =
   | { status: 'inativo' }
   | { status: 'desligado' }
   | { status: 'sem-alternativa'; from: string }
-  | { status: 'ativo'; from: string; to: string; n: number; p: number }
+  | {
+      status: 'ativo'
+      from: string
+      to: string
+      n: number
+      p: number
+      /** Confidence in the alternative route: the lowest of its segments (fusao-trechos). */
+      confianca?: number
+      aviso?: string
+    }
 
 /** N = min(excess of A, slack of B x 0.8); p = min(N / demand of A, 0.5). Rates in veh/h. */
 export function diversionSize(demandA: number, flowA: number, slackB: number): { n: number; p: number } {

@@ -1,6 +1,6 @@
 import { buildSegments, type Segment } from '../sensors/segments'
 import { buildRoadNetwork } from '../sim/roadNetwork'
-import { TELEMETRY_FILTER } from '../telemetry/TelemetryPublisher'
+import { FusionService } from '../fusion/FusionService'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { CapacityModel, SPEED_LIMIT_KMH, type Estimate, type RouteStatus } from './CapacityModel'
 
@@ -36,56 +36,44 @@ export function summariseRoute(routeId: string, segments: readonly Segment[], es
 }
 
 /**
- * One capacity model per road segment (AD-022), fed only by what arrives on the MQTT
- * subscription (AD-005). `now` is the simulation clock, so staleness keeps counting while the
- * broker is down.
+ * One capacity model per road segment (AD-022), fed by the fusion layer, which only reads the MQTT
+ * subscription (AD-005): one chosen measurement per segment and window. `now` is the simulation
+ * clock, so staleness keeps counting while the broker is down.
  */
 export class CapacityService {
-  private readonly transport: TelemetryTransport
   private readonly now: () => number
   readonly segments: readonly Segment[]
   private readonly models: Map<string, CapacityModel>
-  private unsubscribe: (() => void) | null = null
+  /** The fusion layer the models learn from (fusao-trechos). */
+  readonly fusion: FusionService
 
   constructor(transport: TelemetryTransport, now: () => number, segments?: readonly Segment[]) {
-    this.transport = transport
     this.now = now
     this.segments = segments ?? buildSegments(buildRoadNetwork())
     this.models = new Map(this.segments.map((s) => [s.id, new CapacityModel()]))
+    this.fusion = new FusionService(transport, now, this.segments)
   }
 
   start(): void {
-    if (this.unsubscribe) return
-    this.unsubscribe = this.transport.subscribe(TELEMETRY_FILTER, (_topic, payload) => this.receive(payload))
+    this.fusion.start()
   }
 
   stop(): void {
-    this.unsubscribe?.()
-    this.unsubscribe = null
+    this.fusion.stop()
   }
 
-  private receive(payload: string): void {
-    let msg: unknown
-    try {
-      msg = JSON.parse(payload)
-    } catch {
-      return
-    }
-    if (!msg || typeof msg !== 'object') return
-    const { ts, porTrecho } = msg as { ts?: unknown; porTrecho?: unknown }
-    if (typeof ts !== 'number' || !Array.isArray(porTrecho)) return
-    for (const entry of porTrecho) {
-      if (!entry || typeof entry !== 'object') continue
-      const { trecho, contagem, velocidadeMediaKmh, comprimentoCobertoM } = entry as Record<string, unknown>
-      const model = typeof trecho === 'string' ? this.models.get(trecho) : undefined
-      if (!model || typeof contagem !== 'number' || typeof comprimentoCobertoM !== 'number') continue
-      if (velocidadeMediaKmh !== null && typeof velocidadeMediaKmh !== 'number') continue
-      model.observe({ contagem, velocidadeMediaKmh, comprimentoM: comprimentoCobertoM }, ts)
+  /** Feeds the models with the measurements the fusion picked since the last call. */
+  private learn(): void {
+    for (const m of this.fusion.flush()) {
+      this.models
+        .get(m.segmentId)
+        ?.observe({ contagem: m.contagem, velocidadeMediaKmh: m.velocidadeMediaKmh, comprimentoM: m.comprimentoCobertoM }, m.ts)
     }
   }
 
   /** Estimate per segment. */
   snapshot(): Record<string, Estimate> {
+    this.learn()
     const now = this.now()
     return Object.fromEntries([...this.models].map(([id, m]) => [id, m.estimate(now)]))
   }

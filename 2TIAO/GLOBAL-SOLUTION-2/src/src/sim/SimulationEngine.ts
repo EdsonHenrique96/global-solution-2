@@ -139,6 +139,7 @@ export class SimulationEngine {
   private divertedTotal = 0
   private readonly routeTotals: Record<string, number>
   private readonly arrivalListeners = new Set<(a: Arrival) => void>()
+  private readonly blockageListeners = new Set<(e: { blockage: Blockage; ativo: boolean; ts: number }) => void>()
   private readonly arrivals: Arrival[] = []
   private travelSumS = 0
 
@@ -242,11 +243,24 @@ export class SimulationEngine {
   addBlockage(routeId: string, distance: number): Blockage {
     const b: Blockage = { id: this.blockageId++, routeId, distance, endsAtMs: this.timeMs + BLOCKAGE_MS }
     this.blockages.push(b)
+    this.emitBlockage(b, true)
     return b
   }
 
   removeBlockage(id: number): void {
+    const gone = this.blockages.filter((b) => b.id === id)
     this.blockages = this.blockages.filter((b) => b.id !== id)
+    for (const b of gone) this.emitBlockage(b, false)
+  }
+
+  /** Accident started (ativo) or ended - by hand or after BLOCKAGE_MS. */
+  onBlockage(listener: (e: { blockage: Blockage; ativo: boolean; ts: number }) => void): () => void {
+    this.blockageListeners.add(listener)
+    return () => this.blockageListeners.delete(listener)
+  }
+
+  private emitBlockage(blockage: Blockage, ativo: boolean): void {
+    for (const l of this.blockageListeners) l({ blockage, ativo, ts: this.timeMs })
   }
 
   setDiversion(diversion: Diversion | null): void {
@@ -460,7 +474,9 @@ export class SimulationEngine {
     this.applyDiversion()
     this.admitWaiting()
     this.timeMs += dtMs
+    const expired = this.blockages.filter((b) => b.endsAtMs <= this.timeMs)
     this.blockages = this.blockages.filter((b) => b.endsAtMs > this.timeMs)
+    for (const b of expired) this.emitBlockage(b, false)
     this.signals.advance(this.timeMs, (id) => this.queueAt(id))
 
     const readings = this.sensor.observe(dtMs, this.timeMs, this.cameras, this.coverage, this.observations())

@@ -277,3 +277,12 @@
   stroke: var(--accent);
   stroke-width: 1.5;
 }
+
+.metrics .warning {
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  border-left: 3px solid #f59e0b;
+  color: var(--text-h);
+  background: rgba(245, 158, 11, 0.1);
+  font-size: 0.8rem;
+}

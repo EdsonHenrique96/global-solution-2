@@ -42,7 +42,18 @@ export function MetricsPanel({ metrics, diversion }: Props) {
         <dd data-testid="metric-diverted">{fmt(metrics.pctDiverted)}%</dd>
         <dt>Desvio</dt>
         <dd data-testid="diversion-state">{diversionText(diversion)}</dd>
+        {diversion.status === 'ativo' && diversion.confianca !== undefined && (
+          <>
+            <dt>Confiança da rota alternativa</dt>
+            <dd data-testid="diversion-confidence">{fmt(diversion.confianca, 2)}</dd>
+          </>
+        )}
       </dl>
+      {diversion.status === 'ativo' && diversion.aviso && (
+        <p className="warning" role="alert" data-testid="diversion-warning">
+          {diversion.aviso}
+        </p>
+      )}
       <Spark id="chart-travel" label="Tempo médio de viagem (s)" samples={samples} value={(s) => s.travelS} />
       <Spark id="chart-queue" label="Fila total" samples={samples} value={(s) => s.queue} />
       <Spark id="chart-diverted" label="Desviados (%)" samples={samples} value={(s) => s.pctDiverted} />
