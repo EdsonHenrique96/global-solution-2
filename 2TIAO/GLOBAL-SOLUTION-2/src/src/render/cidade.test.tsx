@@ -11,7 +11,7 @@ import { FakeTransport } from '../telemetry/testing'
 import { fitTransform, segmentStyle } from './draw'
 import { RoadTable } from './RoadTable'
 import { fusedStatus, sortRoads } from './roads'
-import { coveringUnit } from './tooltip'
+import { coveringUnit, segmentTooltip } from './tooltip'
 
 interface Call {
   op: string
@@ -181,6 +181,22 @@ describe('render cidade', () => {
     }
   })
 
+  it('paints each drawn lane by its own direction state', () => {
+    const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
+    const transport = new FakeTransport(true)
+    render(<App engine={engine} transport={transport} />)
+    const seg = (trecho: string, v: number) => ({ trecho, contagem: 4, velocidadeMediaKmh: v, comprimentoCobertoM: 120, cobertura: 1 })
+    act(() => {
+      transport.deliver('transito/sensores/U99/telemetria', JSON.stringify({ sensorId: 'U99', ts: 0, porTrecho: [seg('I12>I13', 3), seg('I13>I12', 45), seg('I22>I23', 30)] }))
+    })
+    const frame = redraw()
+    const at = (id: string) => laneStrokes(engine, frame, id).at(-1)!
+    expect(at('I12>I13')).toEqual({ points: expect.anything(), style: '#ef4444', dashed: false })
+    expect(at('I13>I12')).toEqual({ points: expect.anything(), style: '#22c55e', dashed: false })
+    expect(at('I22>I23')).toEqual({ points: expect.anything(), style: '#facc15', dashed: false })
+    expect(at('I23>I22').style).toBe('#94a3b8')
+  })
+
   it('hovering a segment shows its tooltip with metrics and alerts', { timeout: 60_000 }, () => {
     vi.useFakeTimers()
     const engine = new SimulationEngine({ ratePerMinute: 120, noisePct: 0 })
@@ -199,6 +215,11 @@ describe('render cidade', () => {
     for (const id of ['estado', 'contagem', 'velocidade', 'densidade', 'unidade', 'confianca', 'idade']) expect(within(tip).getByTestId(`tooltip-${id}`)).toBeInTheDocument()
     expect(within(tip).getByTestId('tooltip-unidade')).toHaveTextContent(coveringUnit(engine.coverage.entries('I14>I13')))
     expect(within(tip).getByTestId('tooltip-avisos')).toHaveTextContent('Acidente')
+    // the segment the diversion steers app drivers away from carries the persistent-congestion warning; its opposite direction does not
+    const jammed = segmentTooltip('I12>I13', [], undefined, 'congestionado', 0, 'I12>I13')
+    expect(jammed.avisos.some((a) => /Congestionamento persistente/.test(a))).toBe(true)
+    expect(segmentTooltip('I13>I12', [], undefined, 'fluindo', 0, 'I12>I13').avisos).toEqual([])
+    expect(segmentTooltip('I12>I13', [], undefined, 'congestionado', 0, null).avisos).toEqual([])
 
     // a covered segment with a fresh reading shows the measured numbers
     const covered = 'I12>I13'
