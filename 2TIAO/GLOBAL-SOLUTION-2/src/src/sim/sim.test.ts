@@ -97,7 +97,7 @@ describe('sim', () => {
 
   describe('SimulationEngine', () => {
     it('removes a car once it reaches its route\'s destination', () => {
-      const engine = new SimulationEngine({ ratePerMinute: 600 })
+      const engine = new SimulationEngine({ ratePerMinute: 600, trafficLights: 'always-green' })
       engine.tick(TICK_MS) // 600/min -> exactly one car per 100ms tick
       engine.setRate(0)
       const [car] = engine.getState().cars

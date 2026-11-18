@@ -8,9 +8,11 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "test": "vitest",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:integration": "vitest --run --config vitest.integration.config.ts --reporter=verbose"
   },
   "dependencies": {
+    "mqtt": "^5.16.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

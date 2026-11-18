@@ -1,6 +1,7 @@
 import { positionOnRoute } from '../sim/car'
 import type { SimulationState } from '../sim/SimulationEngine'
-import type { Point } from '../sim/types'
+import type { Phase } from '../sim/trafficLight'
+import type { Point, RoadNetwork } from '../sim/types'
 
 const PADDING = 24
 
@@ -18,11 +19,20 @@ const COLORS = {
   intersectionStroke: '#94a3b8',
   endpoint: '#e2e8f0',
   label: '#e2e8f0',
+  lightText: '#0f172a',
+  droneArea: 'rgba(56, 189, 248, 0.10)',
+  droneEdge: 'rgba(56, 189, 248, 0.55)',
+  droneBody: '#38bdf8',
+}
+
+const PHASE_COLORS: Record<Phase, string> = {
+  verde: '#22c55e',
+  amarelo: '#facc15',
+  vermelho: '#ef4444',
 }
 
 /** Fits the network's logical space into the canvas, centred, without cropping. */
-function fit(state: SimulationState, width: number, height: number) {
-  const { network } = state
+export function fitTransform(network: RoadNetwork, width: number, height: number) {
   const scale = Math.max(
     0,
     Math.min((width - PADDING * 2) / network.width, (height - PADDING * 2) / network.height),
@@ -32,7 +42,13 @@ function fit(state: SimulationState, width: number, height: number) {
   return {
     scale,
     map: (p: Point): Point => ({ x: offsetX + p.x * scale, y: offsetY + p.y * scale }),
+    unmap: (p: Point): Point => ({ x: (p.x - offsetX) / scale, y: (p.y - offsetY) / scale }),
   }
+}
+
+/** Screen radius (px) within which a press grabs a drone. */
+export function droneGrabRadius(scale: number): number {
+  return Math.max(14, 22 * scale)
 }
 
 /** Draws one frame. Coordinates are CSS pixels; `dpr` scales them onto the backing store. */
@@ -49,7 +65,7 @@ export function drawScene(
   ctx.fillRect(0, 0, width, height)
 
   const { network, cars } = state
-  const { scale, map } = fit(state, width, height)
+  const { scale, map } = fitTransform(network, width, height)
   if (scale === 0) return
 
   const tracePath = (points: Point[]) => {
@@ -80,17 +96,40 @@ export function drawScene(
   }
   ctx.setLineDash([])
 
-  // Intersections: fixed points where traffic lights will sit (no state colour yet).
-  const radius = Math.max(4, 13 * scale)
+  // Drones: vision area under everything else that moves.
+  for (const drone of state.drones) {
+    const c = map(drone.position)
+    ctx.beginPath()
+    ctx.arc(c.x, c.y, drone.radius * scale, 0, Math.PI * 2)
+    ctx.fillStyle = COLORS.droneArea
+    ctx.fill()
+    ctx.lineWidth = Math.max(1, 1.5 * scale)
+    ctx.strokeStyle = COLORS.droneEdge
+    ctx.setLineDash([6 * scale, 6 * scale])
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+
+  // Traffic lights: one per intersection, coloured by phase, with the seconds left.
+  const radius = Math.max(6, 13 * scale)
+  const lights = new Map(state.lights.map((l) => [l.intersectionId, l]))
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font = `700 ${Math.max(9, Math.round(11 * scale))}px system-ui, sans-serif`
   for (const intersection of network.intersections) {
     const c = map(intersection.position)
+    const light = lights.get(intersection.id)
     ctx.beginPath()
     ctx.arc(c.x, c.y, radius, 0, Math.PI * 2)
-    ctx.fillStyle = COLORS.intersectionFill
+    ctx.fillStyle = light ? PHASE_COLORS[light.phase] : COLORS.intersectionFill
     ctx.fill()
     ctx.lineWidth = Math.max(1, 2 * scale)
     ctx.strokeStyle = COLORS.intersectionStroke
     ctx.stroke()
+    if (light && Number.isFinite(light.remainingS)) {
+      ctx.fillStyle = COLORS.lightText
+      ctx.fillText(`${Math.ceil(light.remainingS)}s`, c.x, c.y)
+    }
   }
 
   // Origin and destination markers with labels.
@@ -121,5 +160,18 @@ export function drawScene(
     ctx.arc(c.x, c.y, carRadius, 0, Math.PI * 2)
     ctx.fillStyle = ROUTE_COLORS[car.routeId] ?? '#f8fafc'
     ctx.fill()
+  }
+
+  // Drone bodies and labels on top, so they stay grabbable.
+  const body = Math.max(8, 16 * scale)
+  ctx.font = `700 ${Math.max(10, Math.round(13 * scale))}px system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'bottom'
+  for (const drone of state.drones) {
+    const c = map(drone.position)
+    ctx.fillStyle = COLORS.droneBody
+    ctx.fillRect(c.x - body / 2, c.y - body / 2, body, body)
+    ctx.fillStyle = COLORS.label
+    ctx.fillText(drone.id, c.x, c.y - body / 2 - 2)
   }
 }

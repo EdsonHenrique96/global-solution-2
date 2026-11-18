@@ -34,3 +34,10 @@ export interface Car {
   /** Network units per second. */
   speed: number
 }
+
+/** A virtual drone hovering over the map; it sees cars within `radius` metres. */
+export interface Drone {
+  id: string
+  position: Point
+  radius: number
+}

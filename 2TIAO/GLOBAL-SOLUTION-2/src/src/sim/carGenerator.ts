@@ -1,6 +1,7 @@
 import type { Car, Route } from './types'
 
-export const DEFAULT_CAR_SPEED = 90 // network units per second
+/** Free-flow speed: 50 km/h, in metres per second (1 network unit = 1 m). */
+export const DEFAULT_CAR_SPEED = 50 / 3.6
 
 const MS_PER_MINUTE = 60_000
 

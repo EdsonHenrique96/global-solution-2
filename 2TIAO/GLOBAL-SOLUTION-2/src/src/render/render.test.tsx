@@ -72,7 +72,8 @@ function distinct<T>(items: T[]): T[] {
 describe('render', () => {
   describe('SimulationCanvas', () => {
     it('draws the fixed mesh with 4 intersections', () => {
-      render(<SimulationCanvas engine={new SimulationEngine({ ratePerMinute: 0 })} />)
+      // the mesh alone: drones are circles too, so they are left out of this frame
+      render(<SimulationCanvas engine={new SimulationEngine({ ratePerMinute: 0, drones: [] })} />)
       const frame = lastFrame()
       expect(frame.length).toBeGreaterThan(0)
 
