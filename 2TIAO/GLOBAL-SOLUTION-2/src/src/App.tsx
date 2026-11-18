@@ -5,6 +5,7 @@ import { Simulation } from './decision/Simulation'
 import { AgentPanel } from './render/AgentPanel'
 import { CameraPanel } from './render/CameraPanel'
 import { CapacityPanel } from './render/CapacityPanel'
+import { ExperimentsPanel } from './render/ExperimentsPanel'
 import { SegmentTooltip } from './render/SegmentTooltip'
 import { segmentTooltip } from './render/tooltip'
 import { MetricsPanel } from './render/MetricsPanel'
@@ -182,6 +183,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
             }}
           />
           <TelemetryPanel transport={transport} sensorIds={cameras.map((c) => c.id)} />
+          <ExperimentsPanel />
         </div>
       </div>
     </main>

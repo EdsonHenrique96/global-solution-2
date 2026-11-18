@@ -18,6 +18,8 @@ interface Options {
    * diversion is applied by the agent's autonomy policy, not here.
    */
   agentControl?: boolean
+  /** 'parcial' diverts the computed fraction p; 'todos' notifies every driver bound for A (p = 1). */
+  diversionMode?: 'parcial' | 'todos'
 }
 
 /**
@@ -63,9 +65,11 @@ export class Simulation {
   diversion: DiversionState = { status: 'inativo' }
 
   readonly agentControl: boolean
+  readonly diversionMode: 'parcial' | 'todos'
 
-  constructor({ engine, transport, agentControl = false }: Options) {
+  constructor({ engine, transport, agentControl = false, diversionMode = 'parcial' }: Options) {
     this.agentControl = agentControl
+    this.diversionMode = diversionMode
     this.engine = engine ?? new SimulationEngine()
     this.transport = transport
     this.capacity = new CapacityService(transport, () => this.engine.getState().timeMs, this.engine.getState().segments)
@@ -134,6 +138,10 @@ export class Simulation {
     }
     if (this.agentControl) return
     const d = this.diversion
+    if (d.status === 'ativo' && this.diversionMode === 'todos') {
+      this.engine.setDiversion({ from: d.from, to: d.to, fraction: 1 })
+      return
+    }
     this.engine.setDiversion(d.status === 'ativo' && d.p > 0 ? { from: d.from, to: d.to, fraction: d.p } : null)
   }
 }

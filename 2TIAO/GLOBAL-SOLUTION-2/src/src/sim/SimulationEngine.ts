@@ -5,6 +5,7 @@ import { buildSegments, segmentAt, SHARED_M, type Segment } from '../sensors/seg
 import { distanceAlongRoute, positionOnRoute, routeLength } from './car'
 import { CarGenerator, DEFAULT_CAR_SPEED } from './carGenerator'
 import { mulberry32 } from './random'
+import { stepEmission } from '../experiments/emission'
 import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_DECEL, MAX_STOP_DECEL, step, yieldDeceleration } from './idm'
 import { buildRoadNetwork } from './roadNetwork'
 import { SignalController, type LightState } from './trafficLight'
@@ -19,9 +20,15 @@ export { SHARED_M }
 export const MERGE_ZONE_M = 150
 const ORIGIN_EDGE = 'origem'
 const ARRIVAL_EDGE = 'chegada'
-/** A car plus its instantaneous speed (m/s, 0 when stopped). */
+/** A car plus its instantaneous speed (m/s, 0 when stopped) and what it has emitted so far. */
 export interface CarState extends Car {
   velocity: number
+  /** CO2 emitted so far, g. */
+  co2G: number
+  /** Distance driven so far, m. */
+  traveledM: number
+  /** Time spent standing (under 5 km/h), s. */
+  stoppedS: number
 }
 
 /** A stopped obstacle on a road (accident, AD-016). */
@@ -44,6 +51,9 @@ export interface Arrival {
   routeId: string
   atMs: number
   travelS: number
+  co2G: number
+  distanciaM: number
+  paradoS: number
 }
 
 export const BLOCKAGE_MS = 120_000
@@ -75,6 +85,10 @@ export interface SimulationState {
   /** Generated cars by the route they will take (on the road, arrived or waiting). */
   routeTotals: Record<string, number>
   adaptiveSignals: boolean
+  /** CO2 emitted by every car since start, g. */
+  co2TotalG: number
+  /** Distance driven by every car since start, m. */
+  distanceTotalM: number
 }
 
 export interface SimulationOptions {
@@ -86,6 +100,8 @@ export interface SimulationOptions {
   cameras?: readonly FixedCamera[]
   noisePct?: number
   seed?: number
+  /** 'deterministic' (default) spaces cars evenly; 'poisson' draws exponential gaps from the seed. */
+  arrivals?: 'deterministic' | 'poisson'
 }
 
 interface StopLine {
@@ -157,11 +173,16 @@ export class SimulationEngine {
   private readonly blockageListeners = new Set<(e: { blockage: Blockage; ativo: boolean; ts: number }) => void>()
   private readonly arrivals: Arrival[] = []
   private travelSumS = 0
+  private co2TotalG = 0
+  private distanceTotalM = 0
 
   constructor(options: SimulationOptions = {}) {
     this.network = buildRoadNetwork()
     this.speed = options.speed ?? DEFAULT_CAR_SPEED
-    this.generator = new CarGenerator(options.ratePerMinute ?? DEFAULT_RATE_PER_MINUTE, this.speed)
+    this.generator = new CarGenerator(options.ratePerMinute ?? DEFAULT_RATE_PER_MINUTE, this.speed, {
+      arrivals: options.arrivals ?? 'deterministic',
+      rng: mulberry32((options.seed ?? 42) * 7919 + 1),
+    })
     this.lengths = new Map(this.network.routes.map((r) => [r.id, routeLength(r)]))
     const positions = new Map(this.network.intersections.map((i) => [i.id, i.position]))
     this.stopLines = new Map(
@@ -236,7 +257,7 @@ export class SimulationEngine {
 
   /** Places a car on a route (scenario setup; the generator places cars at the origin). */
   addCar(routeId: string, distance: number, velocity: number = this.speed): CarState {
-    const car: CarState = { id: this.manualId++, routeId, distance, speed: this.speed, velocity, bornAtMs: this.timeMs }
+    const car: CarState = { id: this.manualId++, routeId, distance, speed: this.speed, velocity, bornAtMs: this.timeMs, co2G: 0, traveledM: 0, stoppedS: 0 }
     this.cars.push(car)
     return car
   }
@@ -482,7 +503,18 @@ export class SimulationEngine {
       const acc = Math.max(-MAX_DECEL, Math.min(accLeader, accLine, accMerge))
       const room = Math.min(Number.isFinite(gap) ? gap - IDM.s0 : Infinity, lineRoom, blockRoom)
       const next = step(car.distance, car.velocity, acc, car.speed, dt, room)
-      moved.push({ ...car, distance: next.x, velocity: next.v })
+      const driven = next.x - car.distance
+      const emitted = stepEmission(driven, dt)
+      this.co2TotalG += emitted.co2G
+      this.distanceTotalM += driven
+      moved.push({
+        ...car,
+        distance: next.x,
+        velocity: next.v,
+        co2G: car.co2G + emitted.co2G,
+        traveledM: car.traveledM + driven,
+        stoppedS: car.stoppedS + (emitted.standing ? dt : 0),
+      })
     }
 
     const stillIn: CarState[] = []
@@ -495,6 +527,9 @@ export class SimulationEngine {
           routeId: car.routeId,
           atMs: this.timeMs + dtMs,
           travelS: (this.timeMs + dtMs - (car.bornAtMs ?? 0)) / 1000,
+          co2G: car.co2G,
+          distanciaM: car.traveledM,
+          paradoS: car.stoppedS,
         }
         this.travelSumS += arrival.travelS
         this.arrivals.push(arrival)
@@ -574,7 +609,7 @@ export class SimulationEngine {
         v = Math.min(v, Math.max(0, gap - IDM.s0) / IDM.T)
         while (v > 0 && idmAcceleration(v, car.speed, gap, v - lastV) < -IDM.b) v = Math.max(0, v - 0.25)
       }
-      this.cars.push({ ...car, velocity: v })
+      this.cars.push({ ...car, velocity: v, co2G: 0, traveledM: 0, stoppedS: 0 })
     }
     this.waiting = remaining
   }
@@ -610,6 +645,8 @@ export class SimulationEngine {
       divertedTotal: this.divertedTotal,
       routeTotals: { ...this.routeTotals },
       adaptiveSignals: this.signals.isAdaptive(),
+      co2TotalG: this.co2TotalG,
+      distanceTotalM: this.distanceTotalM,
     }
   }
 }
