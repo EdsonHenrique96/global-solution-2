@@ -23,18 +23,24 @@ export interface RunMetrics {
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null)
 
-/** First second after the accident from which the queue stays at or under the limit for 30 s. */
+/**
+ * Seconds from the accident until the queue is normal again: from the first second after the
+ * accident at which the queue goes over the limit, the first second from which it stays at or
+ * under the limit for 30 s. 0 when the queue never goes over; null when it never comes back.
+ */
 export function normalisationS(queueBySecond: number[], accidentS: number): number | null {
   const before = mean(queueBySecond.slice(0, accidentS)) ?? 0
   const limit = Math.max(1.2 * before, before + 1)
-  for (let s = accidentS; s + NORMAL_HOLD_S <= queueBySecond.length; s++) {
+  const over = queueBySecond.findIndex((q, s) => s >= accidentS && q > limit)
+  if (over === -1) return 0
+  for (let s = over; s + NORMAL_HOLD_S <= queueBySecond.length; s++) {
     if (queueBySecond.slice(s, s + NORMAL_HOLD_S).every((q) => q <= limit)) return s - accidentS
   }
   return null
 }
 
 /** One scenario run, in chunks of `chunkTicks` so a page can stay responsive between them. */
-export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 3_000): Generator<number, RunMetrics & { trace: Record<string, unknown> }> {
+export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 250): Generator<number, RunMetrics & { trace: Record<string, unknown> }> {
   const engine = new SimulationEngine({ ratePerMinute: RATE_PER_MINUTE, seed, arrivals: 'poisson' })
   const sim = new Simulation({ engine, transport: new FakeTransport(true), diversionMode: scenario === 'notificar-todos' ? 'todos' : 'parcial' })
   sim.setDiversionEnabled(scenario !== 'sem-sistema')

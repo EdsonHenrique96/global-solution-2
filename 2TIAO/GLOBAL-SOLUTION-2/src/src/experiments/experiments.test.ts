@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { emissionFactor, IDLE_G_PER_S } from './emission'
 import { CSV_HEADER, summarise, toCsv } from './csv'
-import { runScenario, SCENARIOS, type RunMetrics } from './ExperimentRunner'
+import { normalisationS, runScenario, SCENARIOS, type RunMetrics } from './ExperimentRunner'
 
 const FREE_MS = 50 / 3.6
 
@@ -143,18 +143,28 @@ describe('experiments', () => {
       expect(r.tempoParadoMedioS).toBeCloseTo(mean(t.arrivals.map((a) => a.paradoS)), 9)
       expect(r.filaMaxima).toBe(Math.max(...t.queueBySecond))
       expect(r.desviadosPct).toBeCloseTo((100 * t.diverted) / t.spawned, 9)
-      // normalisation: first second after the accident from which the queue stays at or under the
-      // threshold for 30 s
+      // normalisation: once the queue has gone over the limit after the accident, the first second
+      // from which it stays at or under the limit for 30 s (AD-028)
       const before = mean(t.queueBySecond.slice(0, 300))
       const limit = Math.max(1.2 * before, before + 1)
+      const over = t.queueBySecond.findIndex((q, s) => s >= 300 && q > limit)
+      expect(over).toBeGreaterThan(300) // the accident does build a queue in this run
       let expected: number | null = null
-      for (let s = 300; s + 30 <= t.queueBySecond.length; s++) {
+      for (let s = over; s + 30 <= t.queueBySecond.length; s++) {
         if (t.queueBySecond.slice(s, s + 30).every((q) => q <= limit)) {
           expected = s - 300
           break
         }
       }
       expect(r.tempoNormalizarS).toBe(expected)
+      expect(r.tempoNormalizarS).toBeGreaterThan(0)
+      // the rule on fixed queues: never over -> 0; over then back -> from the accident; never back -> null
+      const flat = Array(400).fill(1)
+      expect(normalisationS(flat, 300)).toBe(0)
+      const bump = [...Array(300).fill(1), ...Array(20).fill(1), ...Array(40).fill(9), ...Array(60).fill(1)]
+      expect(normalisationS(bump, 300)).toBe(60)
+      const stuck = [...Array(300).fill(1), ...Array(100).fill(9)]
+      expect(normalisationS(stuck, 300)).toBeNull()
       if (t.altFlowMax !== null && t.altCapacity) expect(r.saturacaoAlternativaPct).toBeCloseTo((100 * t.altFlowMax) / t.altCapacity, 9)
       else expect(r.saturacaoAlternativaPct).toBeNull()
     })
