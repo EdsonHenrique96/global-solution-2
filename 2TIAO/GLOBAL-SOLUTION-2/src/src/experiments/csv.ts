@@ -12,7 +12,7 @@ export const METRIC_KEYS: (keyof RunMetrics)[] = [
 ]
 
 export const CSV_HEADER =
-  'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct'
+  'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct;acidente_min;demanda_carros_min'
 
 export interface CsvRow {
   cenario: string
@@ -48,13 +48,14 @@ export function summarise(rows: CsvRow[]): Record<string, Record<keyof RunMetric
 }
 
 /** One row per run, then a mean and a deviation row per scenario; `;`, decimal comma, BOM. */
-export function toCsv(rows: CsvRow[]): string {
+export function toCsv(rows: CsvRow[], params: { acidenteMin: number; demanda: number }): string {
+  const tail = [num(params.acidenteMin), num(params.demanda)]
   const lines = [CSV_HEADER]
-  for (const r of rows) lines.push([r.cenario, r.repeticao, r.semente, ...METRIC_KEYS.map((k) => num(r.metrics[k]))].join(';'))
+  for (const r of rows) lines.push([r.cenario, r.repeticao, r.semente, ...METRIC_KEYS.map((k) => num(r.metrics[k])), ...tail].join(';'))
   const summary = summarise(rows)
   for (const [cenario, stats] of Object.entries(summary)) {
-    lines.push([cenario, 'media', '', ...METRIC_KEYS.map((k) => num(stats[k].media))].join(';'))
-    lines.push([cenario, 'desvio_padrao', '', ...METRIC_KEYS.map((k) => num(stats[k].desvio))].join(';'))
+    lines.push([cenario, 'media', '', ...METRIC_KEYS.map((k) => num(stats[k].media)), ...tail].join(';'))
+    lines.push([cenario, 'desvio_padrao', '', ...METRIC_KEYS.map((k) => num(stats[k].desvio)), ...tail].join(';'))
   }
   return '﻿' + lines.join('\r\n') + '\r\n'
 }

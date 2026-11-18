@@ -32,7 +32,14 @@ export const ADAPTIVE_MIN_GREEN_S = 15
 /** ±10 s around the base is automatic; more needs approval (Day 5). */
 export const ADAPTIVE_MAX_GREEN_S = 30
 const ADAPTIVE_YELLOW_MS = 3_000
-const ADAPTIVE_RED_MS = 20_000
+/** Shortest red in adaptive mode: with the 30 s automatic maximum, 30 + 3 + 10 fills the 43 s cycle. */
+export const ADAPTIVE_MIN_RED_MS = 10_000
+
+/** First instant at or after `t` where this light's fixed cycle starts a green. */
+export function nextAlignedStart(intersectionId: string, t: number): number {
+  const offsetMs = (LIGHT_OFFSETS_S[intersectionId] ?? 0) * 1000
+  return Math.ceil((t + offsetMs) / CYCLE_MS) * CYCLE_MS - offsetMs
+}
 
 /** Green for an approach: 20 + 2 (queue - average queue) s, clamped to 15-30 s (AD-015). */
 export function adaptiveGreenS(queue: number, averageQueue: number): number {
@@ -41,9 +48,10 @@ export function adaptiveGreenS(queue: number, averageQueue: number): number {
 }
 
 /**
- * The lights of every intersection: the fixed-time cycle, or, when adaptive, a cycle whose green
- * is set from the queues at the start of each green. Turning adaptive on continues from the
- * fixed cycle's current phase; turning it off returns to the fixed cycle.
+ * The lights of every intersection: the fixed-time cycle, or, when adaptive, the same 43 s cycle
+ * and offsets with the green set from the queues at the start of each green and the red lasting
+ * until the next aligned start (AD-031), so the green wave holds. Turning adaptive on continues
+ * from the fixed cycle's current phase; turning it off returns to the fixed cycle.
  */
 export class SignalController {
   private adaptive = false
@@ -90,7 +98,8 @@ export class SignalController {
           s.endsAtMs += ADAPTIVE_YELLOW_MS
         } else if (s.phase === 'amarelo') {
           s.phase = 'vermelho'
-          s.endsAtMs += ADAPTIVE_RED_MS
+          // a long approved green stretches this cycle only: red runs to the next aligned start
+          s.endsAtMs = nextAlignedStart(id, s.endsAtMs + ADAPTIVE_MIN_RED_MS)
         } else {
           const queues = this.ids.map((i) => queueOf(i))
           const average = queues.reduce((a, b) => a + b, 0) / queues.length

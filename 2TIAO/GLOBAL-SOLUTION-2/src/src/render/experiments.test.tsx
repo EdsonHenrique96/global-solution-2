@@ -60,6 +60,31 @@ describe('render', () => {
       expect(csv.split('\r\n').filter(Boolean)).toHaveLength(1 + 6 + 3 * 2)
     })
 
+    it('offers accident duration and demand and passes them to the run', async () => {
+      const run = vi.fn(async () => ({ results, cancelado: false }))
+      const save = vi.fn()
+      render(<ExperimentsPanel run={run} save={save} />)
+      const accident = screen.getByLabelText('Acidente') as HTMLSelectElement
+      const demand = screen.getByLabelText('Demanda (carros/min)') as HTMLInputElement
+      expect(accident.value).toBe('2')
+      expect([...accident.options].map((o) => o.value)).toEqual(['2', '5'])
+      expect(demand.value).toBe('15')
+      // demand is kept within 10-20
+      fireEvent.change(demand, { target: { value: '40' } })
+      expect(demand.value).toBe('20')
+      fireEvent.change(demand, { target: { value: '3' } })
+      expect(demand.value).toBe('10')
+      fireEvent.change(demand, { target: { value: '18' } })
+      fireEvent.change(accident, { target: { value: '5' } })
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Rodar' })))
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ acidenteMin: 5, demanda: 18 }))
+      expect(screen.getByText(/central, 500 m, aos 5 min, por 5 min/)).toBeInTheDocument()
+      // the CSV carries the parameters of the run that produced it
+      fireEvent.click(screen.getByRole('button', { name: 'Baixar CSV' }))
+      const csv = save.mock.calls[0][0] as string
+      expect(csv.split('\r\n')[1].endsWith(';5;18')).toBe(true)
+    })
+
     it('runs in chunks shows progress and can be cancelled', async () => {
       // the real runner yields to the page between chunks and stops on abort
       const controller = new AbortController()

@@ -299,8 +299,9 @@ export class SimulationEngine {
     return this.cars.filter((c) => c.velocity < QUEUE_SPEED_MS).length + this.waiting.length
   }
 
-  addBlockage(routeId: string, distance: number): Blockage {
-    const b: Blockage = { id: this.blockageId++, routeId, distance, endsAtMs: this.timeMs + BLOCKAGE_MS }
+  /** Blocks a lane at a point for `durationMs` (2 min by default, AD-016). */
+  addBlockage(routeId: string, distance: number, durationMs = BLOCKAGE_MS): Blockage {
+    const b: Blockage = { id: this.blockageId++, routeId, distance, endsAtMs: this.timeMs + durationMs }
     this.blockages.push(b)
     this.emitBlockage(b, true)
     return b

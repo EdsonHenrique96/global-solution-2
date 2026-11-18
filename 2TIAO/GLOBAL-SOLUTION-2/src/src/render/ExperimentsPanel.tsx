@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { METRIC_KEYS, summarise, toCsv } from '../experiments/csv'
-import { clampRepetitions, runExperiment, SCENARIOS, type RunMetrics, type RunResult } from '../experiments/ExperimentRunner'
+import { ACCIDENT_MINUTES, clampDemand, clampRepetitions, runExperiment, SCENARIOS, type ExperimentParams, type RunMetrics, type RunResult } from '../experiments/ExperimentRunner'
 
 const LABELS: Record<keyof RunMetrics, string> = {
   tempoMedioViagemS: 'Tempo médio de viagem (s)',
@@ -40,6 +40,10 @@ function download(csv: string, filename: string): void {
 /** Three scenarios, the same accident, N repetitions: mean ± sample deviation, chart and CSV. */
 export function ExperimentsPanel({ run = runExperiment, save = download }: Props) {
   const [reps, setReps] = useState(10)
+  const [acidenteMin, setAcidenteMin] = useState<ExperimentParams['acidenteMin']>(2)
+  const [demanda, setDemanda] = useState(15)
+  /** Parameters of the run whose results are shown (the CSV carries these, not the form's). */
+  const [ran, setRan] = useState<ExperimentParams>({ acidenteMin: 2, demanda: 15 })
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [results, setResults] = useState<RunResult[]>([])
   const [status, setStatus] = useState<'parado' | 'rodando' | 'concluido' | 'cancelado'>('parado')
@@ -47,11 +51,14 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
 
   const start = async () => {
     abort.current = new AbortController()
+    setRan({ acidenteMin, demanda })
     setStatus('rodando')
     setResults([])
     setProgress({ done: 0, total: clampRepetitions(reps) * SCENARIOS.length })
     const out = await run({
       repeticoes: reps,
+      acidenteMin,
+      demanda,
       signal: abort.current.signal,
       onProgress: (done, total) => setProgress({ done, total }),
     })
@@ -90,11 +97,27 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
   return (
     <section className="experiments" aria-label="Experimentos">
       <h2>Experimentos</h2>
-      <p className="hint">Três cenários com o mesmo acidente (central, 500 m, aos 5 min, por 2 min) e a mesma semente em cada repetição.</p>
+      <p className="hint">
+        Três cenários com o mesmo acidente (central, 500 m, aos 5 min, por {status === 'parado' ? acidenteMin : ran.acidenteMin} min) e a mesma semente em cada repetição.
+      </p>
       <div className="exp-controls">
         <label>
           Repetições
           <input type="number" min={1} max={30} value={reps} onChange={(e) => setReps(clampRepetitions(Number(e.target.value)))} disabled={status === 'rodando'} />
+        </label>
+        <label>
+          Acidente
+          <select value={acidenteMin} onChange={(e) => setAcidenteMin(Number(e.target.value) as ExperimentParams['acidenteMin'])} disabled={status === 'rodando'}>
+            {ACCIDENT_MINUTES.map((m) => (
+              <option key={m} value={m}>
+                {m} min
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Demanda (carros/min)
+          <input type="number" min={10} max={20} value={demanda} onChange={(e) => setDemanda(clampDemand(Number(e.target.value)))} disabled={status === 'rodando'} />
         </label>
         <button type="button" onClick={start} disabled={status === 'rodando'}>
           Rodar
@@ -102,7 +125,7 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
         <button type="button" onClick={() => abort.current?.abort()} disabled={status !== 'rodando'}>
           Cancelar
         </button>
-        <button type="button" onClick={() => save(toCsv(results), 'experimentos-transito.csv')} disabled={results.length === 0 || status === 'rodando'}>
+        <button type="button" onClick={() => save(toCsv(results, ran), 'experimentos-transito.csv')} disabled={results.length === 0 || status === 'rodando'}>
           Baixar CSV
         </button>
       </div>

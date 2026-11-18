@@ -182,6 +182,28 @@ describe('experiments', () => {
     })
   })
 
+  describe('parameters', () => {
+    it('runs every scenario with the chosen accident duration and demand', { timeout: 120_000 }, () => {
+      // addBlockage without a duration keeps 2 min; with one, it lasts that long
+      const e = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
+      expect(e.addBlockage('central', 500).endsAtMs).toBe(120_000)
+      expect(e.addBlockage('norte', 300, 300_000).endsAtMs).toBe(300_000)
+
+      const base = runScenario('sem-sistema', 7)
+      expect(base.trace.demanda).toBe(15)
+      for (const s of SCENARIOS) {
+        const r = runScenario(s, 7, { acidenteMin: 5, demanda: 20 })
+        expect(r.trace.blockages).toEqual([
+          { routeId: 'central', distance: 500, ativo: true, ts: 300_000 },
+          { routeId: 'central', distance: 500, ativo: false, ts: 600_000 },
+        ])
+        expect(r.trace.demanda).toBe(20)
+        // 20 cars/min over 15 min: about 300, clearly more than at 15 cars/min
+        expect(r.trace.spawned as number).toBeGreaterThan((base.trace.spawned as number) + 40)
+      }
+    })
+  })
+
   describe('csv', () => {
     it('writes one row per run then mean and deviation rows in the pt-BR format', () => {
       const run = (over: Partial<RunMetrics>): RunMetrics => ({
@@ -199,19 +221,21 @@ describe('experiments', () => {
         { cenario: 'sem-sistema', repeticao: 1, semente: 11, metrics: run({ tempoMedioViagemS: 100.5 }) },
         { cenario: 'sem-sistema', repeticao: 2, semente: 12, metrics: run({ tempoMedioViagemS: 110.5, tempoNormalizarS: null }) },
       ]
-      const csv = toCsv(results)
+      const csv = toCsv(results, { acidenteMin: 5, demanda: 18 })
       expect(csv.startsWith('﻿')).toBe(true)
       const lines = csv.slice(1).trimEnd().split('\r\n')
       expect(lines[0]).toBe(CSV_HEADER)
       expect(CSV_HEADER).toBe(
-        'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct',
+        'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct;acidente_min;demanda_carros_min',
       )
-      expect(lines[1]).toBe('sem-sistema;1;11;100,5;10;150;20;12;60;80;5')
-      expect(lines[2]).toBe('sem-sistema;2;12;110,5;10;150;20;12;;80;5')
-      expect(lines[3]).toBe('sem-sistema;media;;105,5;10;150;20;12;60;80;5')
+      expect(lines[1]).toBe('sem-sistema;1;11;100,5;10;150;20;12;60;80;5;5;18')
+      expect(lines[2]).toBe('sem-sistema;2;12;110,5;10;150;20;12;;80;5;5;18')
+      expect(lines[3]).toBe('sem-sistema;media;;105,5;10;150;20;12;60;80;5;5;18')
       // sample standard deviation: sqrt(((100.5-105.5)^2 + (110.5-105.5)^2) / 1) = 7.0711
       expect(lines[4].split(';')[3]).toBe('7,0711')
       expect(lines[4].startsWith('sem-sistema;desvio_padrao;;')).toBe(true)
+      expect(lines[4].endsWith(';5;18')).toBe(true)
+      expect(lines[4].split(';')).toHaveLength(13)
       expect(lines).toHaveLength(5)
       const summary = summarise(results)
       expect(summary['sem-sistema'].tempoMedioViagemS.media).toBeCloseTo(105.5, 9)

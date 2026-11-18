@@ -114,13 +114,13 @@ describe('sim', () => {
       const i1 = () => engine.getState().lights.find((l) => l.intersectionId === 'I1')!
       expect(i1().phase).toBe('verde')
       expect(i1().remainingS).toBeCloseTo(29, 1)
-      // yellow 3 s then red 20 s after the green
+      // yellow 3 s, then red until the next start aligned to the 43 s cycle (AD-031): 75 -> 86 s
       runFor(engine, 29_000)
       expect(i1().phase).toBe('amarelo')
       expect(i1().remainingS).toBeCloseTo(3, 1)
       runFor(engine, 3_000)
       expect(i1().phase).toBe('vermelho')
-      expect(i1().remainingS).toBeCloseTo(20, 1)
+      expect(i1().remainingS).toBeCloseTo(11, 1)
     })
 
     it('measures the queue as cars under 5 km/h in the 150 m before the stop line', () => {

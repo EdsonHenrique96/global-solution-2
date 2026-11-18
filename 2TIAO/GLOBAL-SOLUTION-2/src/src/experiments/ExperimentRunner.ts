@@ -7,7 +7,20 @@ export type Scenario = (typeof SCENARIOS)[number]
 
 export const RUN_MS = 900_000
 export const RATE_PER_MINUTE = 15
-export const ACCIDENT = { routeId: 'central', distance: 500, startMs: 300_000, durationMs: 120_000 } as const
+export const ACCIDENT = { routeId: 'central', distance: 500, startMs: 300_000 } as const
+export const ACCIDENT_MINUTES = [2, 5] as const
+export const DEMAND_MIN = 10
+export const DEMAND_MAX = 20
+
+/** What the operator chooses before a run (semaforo-coordenado AC 4). */
+export interface ExperimentParams {
+  acidenteMin: (typeof ACCIDENT_MINUTES)[number]
+  demanda: number
+}
+export const DEFAULT_PARAMS: ExperimentParams = { acidenteMin: 2, demanda: RATE_PER_MINUTE }
+
+/** Demand kept within 10-20 cars/min. */
+export const clampDemand = (n: number) => Math.min(DEMAND_MAX, Math.max(DEMAND_MIN, Math.round(Number.isFinite(n) ? n : 15)))
 const NORMAL_HOLD_S = 30
 
 export interface RunMetrics {
@@ -41,8 +54,14 @@ export function normalisationS(queueBySecond: number[], accidentS: number): numb
 }
 
 /** One scenario run, in chunks of `chunkTicks` so a page can stay responsive between them. */
-export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 250): Generator<number, RunMetrics & { trace: Record<string, unknown> }> {
-  const engine = new SimulationEngine({ ratePerMinute: RATE_PER_MINUTE, seed, arrivals: 'poisson' })
+export function* scenarioSteps(
+  scenario: Scenario,
+  seed: number,
+  params: ExperimentParams = DEFAULT_PARAMS,
+  chunkTicks = 250,
+): Generator<number, RunMetrics & { trace: Record<string, unknown> }> {
+  const demanda = clampDemand(params.demanda)
+  const engine = new SimulationEngine({ ratePerMinute: demanda, seed, arrivals: 'poisson' })
   const sim = new Simulation({ engine, transport: new FakeTransport(true), diversionMode: scenario === 'notificar-todos' ? 'todos' : 'parcial' })
   sim.setDiversionEnabled(scenario !== 'sem-sistema')
   engine.setAdaptiveSignals(scenario === 'desvio-parcial')
@@ -59,7 +78,7 @@ export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 25
   let maxFraction = 0
   const total = RUN_MS / TICK_MS
   for (let tick = 1; tick <= total; tick++) {
-    if (engine.getState().timeMs === ACCIDENT.startMs) engine.addBlockage(ACCIDENT.routeId, ACCIDENT.distance)
+    if (engine.getState().timeMs === ACCIDENT.startMs) engine.addBlockage(ACCIDENT.routeId, ACCIDENT.distance, params.acidenteMin * 60_000)
     sim.tick()
     const { timeMs, diversion } = engine.getState()
     if (timeMs % 1000 === 0) queueBySecond.push(engine.queueTotal())
@@ -95,6 +114,8 @@ export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 25
     trace: {
       seed,
       blockages,
+      demanda,
+      acidenteMin: params.acidenteMin,
       spawned: s.spawnedTotal,
       diverted: s.divertedTotal,
       adaptiveSignals: scenario === 'desvio-parcial',
@@ -112,8 +133,8 @@ export function* scenarioSteps(scenario: Scenario, seed: number, chunkTicks = 25
 }
 
 /** One scenario run to the end (tests and scripts). */
-export function runScenario(scenario: Scenario, seed: number): RunMetrics & { trace: Record<string, unknown> } {
-  const steps = scenarioSteps(scenario, seed)
+export function runScenario(scenario: Scenario, seed: number, params: ExperimentParams = DEFAULT_PARAMS): RunMetrics & { trace: Record<string, unknown> } {
+  const steps = scenarioSteps(scenario, seed, params)
   for (;;) {
     const r = steps.next()
     if (r.done) return r.value
@@ -130,7 +151,7 @@ export interface RunResult {
 /** Seed of a repetition: the same in the three scenarios, different across repetitions. */
 export const seedFor = (repeticao: number) => 1000 + repeticao
 
-export interface ExperimentOptions {
+export interface ExperimentOptions extends Partial<ExperimentParams> {
   repeticoes: number
   onProgress?: (done: number, total: number) => void
   signal?: AbortSignal
@@ -143,14 +164,14 @@ export const clampRepetitions = (n: number) => Math.min(30, Math.max(1, Math.rou
  * Runs every scenario `repeticoes` times, yielding to the page between chunks so it stays
  * responsive. Cancelling keeps the runs already finished.
  */
-export async function runExperiment({ repeticoes, onProgress, signal }: ExperimentOptions): Promise<{ results: RunResult[]; cancelado: boolean }> {
+export async function runExperiment({ repeticoes, onProgress, signal, acidenteMin = 2, demanda = RATE_PER_MINUTE }: ExperimentOptions): Promise<{ results: RunResult[]; cancelado: boolean }> {
   const reps = clampRepetitions(repeticoes)
   const total = reps * SCENARIOS.length
   const results: RunResult[] = []
   const pause = () => new Promise<void>((r) => setTimeout(r, 0))
   for (let repeticao = 1; repeticao <= reps; repeticao++) {
     for (const cenario of SCENARIOS) {
-      const steps = scenarioSteps(cenario, seedFor(repeticao))
+      const steps = scenarioSteps(cenario, seedFor(repeticao), { acidenteMin, demanda })
       for (;;) {
         if (signal?.aborted) return { results, cancelado: true }
         const r = steps.next()
