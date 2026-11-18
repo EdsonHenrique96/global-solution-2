@@ -30,6 +30,7 @@ describe('telemetry', () => {
         contagem: 3,
         velocidadeMediaKmh: 33.3,
         ruidoPct: 0,
+        porVia: [],
       })
 
       // the mean covers every sample of the window, not the last tick, and the next window starts empty
@@ -116,7 +117,7 @@ describe('telemetry', () => {
     it('publishes each reading to its drone topic as JSON with QoS 0 and no retain', () => {
       const transport = new FakeTransport(true)
       const publisher = new TelemetryPublisher(transport)
-      const reading = { droneId: 'D3', ts: 20_000, janelaS: 10, contagem: 4, velocidadeMediaKmh: null, ruidoPct: 10 }
+      const reading = { droneId: 'D3', ts: 20_000, janelaS: 10, contagem: 4, velocidadeMediaKmh: null, ruidoPct: 10, porVia: [] }
       publisher.publish(reading)
       publisher.publish({ ...reading, droneId: 'D1', velocidadeMediaKmh: 42.5 })
 
@@ -131,6 +132,7 @@ describe('telemetry', () => {
         contagem: 4,
         velocidadeMediaKmh: null,
         ruidoPct: 10,
+        porVia: [],
       })
       expect(Object.keys(JSON.parse(first.payload))).toEqual([
         'droneId',
@@ -139,6 +141,7 @@ describe('telemetry', () => {
         'contagem',
         'velocidadeMediaKmh',
         'ruidoPct',
+        'porVia',
       ])
       expect(second.topic).toBe('transito/drones/D1/telemetria')
       expect(JSON.parse(second.payload).velocidadeMediaKmh).toBe(42.5)

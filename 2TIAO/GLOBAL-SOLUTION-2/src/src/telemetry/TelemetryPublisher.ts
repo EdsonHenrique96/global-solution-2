@@ -20,6 +20,12 @@ export class TelemetryPublisher {
       contagem: reading.contagem,
       velocidadeMediaKmh: reading.velocidadeMediaKmh,
       ruidoPct: reading.ruidoPct,
+      porVia: reading.porVia.map((v) => ({
+        via: v.via,
+        contagem: v.contagem,
+        velocidadeMediaKmh: v.velocidadeMediaKmh,
+        comprimentoM: v.comprimentoM,
+      })),
     }
     this.transport.publish(telemetryTopic(reading.droneId), JSON.stringify(payload), { qos: 0, retain: false })
   }

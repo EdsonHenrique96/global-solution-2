@@ -103,7 +103,11 @@ export class SimulationEngine {
     )
     this.lightMode = options.trafficLights ?? 'fixed'
     this.drones = (options.drones ?? DEFAULT_DRONES).map((d) => ({ ...d, position: { ...d.position } }))
-    this.sensor = new DroneSensor({ noisePct: options.noisePct, rng: mulberry32(options.seed ?? 42) })
+    this.sensor = new DroneSensor({
+      noisePct: options.noisePct,
+      rng: mulberry32(options.seed ?? 42),
+      routes: this.network.routes,
+    })
   }
 
   setRate(ratePerMinute: number): void {
@@ -198,7 +202,7 @@ export class SimulationEngine {
     const routes = new Map(this.network.routes.map((r) => [r.id, r]))
     return this.cars.map((car) => {
       const p = positionOnRoute(routes.get(car.routeId)!, car.distance)
-      return { x: p.x, y: p.y, speedKmh: car.velocity * 3.6 }
+      return { x: p.x, y: p.y, speedKmh: car.velocity * 3.6, via: car.routeId }
     })
   }
 

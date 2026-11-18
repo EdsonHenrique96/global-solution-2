@@ -1,5 +1,6 @@
 import { positionOnRoute } from '../sim/car'
 import type { SimulationState } from '../sim/SimulationEngine'
+import type { RouteStatus } from '../capacity/CapacityModel'
 import type { Phase } from '../sim/trafficLight'
 import type { Point, RoadNetwork } from '../sim/types'
 
@@ -14,7 +15,7 @@ const ROUTE_COLORS: Record<string, string> = {
 const COLORS = {
   background: '#0f172a',
   road: '#334155',
-  laneMark: '#cbd5e1',
+  selection: '#f8fafc',
   intersectionFill: '#1e293b',
   intersectionStroke: '#94a3b8',
   endpoint: '#e2e8f0',
@@ -23,6 +24,19 @@ const COLORS = {
   droneArea: 'rgba(56, 189, 248, 0.10)',
   droneEdge: 'rgba(56, 189, 248, 0.55)',
   droneBody: '#38bdf8',
+}
+
+const STATUS_COLORS: Record<RouteStatus, string> = {
+  fluindo: '#22c55e',
+  carregado: '#facc15',
+  congestionado: '#ef4444',
+  'sem dados': '#94a3b8',
+}
+
+/** What the capacity layer adds to a frame. */
+export interface SceneOverlay {
+  routeStatus?: Record<string, RouteStatus>
+  selectedRoute?: string
 }
 
 const PHASE_COLORS: Record<Phase, string> = {
@@ -46,6 +60,18 @@ export function fitTransform(network: RoadNetwork, width: number, height: number
   }
 }
 
+/** Screen distance (px) within which a click picks a route. */
+export const ROUTE_PICK_PX = 14
+
+/** Distance from p to segment ab. */
+export function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+  return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y)
+}
+
 /** Screen radius (px) within which a press grabs a drone. */
 export function droneGrabRadius(scale: number): number {
   return Math.max(14, 22 * scale)
@@ -58,6 +84,7 @@ export function drawScene(
   width: number,
   height: number,
   dpr = 1,
+  overlay: SceneOverlay = {},
 ): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, width, height)
@@ -77,24 +104,32 @@ export function drawScene(
     })
   }
 
-  // Roads: asphalt, then a dashed lane mark on top.
+  // Roads: the selected one gets a light halo, then asphalt, then a centre line in the
+  // colour of the route's state (grey without data).
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
+  ctx.setLineDash([])
+  const selected = network.routes.find((r) => r.id === overlay.selectedRoute)
+  if (selected) {
+    tracePath(selected.points)
+    ctx.strokeStyle = COLORS.selection
+    ctx.lineWidth = Math.max(8, 32 * scale)
+    ctx.stroke()
+  }
   for (const route of network.routes) {
     tracePath(route.points)
     ctx.strokeStyle = COLORS.road
     ctx.lineWidth = Math.max(4, 22 * scale)
-    ctx.setLineDash([])
     ctx.stroke()
   }
-  for (const route of network.routes) {
+  // central last, so the shared stretches near origin and destination show its colour
+  const byLayer = [...network.routes].sort((a, b) => Number(a.id === 'central') - Number(b.id === 'central'))
+  for (const route of byLayer) {
     tracePath(route.points)
-    ctx.strokeStyle = COLORS.laneMark
-    ctx.lineWidth = Math.max(1, 1.5 * scale)
-    ctx.setLineDash([8 * scale, 10 * scale])
+    ctx.strokeStyle = STATUS_COLORS[overlay.routeStatus?.[route.id] ?? 'sem dados']
+    ctx.lineWidth = Math.max(2, 5 * scale)
     ctx.stroke()
   }
-  ctx.setLineDash([])
 
   // Drones: vision area under everything else that moves.
   for (const drone of state.drones) {

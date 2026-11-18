@@ -1,18 +1,28 @@
 import { useEffect, useRef } from 'react'
+import type { RouteStatus } from '../capacity/CapacityModel'
 import type { SimulationEngine } from '../sim/SimulationEngine'
-import { droneGrabRadius, drawScene, fitTransform } from './draw'
+import { distanceToSegment, droneGrabRadius, drawScene, fitTransform, ROUTE_PICK_PX } from './draw'
 
 interface Props {
   engine: SimulationEngine
+  /** Read on every frame: the state of each route. */
+  routeStatus?: () => Record<string, RouteStatus>
+  selectedRoute?: string
+  onSelectRoute?: (routeId: string) => void
 }
 
 /**
  * Fills its container with a canvas and redraws the simulation on every animation frame.
  * A drone can be dragged with the mouse; it is dropped where the button is released.
  */
-export function SimulationCanvas({ engine }: Props) {
+export function SimulationCanvas({ engine, routeStatus, selectedRoute, onSelectRoute }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // Latest props for the long-lived listeners and frame loop below.
+  const overlayRef = useRef({ routeStatus, selectedRoute, onSelectRoute })
+  useEffect(() => {
+    overlayRef.current = { routeStatus, selectedRoute, onSelectRoute }
+  })
 
   useEffect(() => {
     const wrap = wrapRef.current
@@ -24,7 +34,13 @@ export function SimulationCanvas({ engine }: Props) {
     let height = 0
     let dpr = 1
 
-    const draw = () => drawScene(ctx, engine.getState(), width, height, dpr)
+    const draw = () => {
+      const { routeStatus: status, selectedRoute: selected } = overlayRef.current
+      drawScene(ctx, engine.getState(), width, height, dpr, {
+        routeStatus: status?.(),
+        selectedRoute: selected,
+      })
+    }
 
     const resize = () => {
       width = wrap.clientWidth
@@ -56,6 +72,27 @@ export function SimulationCanvas({ engine }: Props) {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
+    const pickRoute = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
+      const onSelect = overlayRef.current.onSelectRoute
+      if (!onSelect) return
+      const screen = fit.map(point)
+      const nearest = engine
+        .getState()
+        .network.routes.map((route) => {
+          let best = Infinity
+          for (let i = 1; i < route.points.length; i++) {
+            best = Math.min(best, distanceToSegment(screen, fit.map(route.points[i - 1]), fit.map(route.points[i])))
+          }
+          return { id: route.id, dist: best }
+        })
+        .filter(({ dist }) => dist <= ROUTE_PICK_PX)
+        .sort((a, b) => a.dist - b.dist)[0]
+      if (nearest) {
+        onSelect(nearest.id)
+        draw()
+      }
+    }
+
     const onDown = (e: MouseEvent) => {
       if (e.button !== 0) return
       const { fit, point } = toNetwork(e)
@@ -65,7 +102,10 @@ export function SimulationCanvas({ engine }: Props) {
         .drones.map((d) => ({ d, dist: Math.hypot(d.position.x - point.x, d.position.y - point.y) }))
         .filter(({ dist }) => dist <= grab)
         .sort((a, b) => a.dist - b.dist)[0]
-      if (!hit) return
+      if (!hit) {
+        pickRoute(fit, point)
+        return
+      }
       e.preventDefault()
       dragging = hit.d.id
       canvas.style.cursor = 'grabbing'

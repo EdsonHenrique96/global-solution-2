@@ -1,6 +1,7 @@
 // @vitest-environment node
 import mqtt from 'mqtt'
 import { afterEach, describe, expect, it } from 'vitest'
+import { CapacityService } from '../capacity/CapacityService'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { createMqttTransport, type MqttTransport } from '../telemetry/MqttTransport'
 import { TELEMETRY_FILTER, wireTelemetry } from '../telemetry/TelemetryPublisher'
@@ -56,6 +57,36 @@ describe('integration', () => {
         expect(payload).toMatchObject({ ts: 10_000, janelaS: 10, ruidoPct: 10 })
         expect(typeof payload.contagem).toBe('number')
       }
+    })
+
+    it('the capacity service learns from porVia readings received through Mosquitto', async () => {
+      const publisherSide = createMqttTransport(BROKER_WS)
+      const modelSide = createMqttTransport(BROKER_WS)
+      open.push(publisherSide, modelSide)
+      await waitFor(() => publisherSide.status() === 'connected' && modelSide.status() === 'connected', 5000)
+
+      const engine = new SimulationEngine({ ratePerMinute: 120, noisePct: 0 })
+      const service = new CapacityService(modelSide, () => engine.getState().timeMs)
+      service.start()
+      open.push({ close: () => service.stop() })
+      // let the subscription reach the broker before anything is published
+      await new Promise((r) => setTimeout(r, 300))
+      wireTelemetry(engine, publisherSide)
+
+      // 60 simulated seconds: cars reach the drones from ~25 s on
+      for (let t = 0; t < 60_000; t += TICK_MS) engine.tick(TICK_MS)
+      await waitFor(() => service.snapshot().central.amostras.length > 0, 5000)
+
+      const central = service.snapshot().central
+      expect(central.estado).not.toBe('sem dados')
+      // a car can leave the circle before the window closes: count 0 with sampled speed is valid
+      for (const s of central.amostras) {
+        expect(s.k).toBeGreaterThanOrEqual(0)
+        expect(s.q).toBeGreaterThanOrEqual(0)
+        // density is the count over the 220 m under D2: a whole number of cars per 0.22 km
+        expect((s.k * 220) / 1000).toBeCloseTo(Math.round((s.k * 220) / 1000), 6)
+      }
+      expect(central.amostras.some((s) => s.k > 0)).toBe(true)
     })
 
     it('MqttTransport reports disconnected when the broker is unreachable', async () => {

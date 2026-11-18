@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
+import { CapacityService } from './capacity/CapacityService'
+import { CapacityPanel } from './render/CapacityPanel'
 import { NoiseControl } from './render/NoiseControl'
 import { SimulationCanvas } from './render/SimulationCanvas'
 import { TelemetryPanel } from './render/TelemetryPanel'
 import { VolumeControl } from './render/VolumeControl'
 import { SimulationEngine, TICK_MS } from './sim/SimulationEngine'
-import { wireTelemetry } from './telemetry/TelemetryPublisher'
+import { TELEMETRY_FILTER, wireTelemetry } from './telemetry/TelemetryPublisher'
 import { createOfflineTransport, type TelemetryTransport } from './telemetry/transport'
 import './App.css'
 
@@ -21,17 +23,31 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
   const [rate, setRate] = useState(() => engine.getRate())
   const [noise, setNoise] = useState(() => engine.getNoise())
   const [stats, setStats] = useState({ active: 0, spawned: 0 })
+  const [capacity] = useState(() => new CapacityService(transport, () => engine.getState().timeMs))
+  const [selectedRoute, setSelectedRoute] = useState('central')
+  const [estimates, setEstimates] = useState(() => capacity.snapshot())
 
   useEffect(() => wireTelemetry(engine, transport), [engine, transport])
+
+  useEffect(() => {
+    capacity.start()
+    // a message can change an estimate between ticks; refresh on each one too
+    const off = transport.subscribe(TELEMETRY_FILTER, () => setEstimates(capacity.snapshot()))
+    return () => {
+      off()
+      capacity.stop()
+    }
+  }, [capacity, transport])
 
   useEffect(() => {
     const id = setInterval(() => {
       engine.tick(TICK_MS)
       const state = engine.getState()
       setStats({ active: state.cars.length, spawned: state.spawnedTotal })
+      setEstimates(capacity.snapshot())
     }, TICK_MS)
     return () => clearInterval(id)
-  }, [engine])
+  }, [engine, capacity])
 
   const changeRate = (next: number) => {
     engine.setRate(next)
@@ -55,8 +71,16 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
         </p>
       </header>
       <div className="workspace">
-        <SimulationCanvas engine={engine} />
-        <TelemetryPanel transport={transport} droneIds={engine.getState().drones.map((d) => d.id)} />
+        <SimulationCanvas
+          engine={engine}
+          routeStatus={() => Object.fromEntries(Object.entries(capacity.snapshot()).map(([id, e]) => [id, e.estado]))}
+          selectedRoute={selectedRoute}
+          onSelectRoute={setSelectedRoute}
+        />
+        <div className="side">
+          <CapacityPanel routeId={selectedRoute} estimate={estimates[selectedRoute]} />
+          <TelemetryPanel transport={transport} droneIds={engine.getState().drones.map((d) => d.id)} />
+        </div>
       </div>
     </main>
   )
