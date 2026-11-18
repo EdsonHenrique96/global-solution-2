@@ -3,3 +3,8 @@
 .claude/
 .cursor/
 .windsurf/
+
+# Local-only files (kept out of the repo)
+2TIAO/GLOBAL-SOLUTION-2/esboco-poc.md
+2TIAO/GLOBAL-SOLUTION-2/objetivos.md
+2TIAO/GLOBAL-SOLUTION-2/.specs/
