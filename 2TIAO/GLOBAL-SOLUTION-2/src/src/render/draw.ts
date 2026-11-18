@@ -1,16 +1,9 @@
-import { positionOnRoute } from '../sim/car'
 import type { SimulationState } from '../sim/SimulationEngine'
 import type { RouteStatus } from '../capacity/CapacityModel'
 import type { Phase } from '../sim/trafficLight'
 import type { Point, RoadNetwork } from '../sim/types'
 
 const PADDING = 24
-
-const ROUTE_COLORS: Record<string, string> = {
-  norte: '#3b82f6',
-  central: '#f59e0b',
-  sul: '#10b981',
-}
 
 const COLORS = {
   background: '#0f172a',
@@ -91,7 +84,7 @@ export function drawScene(
   ctx.fillStyle = COLORS.background
   ctx.fillRect(0, 0, width, height)
 
-  const { network, cars } = state
+  const { network } = state
   const { scale, map } = fitTransform(network, width, height)
   if (scale === 0) return
 
@@ -184,18 +177,7 @@ export function drawScene(
     ctx.fillText(label, c.x, c.y + marker / 2 + 4)
   }
 
-  // Cars.
-  const routes = new Map(network.routes.map((r) => [r.id, r]))
-  const carRadius = Math.max(2.5, 7 * scale)
-  for (const car of cars) {
-    const route = routes.get(car.routeId)
-    if (!route) continue
-    const c = map(positionOnRoute(route, car.distance))
-    ctx.beginPath()
-    ctx.arc(c.x, c.y, carRadius, 0, Math.PI * 2)
-    ctx.fillStyle = ROUTE_COLORS[car.routeId] ?? '#f8fafc'
-    ctx.fill()
-  }
+  // Cars are simulated but not drawn (AD-013): the map shows the roads' state, not each car.
 
   // Drone bodies and labels on top, so they stay grabbable.
   const body = Math.max(8, 16 * scale)
