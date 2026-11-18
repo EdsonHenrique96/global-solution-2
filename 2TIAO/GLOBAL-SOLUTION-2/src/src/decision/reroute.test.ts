@@ -199,6 +199,12 @@ describe('reroute', () => {
     expect(sent.some((m) => m.topic.startsWith('transito/notificacoes/'))).toBe(true)
     for (const m of sent) scan(JSON.parse(m.payload))
     const notice = JSON.parse(notices(transport)[0].payload)
+    // AD-046: the suggested route is the only trip field, and it starts at the next corner (I12),
+    // never at the driver's entry (I11); it does reach the driver's exit, an accepted exception
+    expect(notice.rotaSugerida[0].startsWith('I12>')).toBe(true)
+    expect(notice.rotaSugerida.some((id: string) => id.startsWith('I11>'))).toBe(false)
+    expect(Object.keys(notice).sort()).toEqual(['app', 'ganhoS', 'mensagem', 'motorista', 'rotaSugerida', 'trechoEvitado', 'ts'])
+    expect(notice.mensagem).not.toMatch(/I\d\d/)
     expect(notice.motorista).not.toBe(String(car.id))
     expect(notice.motorista).not.toMatch(/^\d+$/)
     expect(notice.motorista).not.toContain(String(car.id).padStart(3, '0'))
