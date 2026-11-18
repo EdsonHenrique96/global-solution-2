@@ -69,20 +69,38 @@ describe('render', () => {
       expect(accident.value).toBe('2')
       expect([...accident.options].map((o) => o.value)).toEqual(['2', '5'])
       expect(demand.value).toBe('15')
-      // demand is kept within 10-20
+      // typing passes through intermediate values: "1" then "18" stays 18 (not clamped per key)
+      fireEvent.change(demand, { target: { value: '1' } })
+      expect(demand.value).toBe('1')
+      fireEvent.change(demand, { target: { value: '18' } })
+      expect(demand.value).toBe('18')
+      // demand is kept within 10-20 when the box is left
       fireEvent.change(demand, { target: { value: '40' } })
+      fireEvent.blur(demand)
       expect(demand.value).toBe('20')
       fireEvent.change(demand, { target: { value: '3' } })
+      fireEvent.blur(demand)
       expect(demand.value).toBe('10')
       fireEvent.change(demand, { target: { value: '18' } })
+      fireEvent.blur(demand)
       fireEvent.change(accident, { target: { value: '5' } })
       await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Rodar' })))
       expect(run).toHaveBeenCalledWith(expect.objectContaining({ acidenteMin: 5, demanda: 18 }))
       expect(screen.getByText(/central, 500 m, aos 5 min, por 5 min/)).toBeInTheDocument()
-      // the CSV carries the parameters of the run that produced it
+      // the form changes after the run: the CSV and the text keep the parameters of the run shown
+      fireEvent.change(accident, { target: { value: '2' } })
+      fireEvent.change(demand, { target: { value: '12' } })
+      fireEvent.blur(demand)
+      expect(screen.getByText(/central, 500 m, aos 5 min, por 5 min/)).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Baixar CSV' }))
-      const csv = save.mock.calls[0][0] as string
-      expect(csv.split('\r\n')[1].endsWith(';5;18')).toBe(true)
+      const lines = (save.mock.calls[0][0] as string).trim().split('\r\n')
+      for (const line of lines.slice(1)) expect(line.endsWith(';5;18')).toBe(true)
+      // a typed but unclamped value is clamped when the run starts
+      run.mockClear()
+      fireEvent.change(demand, { target: { value: '99' } })
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Rodar' })))
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ acidenteMin: 2, demanda: 20 }))
+      expect(demand.value).toBe('20')
     })
 
     it('runs in chunks shows progress and can be cancelled', async () => {

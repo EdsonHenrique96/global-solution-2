@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { emissionFactor, IDLE_G_PER_S } from './emission'
 import { CSV_HEADER, summarise, toCsv } from './csv'
-import { normalisationS, runScenario, SCENARIOS, type RunMetrics } from './ExperimentRunner'
+import { normalisationS, runExperiment, runScenario, SCENARIOS, seedFor, type RunMetrics } from './ExperimentRunner'
 
 const FREE_MS = 50 / 3.6
 
@@ -200,6 +200,20 @@ describe('experiments', () => {
         expect(r.trace.demanda).toBe(20)
         // 20 cars/min over 15 min: about 300, clearly more than at 15 cars/min
         expect(r.trace.spawned as number).toBeGreaterThan((base.trace.spawned as number) + 40)
+      }
+    })
+
+    it('passes the chosen parameters from the experiment to every run', { timeout: 120_000 }, async () => {
+      const { results } = await runExperiment({ repeticoes: 1, acidenteMin: 5, demanda: 20 })
+      expect(results.map((r) => r.cenario)).toEqual([...SCENARIOS])
+      for (const r of results) {
+        const { trace: _t, ...expected } = runScenario(r.cenario, seedFor(1), { acidenteMin: 5, demanda: 20 })
+        void _t
+        expect(r.metrics).toEqual(expected)
+        // and not what the defaults would give
+        const { trace: _d, ...defaults } = runScenario(r.cenario, seedFor(1))
+        void _d
+        expect(r.metrics).not.toEqual(defaults)
       }
     })
   })

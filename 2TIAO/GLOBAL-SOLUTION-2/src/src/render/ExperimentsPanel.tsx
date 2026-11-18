@@ -41,7 +41,9 @@ function download(csv: string, filename: string): void {
 export function ExperimentsPanel({ run = runExperiment, save = download }: Props) {
   const [reps, setReps] = useState(10)
   const [acidenteMin, setAcidenteMin] = useState<ExperimentParams['acidenteMin']>(2)
-  const [demanda, setDemanda] = useState(15)
+  /** Raw text while the operator types; clamped to 10-20 on blur and when the run starts. */
+  const [demandaText, setDemandaText] = useState('15')
+  const demanda = clampDemand(Number(demandaText))
   /** Parameters of the run whose results are shown (the CSV carries these, not the form's). */
   const [ran, setRan] = useState<ExperimentParams>({ acidenteMin: 2, demanda: 15 })
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
@@ -51,6 +53,7 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
 
   const start = async () => {
     abort.current = new AbortController()
+    setDemandaText(String(demanda))
     setRan({ acidenteMin, demanda })
     setStatus('rodando')
     setResults([])
@@ -117,7 +120,15 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
         </label>
         <label>
           Demanda (carros/min)
-          <input type="number" min={10} max={20} value={demanda} onChange={(e) => setDemanda(clampDemand(Number(e.target.value)))} disabled={status === 'rodando'} />
+          <input
+            type="number"
+            min={10}
+            max={20}
+            value={demandaText}
+            onChange={(e) => setDemandaText(e.target.value)}
+            onBlur={() => setDemandaText(String(demanda))}
+            disabled={status === 'rodando'}
+          />
         </label>
         <button type="button" onClick={start} disabled={status === 'rodando'}>
           Rodar
