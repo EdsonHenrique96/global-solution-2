@@ -13,6 +13,11 @@ import { MetricsRecorder, SAMPLE_EVERY_MS } from './MetricsRecorder'
 interface Options {
   engine?: SimulationEngine
   transport: TelemetryTransport
+  /**
+   * When an agent applies the decisions (agente-aprovacao), the controller only suggests: the
+   * diversion is applied by the agent's autonomy policy, not here.
+   */
+  agentControl?: boolean
 }
 
 /**
@@ -57,7 +62,10 @@ export class Simulation {
   private readonly od: OdAggregator
   diversion: DiversionState = { status: 'inativo' }
 
-  constructor({ engine, transport }: Options) {
+  readonly agentControl: boolean
+
+  constructor({ engine, transport, agentControl = false }: Options) {
+    this.agentControl = agentControl
     this.engine = engine ?? new SimulationEngine()
     this.transport = transport
     this.capacity = new CapacityService(transport, () => this.engine.getState().timeMs, this.engine.getState().segments)
@@ -124,6 +132,7 @@ export class Simulation {
         ...(coverageWarning(confianca) ? { aviso: coverageWarning(confianca)! } : {}),
       }
     }
+    if (this.agentControl) return
     const d = this.diversion
     this.engine.setDiversion(d.status === 'ativo' && d.p > 0 ? { from: d.from, to: d.to, fraction: d.p } : null)
   }

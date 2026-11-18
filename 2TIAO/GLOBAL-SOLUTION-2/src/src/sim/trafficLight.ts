@@ -48,6 +48,8 @@ export function adaptiveGreenS(queue: number, averageQueue: number): number {
 export class SignalController {
   private adaptive = false
   private readonly state = new Map<string, { phase: Phase; endsAtMs: number }>()
+  /** Greens set from outside (agent or operator) for the next green of a light, seconds. */
+  private readonly nextGreen = new Map<string, number>()
   private readonly ids: readonly string[]
 
   constructor(intersectionIds: readonly string[]) {
@@ -56,6 +58,13 @@ export class SignalController {
 
   isAdaptive(): boolean {
     return this.adaptive
+  }
+
+  /** Sets the length of a light's next green (adaptive mode only). Returns whether it was taken. */
+  setNextGreen(intersectionId: string, seconds: number): boolean {
+    if (!this.adaptive || !this.ids.includes(intersectionId)) return false
+    this.nextGreen.set(intersectionId, seconds)
+    return true
   }
 
   setAdaptive(on: boolean, timeMs: number): void {
@@ -86,7 +95,9 @@ export class SignalController {
           const queues = this.ids.map((i) => queueOf(i))
           const average = queues.reduce((a, b) => a + b, 0) / queues.length
           s.phase = 'verde'
-          s.endsAtMs += adaptiveGreenS(queueOf(id), average) * 1000
+          const chosen = this.nextGreen.get(id)
+          this.nextGreen.delete(id)
+          s.endsAtMs += (chosen ?? adaptiveGreenS(queueOf(id), average)) * 1000
         }
       }
     }

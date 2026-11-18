@@ -253,6 +253,11 @@ export class SimulationEngine {
     return this.signals.lights(timeMs)
   }
 
+  /** The next green of a light, in seconds (adaptive control only). */
+  setNextGreen(intersectionId: string, seconds: number): boolean {
+    return this.signals.setNextGreen(intersectionId, seconds)
+  }
+
   setAdaptiveSignals(on: boolean): void {
     this.signals.setAdaptive(on, this.timeMs)
   }

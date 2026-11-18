@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
+import { AgentRunner } from './agent/AgentRunner'
+import { proxyLlm, type LlmTurn } from './agent/llm'
 import { Simulation } from './decision/Simulation'
+import { AgentPanel } from './render/AgentPanel'
 import { CameraPanel } from './render/CameraPanel'
 import { CapacityPanel } from './render/CapacityPanel'
 import { SegmentTooltip } from './render/SegmentTooltip'
@@ -19,11 +22,19 @@ interface Props {
   engine?: SimulationEngine
   /** The broker connection; `main.tsx` passes the MQTT one. Without it the page runs offline. */
   transport?: TelemetryTransport
+  /** The model behind the agent; the page calls the local proxy by default. */
+  llm?: LlmTurn
 }
 
-function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
+function agentSnapshot(agent: AgentRunner) {
+  return { mode: agent.mode, log: agent.log.entries(), cards: agent.queue.pending(), notified: agent.notified }
+}
+
+function App({ engine: injectedEngine, transport: injectedTransport, llm }: Props) {
   const [transport] = useState(() => injectedTransport ?? createOfflineTransport())
-  const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport }))
+  const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport, agentControl: true }))
+  const [agent] = useState(() => new AgentRunner({ sim, llm: llm ?? proxyLlm(), transport }))
+  const [agentView, setAgentView] = useState(() => agentSnapshot(agent))
   const { engine, capacity } = sim
   const [rate, setRate] = useState(() => engine.getRate())
   const [noise, setNoise] = useState(() => engine.getNoise())
@@ -53,14 +64,16 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
   useEffect(() => {
     const id = setInterval(() => {
       sim.tick()
+      agent.tick()
       const state = engine.getState()
       setStats({ active: state.cars.length, spawned: state.spawnedTotal })
       setEstimates(capacity.snapshot())
       setMetrics(sim.metrics.snapshot())
       setDiversion(sim.diversion)
+      setAgentView(agentSnapshot(agent))
     }, TICK_MS)
     return () => clearInterval(id)
-  }, [sim, engine, capacity])
+  }, [sim, engine, capacity, agent])
 
   const changeRate = (next: number) => {
     engine.setRate(next)
@@ -140,6 +153,17 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
           )}
         </div>
         <div className="side">
+          <AgentPanel
+            {...agentView}
+            onApprove={(id) => {
+              agent.approve(id)
+              setAgentView(agentSnapshot(agent))
+            }}
+            onReject={(id) => {
+              agent.reject(id)
+              setAgentView(agentSnapshot(agent))
+            }}
+          />
           <MetricsPanel metrics={metrics} diversion={diversion} />
           <CapacityPanel segmentId={selectedSegment} estimate={estimates[selectedSegment]} />
           <CameraPanel

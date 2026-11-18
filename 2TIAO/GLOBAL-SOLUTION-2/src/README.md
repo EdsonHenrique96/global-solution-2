@@ -12,7 +12,18 @@ A página publica a telemetria dos drones em `transito/drones/<droneId>/telemetr
 `VITE_MQTT_URL` (padrão `ws://localhost:9001`). Sem broker, a simulação roda e o painel mostra
 "MQTT desconectado — tentando reconectar".
 
-Testes: `npm run test` (unitários) e `npm run test:integration` (precisam do broker no ar).
+Agente LLM (opcional): o proxy em `../server` guarda a chave e fala com a API da Anthropic.
+
+```bash
+cd ../server && npm install && npm run build
+ANTHROPIC_API_KEY=... npm start   # escuta em 127.0.0.1:8787; o Vite encaminha /api para ele
+```
+
+Sem o proxy ou sem chave, o painel mostra "modo sem LLM" e as mesmas regras rodam com explicações
+por modelo de texto.
+
+Testes: `npm run test` (unitários) e `npm run test:integration` (precisam do broker no ar); no
+servidor, `npm test --prefix ../server`.
 
 ---
 
