@@ -231,6 +231,17 @@ describe('render', () => {
         />,
       )
       expect(screen.getByTestId('chart-travel').closest('figure')!).toHaveTextContent('—')
+
+      // the percentage comes from the engine: diverted over generated
+      const engine = new SimulationEngine({ ratePerMinute: 300, trafficLights: 'always-green' })
+      engine.setDiversion({ from: 'central', to: 'norte', fraction: 0.4 })
+      for (let t = 0; t < 60_000; t += TICK_MS) engine.tick(TICK_MS)
+      const real = new MetricsRecorder(engine).snapshot()
+      expect(engine.getState().spawnedTotal).toBe(300)
+      expect(engine.getState().divertedTotal).toBe(40)
+      expect(real.pctDiverted).toBeCloseTo((100 * 40) / 300, 9)
+      rerender(<MetricsPanel metrics={real} diversion={{ status: 'inativo' }} />)
+      expect(screen.getByTestId('metric-diverted')).toHaveTextContent('13,3%')
     })
 
     it('shows the diversion state including no alternative with slack', () => {

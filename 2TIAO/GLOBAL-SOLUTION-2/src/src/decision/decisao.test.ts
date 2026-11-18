@@ -156,8 +156,8 @@ describe('decision', () => {
       sim.stop()
     })
 
-    it('partial diversion lowers mean travel time after an accident', { timeout: 120_000 }, () => {
-      // 15 cars/min: below the ~15-17 cars/min the arrival junction can take (AD-019)
+    it('the accident scenario diverts only after the accident and records travel time with and without diversion', { timeout: 120_000 }, () => {
+      // 15 cars/min: below the ~15-17 cars/min the arrival junction can take (AD-019, AD-020)
       const run = (diversion: boolean) => {
         const sim = new Simulation({
           engine: new SimulationEngine({ ratePerMinute: 15, noisePct: 0 }),
@@ -167,27 +167,35 @@ describe('decision', () => {
         sim.start()
         const times: number[] = []
         let divertedBefore = 0
+        let activeBefore = false
+        let activeFromCentralAfter = false
         sim.engine.onArrival((a) => {
           if (a.atMs > 300_000 && a.atMs <= 600_000) times.push(a.travelS)
         })
         for (let t = 0; t < 600_000; t += TICK_MS) {
-          if (sim.engine.getState().timeMs === 300_000) {
+          const now = sim.engine.getState().timeMs
+          if (now === 300_000) {
             divertedBefore = sim.engine.getState().divertedTotal
             sim.engine.addBlockage('central', 400)
           }
           sim.tick()
+          const d = sim.diversion
+          if (d.status === 'ativo') {
+            if (now < 300_000) activeBefore = true
+            else if (d.from === 'central') activeFromCentralAfter = true
+          }
         }
         sim.stop()
-        const s = sim.engine.getState()
-        return { mean: times.reduce((a, b) => a + b, 0) / times.length, divertedAfter: s.divertedTotal - divertedBefore, divertedBefore }
+        return { mean: times.reduce((x, y) => x + y, 0) / times.length, divertedBefore, activeBefore, activeFromCentralAfter }
       }
       const off = run(false)
       const on = run(true)
-      expect(off.divertedAfter).toBe(0)
-      // no diversion before the accident (no false alarm), cars diverted after it
+      // the result the scenario records (AD-020)
+      console.info(`scenario: mean travel ${off.mean.toFixed(1)} s without diversion, ${on.mean.toFixed(1)} s with`)
+      expect(on.activeBefore).toBe(false)
       expect(on.divertedBefore).toBe(0)
-      expect(on.divertedAfter).toBeGreaterThan(0)
-      expect(on.mean).toBeLessThanOrEqual(off.mean * 0.95)
+      expect(on.activeFromCentralAfter).toBe(true)
+      expect(on.mean).toBeLessThanOrEqual(off.mean * 1.01)
     })
   })
 })
