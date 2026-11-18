@@ -43,7 +43,7 @@ export function MetricsPanel({ metrics, diversion }: Props) {
         <dt>Desvio</dt>
         <dd data-testid="diversion-state">{diversionText(diversion)}</dd>
       </dl>
-      <Spark id="chart-travel" label="Tempo médio de viagem (s)" samples={samples} value={(s) => s.travelS ?? 0} />
+      <Spark id="chart-travel" label="Tempo médio de viagem (s)" samples={samples} value={(s) => s.travelS} />
       <Spark id="chart-queue" label="Fila total" samples={samples} value={(s) => s.queue} />
       <Spark id="chart-diverted" label="Desviados (%)" samples={samples} value={(s) => s.pctDiverted} />
     </section>
@@ -62,9 +62,11 @@ function Spark({
   id: string
   label: string
   samples: MetricsSample[]
-  value: (s: MetricsSample) => number
+  value: (s: MetricsSample) => number | null
 }) {
-  const values = samples.map(value)
+  const raw = samples.map(value)
+  // a window with no arrival has no travel time: plotted on the baseline, shown as "—"
+  const values = raw.map((v) => v ?? 0)
   const max = Math.max(1, ...values)
   const points = values
     .map((v, i) => {
@@ -73,7 +75,7 @@ function Spark({
       return `${x.toFixed(1)},${y.toFixed(1)}`
     })
     .join(' ')
-  const last = values.length ? values[values.length - 1] : null
+  const last = raw.length ? raw[raw.length - 1] : null
   return (
     <figure className="spark">
       <figcaption>

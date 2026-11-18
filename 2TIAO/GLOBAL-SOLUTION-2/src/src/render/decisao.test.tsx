@@ -222,6 +222,15 @@ describe('render', () => {
       rerender(<MetricsPanel metrics={{ ...snapshot, travelLastMinuteS: null }} diversion={{ status: 'inativo' }} />)
       expect(within(panel).getByTestId('metric-travel-minute')).toHaveTextContent('—')
       expect(within(panel).getByTestId('diversion-state')).toHaveTextContent(/inativo/i)
+
+      // a chart whose last window had no arrival shows "—", not a zero travel time
+      rerender(
+        <MetricsPanel
+          metrics={{ ...snapshot, samples: [{ t: 10_000, travelS: null, queue: 3, pctDiverted: 0 }] }}
+          diversion={{ status: 'inativo' }}
+        />,
+      )
+      expect(screen.getByTestId('chart-travel').closest('figure')!).toHaveTextContent('—')
     })
 
     it('shows the diversion state including no alternative with slack', () => {
