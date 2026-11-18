@@ -31,6 +31,27 @@ describe('telemetry', () => {
         velocidadeMediaKmh: 33.3,
         ruidoPct: 0,
       })
+
+      // the mean covers every sample of the window, not the last tick, and the next window starts empty
+      const varying = new DroneSensor({ noisePct: 0 })
+      const twoMoving: Observation[] = [
+        { x: 450, y: 300, speedKmh: 50 },
+        { x: 560, y: 300, speedKmh: 50 },
+      ]
+      const oneStopped: Observation[] = [{ x: 500, y: 300, speedKmh: 0 }]
+      const first = []
+      for (let tick = 1; tick <= 100; tick++) {
+        first.push(...varying.observe(100, tick * 100, drones, tick <= 50 ? twoMoving : oneStopped))
+      }
+      // 100 samples at 50 km/h + 50 at 0 -> 33.3; at the close only the stopped car is in range
+      expect(first).toHaveLength(1)
+      expect(first[0].contagem).toBe(1)
+      expect(first[0].velocidadeMediaKmh).toBe(33.3)
+
+      const second = []
+      for (let tick = 101; tick <= 200; tick++) second.push(...varying.observe(100, tick * 100, drones, []))
+      expect(second).toHaveLength(1)
+      expect(second[0]).toMatchObject({ ts: 20_000, contagem: 0, velocidadeMediaKmh: null })
     })
 
     it('reports count 0 and null speed when no car was in range', () => {

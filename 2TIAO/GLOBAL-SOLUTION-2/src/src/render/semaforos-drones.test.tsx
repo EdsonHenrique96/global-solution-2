@@ -76,6 +76,17 @@ function mapperFrom(frame: Call[]) {
 
 const near = (a: number, b: number, tol = 0.5) => Math.abs(a - b) <= tol
 
+/** Classifies a #rrggbb fill as the traffic-light colour a person would name. */
+function hueOf(colour: unknown): string {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(colour))
+  if (!m) return `not a hex colour: ${String(colour)}`
+  const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16))
+  if (g > 120 && g > r * 1.3 && g > b * 1.3) return 'verde'
+  if (r > 180 && g > 150 && b < 100 && Math.abs(r - g) < 80) return 'amarelo'
+  if (r > 150 && r > g * 2 && r > b * 2) return 'vermelho'
+  return `unclassified ${String(colour)}`
+}
+
 function advance(engine: SimulationEngine, ms: number) {
   for (let t = 0; t < ms; t += TICK_MS) engine.tick(TICK_MS)
 }
@@ -112,6 +123,11 @@ describe('render', () => {
       expect(colourAt['I2-text']).toBe('1s')
       expect(colourAt['I3-text']).toBe('3s')
       expect(colourAt['I4-text']).toBe('16s')
+      // each phase reads as its colour: verde green, amarelo yellow, vermelho red
+      expect(hueOf(colourAt.I1)).toBe('verde')
+      expect(hueOf(colourAt.I3)).toBe('verde')
+      expect(hueOf(colourAt.I2)).toBe('amarelo')
+      expect(hueOf(colourAt.I4)).toBe('vermelho')
       // same phase, same colour; three phases, three colours
       expect(colourAt.I1).toBe(colourAt.I3)
       expect(new Set([colourAt.I1, colourAt.I2, colourAt.I4]).size).toBe(3)
@@ -132,6 +148,8 @@ describe('render', () => {
       }
       expect(fillAt(300, 300)).toBe(colourAt.I2) // I1 now amarelo
       expect(fillAt(700, 300)).toBe(colourAt.I4) // I2 now vermelho
+      expect(hueOf(fillAt(300, 300))).toBe('amarelo')
+      expect(hueOf(fillAt(700, 300))).toBe('vermelho')
     })
 
     it('draws 3 drones with 110 m vision circles at their initial positions', () => {
@@ -224,7 +242,7 @@ describe('render', () => {
   describe('NoiseControl', () => {
     it('next reading uses the new noise and carries ruidoPct', () => {
       vi.useFakeTimers()
-      const engine = new SimulationEngine({ ratePerMinute: 0 })
+      const engine = new SimulationEngine({ ratePerMinute: 120 })
       const transport = new FakeTransport(true)
       render(<App engine={engine} transport={transport} />)
 
@@ -233,11 +251,12 @@ describe('render', () => {
       expect(slider).toHaveAttribute('min', '0')
       expect(slider).toHaveAttribute('max', '30')
 
+      // 40 s in, cars are already under the drones
       act(() => {
-        vi.advanceTimersByTime(10_000)
+        vi.advanceTimersByTime(40_000)
       })
       const before = transport.published.map((m) => JSON.parse(m.payload))
-      expect(before).toHaveLength(3)
+      expect(before).toHaveLength(12)
       for (const p of before) expect(p.ruidoPct).toBe(10)
 
       fireEvent.change(slider, { target: { value: '25' } })
@@ -245,9 +264,25 @@ describe('render', () => {
       act(() => {
         vi.advanceTimersByTime(10_000)
       })
-      const after = transport.published.slice(3).map((m) => JSON.parse(m.payload))
+      const after = transport.published.slice(12).map((m) => JSON.parse(m.payload))
       expect(after).toHaveLength(3)
       for (const p of after) expect(p.ruidoPct).toBe(25)
+
+      // The same deterministic run with the noise set to 25 at 40 s produces exactly these
+      // readings; the run that stays at 10 does not.
+      const replay = (noiseAfter: number) => {
+        const twin = new SimulationEngine({ ratePerMinute: 120 })
+        const out: unknown[] = []
+        twin.onReading((r) => out.push(r))
+        for (let t = 0; t < 40_000; t += TICK_MS) twin.tick(TICK_MS)
+        twin.setNoise(noiseAfter)
+        out.length = 0
+        for (let t = 0; t < 10_000; t += TICK_MS) twin.tick(TICK_MS)
+        return out
+      }
+      expect(after.some((p) => p.contagem > 0)).toBe(true)
+      expect(after).toEqual(replay(25))
+      expect(after).not.toEqual(replay(10).map((r) => ({ ...(r as object), ruidoPct: 25 })))
     })
   })
 
