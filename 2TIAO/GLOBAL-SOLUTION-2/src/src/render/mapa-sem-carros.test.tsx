@@ -43,17 +43,26 @@ afterEach(() => {
 describe('render', () => {
   describe('SimulationCanvas', () => {
     it('draws no car markers while cars are on the road', () => {
-      const engine = new SimulationEngine({ ratePerMinute: 120 })
-      for (let t = 0; t < 60_000; t += TICK_MS) engine.tick(TICK_MS)
-      expect(engine.getState().cars.length).toBeGreaterThan(20)
+      // the same instant with an empty road and with a busy one: lights and drones are the same
+      const frameOf = (ratePerMinute: number) => {
+        const engine = new SimulationEngine({ ratePerMinute })
+        for (let t = 0; t < 60_000; t += TICK_MS) engine.tick(TICK_MS)
+        calls = []
+        const view = render(<SimulationCanvas engine={engine} />)
+        const start = calls.map((c) => c.op).lastIndexOf('clearRect')
+        const frame = calls.slice(start)
+        view.unmount()
+        return { frame, cars: engine.getState().cars.length }
+      }
+      const empty = frameOf(0)
+      const busy = frameOf(120)
+      expect(empty.cars).toBe(0)
+      expect(busy.cars).toBeGreaterThan(20)
 
-      render(<SimulationCanvas engine={engine} />)
-      const start = calls.map((c) => c.op).lastIndexOf('clearRect')
-      const arcs = calls.slice(start).filter((c) => c.op === 'arc')
-      // 4 traffic lights + 3 drone vision circles, nothing per car
-      expect(arcs).toHaveLength(7)
-      const centres = new Set(arcs.map((a) => `${a.args[0].toFixed(1)},${a.args[1].toFixed(1)}`))
-      expect(centres.size).toBeLessThanOrEqual(7)
+      // every drawing call, with its arguments, is identical: nothing on the map depends on the cars
+      expect(busy.frame).toEqual(empty.frame)
+      // and the frame is not trivially empty: 4 lights + 3 drone circles are there
+      expect(busy.frame.filter((c) => c.op === 'arc')).toHaveLength(7)
     })
   })
 
