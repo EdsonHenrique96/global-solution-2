@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
-import { CapacityService } from './capacity/CapacityService'
+import { Simulation } from './decision/Simulation'
 import { CapacityPanel } from './render/CapacityPanel'
+import { MetricsPanel } from './render/MetricsPanel'
 import { NoiseControl } from './render/NoiseControl'
 import { SimulationCanvas } from './render/SimulationCanvas'
 import { TelemetryPanel } from './render/TelemetryPanel'
 import { VolumeControl } from './render/VolumeControl'
 import { SimulationEngine, TICK_MS } from './sim/SimulationEngine'
-import { TELEMETRY_FILTER, wireTelemetry } from './telemetry/TelemetryPublisher'
 import { createOfflineTransport, type TelemetryTransport } from './telemetry/transport'
+import { TELEMETRY_FILTER } from './telemetry/TelemetryPublisher'
 import './App.css'
 
 interface Props {
@@ -18,36 +19,41 @@ interface Props {
 }
 
 function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
-  const [engine] = useState(() => injectedEngine ?? new SimulationEngine())
   const [transport] = useState(() => injectedTransport ?? createOfflineTransport())
+  const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport }))
+  const { engine, capacity } = sim
   const [rate, setRate] = useState(() => engine.getRate())
   const [noise, setNoise] = useState(() => engine.getNoise())
   const [stats, setStats] = useState({ active: 0, spawned: 0 })
-  const [capacity] = useState(() => new CapacityService(transport, () => engine.getState().timeMs))
   const [selectedRoute, setSelectedRoute] = useState('central')
   const [estimates, setEstimates] = useState(() => capacity.snapshot())
-
-  useEffect(() => wireTelemetry(engine, transport), [engine, transport])
+  const [metrics, setMetrics] = useState(() => sim.metrics.snapshot())
+  const [diversion, setDiversion] = useState(() => sim.diversion)
+  const [accidentMode, setAccidentMode] = useState(false)
+  const [diversionOn, setDiversionOn] = useState(() => sim.isDiversionEnabled())
+  const [signalsOn, setSignalsOn] = useState(() => engine.getState().adaptiveSignals)
 
   useEffect(() => {
-    capacity.start()
+    sim.start()
     // a message can change an estimate between ticks; refresh on each one too
     const off = transport.subscribe(TELEMETRY_FILTER, () => setEstimates(capacity.snapshot()))
     return () => {
       off()
-      capacity.stop()
+      sim.stop()
     }
-  }, [capacity, transport])
+  }, [sim, capacity, transport])
 
   useEffect(() => {
     const id = setInterval(() => {
-      engine.tick(TICK_MS)
+      sim.tick()
       const state = engine.getState()
       setStats({ active: state.cars.length, spawned: state.spawnedTotal })
       setEstimates(capacity.snapshot())
+      setMetrics(sim.metrics.snapshot())
+      setDiversion(sim.diversion)
     }, TICK_MS)
     return () => clearInterval(id)
-  }, [engine, capacity])
+  }, [sim, engine, capacity])
 
   const changeRate = (next: number) => {
     engine.setRate(next)
@@ -59,12 +65,34 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
     setNoise(engine.getNoise())
   }
 
+  const toggleDiversion = () => {
+    sim.setDiversionEnabled(!sim.isDiversionEnabled())
+    setDiversionOn(sim.isDiversionEnabled())
+    setDiversion(sim.diversion)
+  }
+
+  const toggleSignals = () => {
+    engine.setAdaptiveSignals(!engine.getState().adaptiveSignals)
+    setSignalsOn(engine.getState().adaptiveSignals)
+  }
+
   return (
     <main className="app">
       <header className="toolbar">
-        <h1>Trânsito inteligente — simulação base</h1>
+        <h1>Trânsito inteligente — simulação</h1>
         <VolumeControl value={rate} onChange={changeRate} />
         <NoiseControl value={noise} onChange={changeNoise} />
+        <div className="toggles">
+          <button type="button" aria-pressed={accidentMode} onClick={() => setAccidentMode((on) => !on)}>
+            Acidente
+          </button>
+          <button type="button" aria-pressed={diversionOn} onClick={toggleDiversion}>
+            Desvio parcial
+          </button>
+          <button type="button" aria-pressed={signalsOn} onClick={toggleSignals}>
+            Controle de semáforos
+          </button>
+        </div>
         <p className="stats">
           Carros na via: <strong data-testid="active-cars">{stats.active}</strong> · Gerados:{' '}
           <strong data-testid="spawned-total">{stats.spawned}</strong>
@@ -76,8 +104,12 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
           routeStatus={() => Object.fromEntries(Object.entries(capacity.snapshot()).map(([id, e]) => [id, e.estado]))}
           selectedRoute={selectedRoute}
           onSelectRoute={setSelectedRoute}
+          accidentMode={accidentMode}
+          onAccident={(routeId, distance) => engine.addBlockage(routeId, distance)}
+          onRemoveBlockage={(id) => engine.removeBlockage(id)}
         />
         <div className="side">
+          <MetricsPanel metrics={metrics} diversion={diversion} />
           <CapacityPanel routeId={selectedRoute} estimate={estimates[selectedRoute]} />
           <TelemetryPanel transport={transport} droneIds={engine.getState().drones.map((d) => d.id)} />
         </div>

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
 import type { RouteStatus } from '../capacity/CapacityModel'
+import { distanceAlongRoute, positionOnRoute } from '../sim/car'
 import type { SimulationEngine } from '../sim/SimulationEngine'
-import { distanceToSegment, droneGrabRadius, drawScene, fitTransform, ROUTE_PICK_PX } from './draw'
+import { BLOCKAGE_PICK_PX, distanceToSegment, droneGrabRadius, drawScene, fitTransform, ROUTE_PICK_PX } from './draw'
 
 interface Props {
   engine: SimulationEngine
@@ -9,19 +10,31 @@ interface Props {
   routeStatus?: () => Record<string, RouteStatus>
   selectedRoute?: string
   onSelectRoute?: (routeId: string) => void
+  /** In accident mode a click on a road blocks it, and a click on a marker removes it. */
+  accidentMode?: boolean
+  onAccident?: (routeId: string, distance: number) => void
+  onRemoveBlockage?: (id: number) => void
 }
 
 /**
  * Fills its container with a canvas and redraws the simulation on every animation frame.
  * A drone can be dragged with the mouse; it is dropped where the button is released.
  */
-export function SimulationCanvas({ engine, routeStatus, selectedRoute, onSelectRoute }: Props) {
+export function SimulationCanvas({
+  engine,
+  routeStatus,
+  selectedRoute,
+  onSelectRoute,
+  accidentMode,
+  onAccident,
+  onRemoveBlockage,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Latest props for the long-lived listeners and frame loop below.
-  const overlayRef = useRef({ routeStatus, selectedRoute, onSelectRoute })
+  const overlayRef = useRef({ routeStatus, selectedRoute, onSelectRoute, accidentMode, onAccident, onRemoveBlockage })
   useEffect(() => {
-    overlayRef.current = { routeStatus, selectedRoute, onSelectRoute }
+    overlayRef.current = { routeStatus, selectedRoute, onSelectRoute, accidentMode, onAccident, onRemoveBlockage }
   })
 
   useEffect(() => {
@@ -72,25 +85,46 @@ export function SimulationCanvas({ engine, routeStatus, selectedRoute, onSelectR
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-    const pickRoute = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
-      const onSelect = overlayRef.current.onSelectRoute
-      if (!onSelect) return
+    const nearestRoute = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
       const screen = fit.map(point)
-      const nearest = engine
+      return engine
         .getState()
         .network.routes.map((route) => {
           let best = Infinity
           for (let i = 1; i < route.points.length; i++) {
             best = Math.min(best, distanceToSegment(screen, fit.map(route.points[i - 1]), fit.map(route.points[i])))
           }
-          return { id: route.id, dist: best }
+          return { route, dist: best }
         })
         .filter(({ dist }) => dist <= ROUTE_PICK_PX)
-        .sort((a, b) => a.dist - b.dist)[0]
-      if (nearest) {
-        onSelect(nearest.id)
+        .sort((a, b) => a.dist - b.dist)[0]?.route
+    }
+
+    const pickRoute = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
+      const onSelect = overlayRef.current.onSelectRoute
+      const route = nearestRoute(fit, point)
+      if (onSelect && route) {
+        onSelect(route.id)
         draw()
       }
+    }
+
+    const accident = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
+      const { onAccident: add, onRemoveBlockage: remove } = overlayRef.current
+      const state = engine.getState()
+      const screen = fit.map(point)
+      const hit = state.blockages.find((b) => {
+        const route = state.network.routes.find((r) => r.id === b.routeId)
+        if (!route) return false
+        const c = fit.map(positionOnRoute(route, b.distance))
+        return Math.hypot(c.x - screen.x, c.y - screen.y) <= BLOCKAGE_PICK_PX
+      })
+      if (hit) remove?.(hit.id)
+      else {
+        const route = nearestRoute(fit, point)
+        if (route) add?.(route.id, distanceAlongRoute(route, point))
+      }
+      draw()
     }
 
     const onDown = (e: MouseEvent) => {
@@ -103,7 +137,8 @@ export function SimulationCanvas({ engine, routeStatus, selectedRoute, onSelectR
         .filter(({ dist }) => dist <= grab)
         .sort((a, b) => a.dist - b.dist)[0]
       if (!hit) {
-        pickRoute(fit, point)
+        if (overlayRef.current.accidentMode) accident(fit, point)
+        else pickRoute(fit, point)
         return
       }
       e.preventDefault()

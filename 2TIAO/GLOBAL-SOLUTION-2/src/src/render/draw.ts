@@ -1,3 +1,4 @@
+import { positionOnRoute } from '../sim/car'
 import type { SimulationState } from '../sim/SimulationEngine'
 import type { RouteStatus } from '../capacity/CapacityModel'
 import type { Phase } from '../sim/trafficLight'
@@ -9,6 +10,8 @@ const COLORS = {
   background: '#0f172a',
   road: '#334155',
   selection: '#f8fafc',
+  blockage: '#dc2626',
+  blockageMark: '#ffffff',
   intersectionFill: '#1e293b',
   intersectionStroke: '#94a3b8',
   endpoint: '#e2e8f0',
@@ -64,6 +67,9 @@ export function distanceToSegment(p: Point, a: Point, b: Point): number {
   const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
   return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y)
 }
+
+/** Screen radius (px) within which a click hits an accident marker. */
+export const BLOCKAGE_PICK_PX = 14
 
 /** Screen radius (px) within which a press grabs a drone. */
 export function droneGrabRadius(scale: number): number {
@@ -178,6 +184,21 @@ export function drawScene(
   }
 
   // Cars are simulated but not drawn (AD-013): the map shows the roads' state, not each car.
+
+  // Accidents: a red square with a cross where the road is blocked.
+  const blockSize = Math.max(10, 18 * scale)
+  for (const b of state.blockages ?? []) {
+    const route = network.routes.find((r) => r.id === b.routeId)
+    if (!route) continue
+    const c = map(positionOnRoute(route, b.distance))
+    ctx.fillStyle = COLORS.blockage
+    ctx.fillRect(c.x - blockSize / 2, c.y - blockSize / 2, blockSize, blockSize)
+    ctx.fillStyle = COLORS.blockageMark
+    ctx.font = `700 ${Math.round(blockSize * 0.8)}px system-ui, sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('✕', c.x, c.y)
+  }
 
   // Drone bodies and labels on top, so they stay grabbable.
   const body = Math.max(8, 16 * scale)

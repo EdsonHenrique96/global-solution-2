@@ -33,6 +33,8 @@ export interface Car {
   distance: number
   /** Network units per second. */
   speed: number
+  /** Simulated time the car was generated (travel time includes the wait at the origin). */
+  bornAtMs?: number
 }
 
 /** A virtual drone hovering over the map; it sees cars within `radius` metres. */

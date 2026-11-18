@@ -34,3 +34,23 @@ export function positionOnRoute(route: Route, distance: number): Point {
 export function advanceCar(car: Car, dtMs: number): Car {
   return { ...car, distance: car.distance + car.speed * (dtMs / 1000) }
 }
+
+/** Distance along the route of the polyline point closest to `p`. */
+export function distanceAlongRoute(route: Route, p: Point): number {
+  let best = Infinity
+  let bestAt = 0
+  let walked = 0
+  for (let i = 1; i < route.points.length; i++) {
+    const a = route.points[i - 1]
+    const b = route.points[i]
+    const len = Math.hypot(b.x - a.x, b.y - a.y)
+    const t = len === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (len * len)))
+    const d = Math.hypot(a.x + (b.x - a.x) * t - p.x, a.y + (b.y - a.y) * t - p.y)
+    if (d < best) {
+      best = d
+      bestAt = walked + len * t
+    }
+    walked += len
+  }
+  return bestAt
+}

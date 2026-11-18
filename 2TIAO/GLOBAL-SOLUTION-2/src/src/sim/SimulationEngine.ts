@@ -1,11 +1,11 @@
 import { DroneSensor, type Observation, type Reading } from '../telemetry/DroneSensor'
-import { positionOnRoute, routeLength } from './car'
+import { distanceAlongRoute, positionOnRoute, routeLength } from './car'
 import { CarGenerator, DEFAULT_CAR_SPEED } from './carGenerator'
 import { mulberry32 } from './random'
 import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_DECEL, MAX_STOP_DECEL, step, yieldDeceleration } from './idm'
 import { buildRoadNetwork } from './roadNetwork'
-import { lightAt, type LightState } from './trafficLight'
-import type { Car, Drone, Point, RoadNetwork, Route } from './types'
+import { SignalController, type LightState } from './trafficLight'
+import type { Car, Drone, Point, RoadNetwork } from './types'
 
 export const TICK_MS = 100
 export const DEFAULT_RATE_PER_MINUTE = 30
@@ -30,6 +30,34 @@ export interface CarState extends Car {
   velocity: number
 }
 
+/** A stopped obstacle on a road (accident, AD-016). */
+export interface Blockage {
+  id: number
+  routeId: string
+  distance: number
+  endsAtMs: number
+}
+
+/** Cars bound for `from` that have not entered yet go to `to` with probability `fraction`. */
+export interface Diversion {
+  from: string
+  to: string
+  fraction: number
+}
+
+export interface Arrival {
+  carId: number
+  routeId: string
+  atMs: number
+  travelS: number
+}
+
+export const BLOCKAGE_MS = 120_000
+/** Below this speed a car counts as queued. */
+export const QUEUE_SPEED_MS = 5 / 3.6
+/** How far before a stop line a light's queue is measured. */
+export const QUEUE_REACH_M = 150
+
 export interface SimulationState {
   network: RoadNetwork
   cars: readonly CarState[]
@@ -45,6 +73,13 @@ export interface SimulationState {
   lights: readonly LightState[]
   drones: readonly Drone[]
   noisePct: number
+  blockages: readonly Blockage[]
+  diversion: Diversion | null
+  /** Cars sent to another route by a diversion. */
+  divertedTotal: number
+  /** Generated cars by the route they will take (on the road, arrived or waiting). */
+  routeTotals: Record<string, number>
+  adaptiveSignals: boolean
 }
 
 export interface SimulationOptions {
@@ -60,26 +95,6 @@ export interface SimulationOptions {
 interface StopLine {
   intersectionId: string
   at: number
-}
-
-/** Distance along the route of the polyline point closest to `p`. */
-function distanceAlong(route: Route, p: Point): number {
-  let best = Infinity
-  let bestAt = 0
-  let walked = 0
-  for (let i = 1; i < route.points.length; i++) {
-    const a = route.points[i - 1]
-    const b = route.points[i]
-    const len = Math.hypot(b.x - a.x, b.y - a.y)
-    const t = len === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (len * len)))
-    const d = Math.hypot(a.x + (b.x - a.x) * t - p.x, a.y + (b.y - a.y) * t - p.y)
-    if (d < best) {
-      best = d
-      bestAt = walked + len * t
-    }
-    walked += len
-  }
-  return bestAt
 }
 
 export class SimulationEngine {
@@ -102,6 +117,18 @@ export class SimulationEngine {
   private readonly redDecision = new Map<number, { intersectionId: string; go: boolean }>()
   private timeMs = 0
   private manualId = 1_000_000
+  private readonly signals: SignalController
+  private blockages: Blockage[] = []
+  private blockageId = 1
+  private diversion: Diversion | null = null
+  private diversionBudget = 0
+  /** Waiting cars already decided by the current diversion. */
+  private readonly diversionDecided = new Set<number>()
+  private divertedTotal = 0
+  private readonly routeTotals: Record<string, number>
+  private readonly arrivalListeners = new Set<(a: Arrival) => void>()
+  private readonly arrivals: Arrival[] = []
+  private travelSumS = 0
 
   constructor(options: SimulationOptions = {}) {
     this.network = buildRoadNetwork()
@@ -113,11 +140,13 @@ export class SimulationEngine {
       this.network.routes.map((r) => [
         r.id,
         r.intersectionIds
-          .map((id) => ({ intersectionId: id, at: distanceAlong(r, positions.get(id)!) - STOP_LINE_M }))
+          .map((id) => ({ intersectionId: id, at: distanceAlongRoute(r, positions.get(id)!) - STOP_LINE_M }))
           .sort((a, b) => a.at - b.at),
       ]),
     )
     this.lightMode = options.trafficLights ?? 'fixed'
+    this.signals = new SignalController(this.network.intersections.map((i) => i.id))
+    this.routeTotals = Object.fromEntries(this.network.routes.map((r) => [r.id, 0]))
     this.drones = (options.drones ?? DEFAULT_DRONES).map((d) => ({ ...d, position: { ...d.position } }))
     this.sensor = new DroneSensor({
       noisePct: options.noisePct,
@@ -154,7 +183,7 @@ export class SimulationEngine {
 
   /** Places a car on a route (scenario setup; the generator places cars at the origin). */
   addCar(routeId: string, distance: number, velocity: number = this.speed): CarState {
-    const car: CarState = { id: this.manualId++, routeId, distance, speed: this.speed, velocity }
+    const car: CarState = { id: this.manualId++, routeId, distance, speed: this.speed, velocity, bornAtMs: this.timeMs }
     this.cars.push(car)
     return car
   }
@@ -165,12 +194,75 @@ export class SimulationEngine {
   }
 
   private lights(timeMs: number): LightState[] {
-    return this.network.intersections.map((i) =>
-      this.lightMode === 'always-green'
-        ? { intersectionId: i.id, phase: 'verde', remainingS: Infinity }
-        : lightAt(i.id, timeMs),
-    )
+    if (this.lightMode === 'always-green') {
+      return this.network.intersections.map((i) => ({ intersectionId: i.id, phase: 'verde', remainingS: Infinity }))
+    }
+    return this.signals.lights(timeMs)
   }
+
+  setAdaptiveSignals(on: boolean): void {
+    this.signals.setAdaptive(on, this.timeMs)
+  }
+
+  /** Cars under 5 km/h in the 150 m before the light's stop line. */
+  queueAt(intersectionId: string): number {
+    let count = 0
+    for (const car of this.cars) {
+      const stop = this.stopLines.get(car.routeId)?.find((sl) => sl.intersectionId === intersectionId)
+      if (!stop) continue
+      if (car.distance <= stop.at + 1e-9 && car.distance >= stop.at - QUEUE_REACH_M && car.velocity < QUEUE_SPEED_MS) count += 1
+    }
+    return count
+  }
+
+  /** Slow cars on the road plus cars waiting at the origin. */
+  queueTotal(): number {
+    return this.cars.filter((c) => c.velocity < QUEUE_SPEED_MS).length + this.waiting.length
+  }
+
+  addBlockage(routeId: string, distance: number): Blockage {
+    const b: Blockage = { id: this.blockageId++, routeId, distance, endsAtMs: this.timeMs + BLOCKAGE_MS }
+    this.blockages.push(b)
+    return b
+  }
+
+  removeBlockage(id: number): void {
+    this.blockages = this.blockages.filter((b) => b.id !== id)
+  }
+
+  setDiversion(diversion: Diversion | null): void {
+    const changed =
+      (diversion === null) !== (this.diversion === null) ||
+      (diversion !== null && this.diversion !== null && (diversion.from !== this.diversion.from || diversion.to !== this.diversion.to))
+    this.diversion = diversion ? { ...diversion, fraction: Math.min(1, Math.max(0, diversion.fraction)) } : null
+    if (changed) {
+      this.diversionBudget = 0
+      this.diversionDecided.clear()
+    }
+  }
+
+  onArrival(listener: (a: Arrival) => void): () => void {
+    this.arrivalListeners.add(listener)
+    return () => this.arrivalListeners.delete(listener)
+  }
+
+  /** Mean travel time (s) of the cars that arrived in the last simulated minute, and since start. */
+  travelStats(): { lastMinuteAvgS: number | null; allAvgS: number | null } {
+    const since = this.timeMs - 60_000
+    const recent = this.arrivals.filter((a) => a.atMs > since)
+    return {
+      lastMinuteAvgS: recent.length ? recent.reduce((s, a) => s + a.travelS, 0) / recent.length : null,
+      allAvgS: this.arrivedTotal ? this.travelSumS / this.arrivedTotal : null,
+    }
+  }
+
+  /** Where a blockage sits in a car's own route coordinate, if it is ahead on its path. */
+  private blockageFor(routeId: string, b: Blockage): number | null {
+    const at = this.place(b.routeId, b.distance)
+    if (at.edge === ARRIVAL_EDGE) return (this.lengths.get(routeId) ?? 0) - SHARED_M + at.x
+    return b.routeId === routeId ? b.distance : null
+  }
+
 
   /**
    * One step: lights as they stand at the start of the tick decide who stops; each car keeps
@@ -269,6 +361,16 @@ export class SimulationEngine {
         this.yieldsTo.delete(car.id)
       }
 
+      // accidents: a standing obstacle ahead on this car's path
+      let blockRoom = Infinity
+      for (const b of this.blockages) {
+        const at = this.blockageFor(car.routeId, b)
+        if (at === null || at <= car.distance) continue
+        const g = at - car.distance - IDM.length
+        consider(g, 0)
+        blockRoom = Math.min(blockRoom, g - IDM.s0)
+      }
+
       // red light: decided once per light - stop if it can with at most 4.5 m/s², otherwise go
       // through; a car that stops brakes at the constant deceleration that ends exactly at the line
       // once that deceleration reaches the comfortable b
@@ -293,7 +395,7 @@ export class SimulationEngine {
 
       const accLeader = idmAcceleration(car.velocity, car.speed, gap, car.velocity - leadV)
       const acc = Math.max(-MAX_DECEL, Math.min(accLeader, accLine, accMerge))
-      const room = Math.min(Number.isFinite(gap) ? gap - IDM.s0 : Infinity, lineRoom)
+      const room = Math.min(Number.isFinite(gap) ? gap - IDM.s0 : Infinity, lineRoom, blockRoom)
       const next = step(car.distance, car.velocity, acc, car.speed, dt, room)
       moved.push({ ...car, distance: next.x, velocity: next.v })
     }
@@ -303,6 +405,16 @@ export class SimulationEngine {
       if (car.distance < (this.lengths.get(car.routeId) ?? 0) - 1e-9) stillIn.push(car)
       else {
         this.arrivedTotal += 1
+        const arrival: Arrival = {
+          carId: car.id,
+          routeId: car.routeId,
+          atMs: this.timeMs + dtMs,
+          travelS: (this.timeMs + dtMs - (car.bornAtMs ?? 0)) / 1000,
+        }
+        this.travelSumS += arrival.travelS
+        this.arrivals.push(arrival)
+        while (this.arrivals.length && this.arrivals[0].atMs <= arrival.atMs - 60_000) this.arrivals.shift()
+        for (const l of this.arrivalListeners) l(arrival)
         this.redDecision.delete(car.id)
         this.yieldsTo.delete(car.id)
       }
@@ -311,15 +423,38 @@ export class SimulationEngine {
 
     const spawned = this.generator.tick(dtMs, this.network.routes)
     this.spawnedTotal += spawned.length
-    this.waiting.push(...spawned)
+    for (const c of spawned) this.routeTotals[c.routeId] = (this.routeTotals[c.routeId] ?? 0) + 1
+    this.waiting.push(...spawned.map((c) => ({ ...c, bornAtMs: this.timeMs })))
+    this.applyDiversion()
     this.admitWaiting()
     this.timeMs += dtMs
+    this.blockages = this.blockages.filter((b) => b.endsAtMs > this.timeMs)
+    this.signals.advance(this.timeMs, (id) => this.queueAt(id))
 
     const readings = this.sensor.observe(dtMs, this.timeMs, this.drones, this.observations())
     for (const r of readings) for (const l of this.readingListeners) l(r)
   }
 
   /** The first waiting car enters at the origin when there are 7 m free, as fast as is safe. */
+  /** Decides, once per car, which waiting cars bound for `from` go to `to` (AD-014). */
+  private applyDiversion(): void {
+    const d = this.diversion
+    if (!d) return
+    for (const car of this.waiting) {
+      if (car.routeId !== d.from || this.diversionDecided.has(car.id)) continue
+      this.diversionDecided.add(car.id)
+      this.diversionBudget += d.fraction
+      if (this.diversionBudget >= 1 - 1e-9) {
+        this.diversionBudget -= 1
+        car.routeId = d.to
+        this.diversionDecided.delete(car.id)
+        this.divertedTotal += 1
+        this.routeTotals[d.from] -= 1
+        this.routeTotals[d.to] = (this.routeTotals[d.to] ?? 0) + 1
+      }
+    }
+  }
+
   private admitWaiting(): void {
     if (this.waiting.length === 0) return
     // FIFO per entrance stretch: one car per stretch per tick, when the first car on it is 7 m in
@@ -382,6 +517,11 @@ export class SimulationEngine {
       lights: this.lights(this.timeMs),
       drones: this.drones,
       noisePct: this.sensor.getNoise(),
+      blockages: this.blockages,
+      diversion: this.diversion,
+      divertedTotal: this.divertedTotal,
+      routeTotals: { ...this.routeTotals },
+      adaptiveSignals: this.signals.isAdaptive(),
     }
   }
 }
