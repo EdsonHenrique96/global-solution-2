@@ -57,8 +57,10 @@ describe('agent', () => {
       expect(n).toBe(6)
 
       // a normal turn: tool, tool, end_turn; the results go back with the tool_use ids
+      // claude-opus-5-5 always thinks: its thinking blocks must go back unchanged
+      const thinking = { type: 'thinking', thinking: '', signature: 'sig-1' } as Block
       const llm = scripted([
-        { content: [toolUse('a', 'estado_rede', {})], stop_reason: 'tool_use' },
+        { content: [thinking, toolUse('a', 'estado_rede', {})], stop_reason: 'tool_use' },
         { content: [toolUse('b', 'registrar_explicacao', { texto: 'Nada a mudar.' })], stop_reason: 'tool_use' },
         { content: [text('fim')], stop_reason: 'end_turn' },
       ])
@@ -68,6 +70,8 @@ describe('agent', () => {
       await runFor(s2.sim, s2.runner, 100)
       expect(s2.runner.turns).toBe(1)
       expect(llm.calls).toBe(3)
+      const second = llm.seen[1] as { role: string; content: unknown[] }[]
+      expect(second[1]).toEqual({ role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 'sig-1' }, toolUse('a', 'estado_rede', {})] })
       const last = llm.seen[2] as { role: string; content: { type: string; tool_use_id?: string }[] }[]
       expect(last[last.length - 1].content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'b' })
       // a new alert starts a turn before the next 30 s mark
@@ -138,6 +142,17 @@ describe('agent', () => {
       expect(sim.engine.getState().diversion).toEqual({ from: 'central', to: 'norte', fraction: 0.25 })
       const [card] = runner.queue.pending()
       expect(card).toMatchObject({ estado: 'aguardando', acao: { tipo: 'desvio', de: 'central', para: 'sul', n: 120, p: 0.4, justificativa: 'acidente' } })
+      // p 0: nothing to divert, nothing applied
+      sim.engine.setDiversion(null)
+      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 0, p: 0, justificativa: 'sem folga' })
+      expect(sim.engine.getState().diversion).toBeNull()
+      // "Desvio parcial" off: no diversion is applied or carded
+      sim.setDiversionEnabled(false)
+      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 30, p: 0.1, justificativa: 'x' })
+      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 300, p: 0.5, justificativa: 'y' })
+      expect(sim.engine.getState().diversion).toBeNull()
+      expect(runner.queue.pending()).toHaveLength(1)
+      expect(runner.log.entries()[0].texto).toMatch(/desvio parcial está desligado/)
     })
 
     it('applies greens of 10 to 30 s cards 31 to 60 s and refuses the rest', async () => {
@@ -185,6 +200,20 @@ describe('agent', () => {
       expect(runner.queue.get(c.id)!.estado).toBe('expirada')
       runner.approve(c.id) // too late
       expect(sim.engine.getState().diversion?.from).not.toBe('sul')
+
+      // a green card approved while signal control is off is not applied, and says so
+      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I1', verdeS: 45, justificativa: 'fila' })
+      const [g] = runner.queue.pending()
+      runner.approve(g.id)
+      expect(runner.queue.get(g.id)!.estado).toBe('nao-aplicada')
+      expect(runner.log.entries()[0].texto).toMatch(/aprovado, mas não aplicado/)
+      // a diversion card approved after "Desvio parcial" was turned off is not applied either
+      runner.applyProposal({ tipo: 'desvio', de: 'norte', para: 'sul', n: 90, p: 0.6, justificativa: 'z' })
+      const [d] = runner.queue.pending()
+      sim.setDiversionEnabled(false)
+      runner.approve(d.id)
+      expect(runner.queue.get(d.id)!.estado).toBe('nao-aplicada')
+      expect(sim.engine.getState().diversion).toBeNull()
     })
   })
 
@@ -193,6 +222,7 @@ describe('agent', () => {
       const { sim, runner, transport } = setup(scripted([]), 120)
       const seen: Record<string, unknown>[] = []
       transport.subscribe(NOTIFICATIONS_TOPIC, (_t, p) => seen.push(JSON.parse(p)))
+      const published = () => transport.published.filter((m) => m.topic === NOTIFICATIONS_TOPIC)
       await runFor(sim, runner, 10_000)
       expect(seen).toHaveLength(0) // nothing diverted yet
       runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 300, p: 0.3, justificativa: 'teste' })
@@ -210,6 +240,7 @@ describe('agent', () => {
         mensagem: expect.stringContaining('Norte'),
       })
       expect(runner.notified).toBe(diverted)
+      expect(published()[0].options).toEqual({ qos: 0, retain: false })
     })
   })
 
@@ -244,6 +275,18 @@ describe('agent', () => {
       const slow = proxyLlm('/x', 20, ((_u: string, init?: RequestInit) =>
         new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))) as typeof fetch)
       await expect(slow([{ role: 'user', content: 'oi' }])).rejects.toBeInstanceOf(LlmUnavailable)
+      // a 400 is the page's fault, not an outage: a distinct error, logged, and the rules still decide
+      const { LlmRequestError } = await import('./llm')
+      const bad = proxyLlm('/x', 1000, (async () => new Response('{"erro":"mensagens inválidas"}', { status: 400 })) as typeof fetch)
+      await expect(bad([{ role: 'user', content: 'oi' }])).rejects.toBeInstanceOf(LlmRequestError)
+      const refusing = (async () => {
+        throw new LlmRequestError('proxy 400: mensagens inválidas')
+      }) as LlmTurn
+      const r = setup(refusing)
+      await runFor(r.sim, r.runner, 30_000)
+      const texts = r.runner.log.entries().map((e) => e.texto)
+      expect(texts.some((t) => /recusado pelo proxy \(proxy 400/.test(t))).toBe(true)
+      expect(texts.some((t) => /Regras/.test(t))).toBe(true)
       const ok = proxyLlm('/x', 1000, (async () => new Response(JSON.stringify({ content: [], stop_reason: 'end_turn' }), { status: 200 })) as typeof fetch)
       await expect(ok([{ role: 'user', content: 'oi' }])).resolves.toEqual({ content: [], stop_reason: 'end_turn' })
     })

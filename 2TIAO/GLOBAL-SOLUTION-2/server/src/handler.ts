@@ -3,7 +3,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { MAX_TOKENS, MODEL, SYSTEM_PROMPT, TOOLS } from './agentConfig.js'
 
 export const TURN_PATH = '/api/agente/turno'
-const BLOCK_TYPES = new Set(['text', 'tool_use', 'tool_result'])
+/**
+ * Blocks a turn may carry: the page's text and tool results, and everything the model returned in
+ * an assistant turn, which must go back unchanged - claude-opus-5-5 always thinks, so its replies
+ * carry thinking blocks, and server-side fallbacks add fallback blocks.
+ */
+const USER_BLOCKS = new Set(['text', 'tool_result'])
+const ASSISTANT_BLOCKS = new Set(['text', 'tool_use', 'thinking', 'redacted_thinking', 'fallback'])
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
 
 /** The slice of the SDK client the proxy uses (injected in tests). */
@@ -33,8 +39,9 @@ function validMessages(body: unknown): Anthropic.Beta.BetaMessageParam[] | null 
     if (role !== 'user' && role !== 'assistant') return null
     if (typeof content === 'string') continue
     if (!Array.isArray(content)) return null
+    const allowed = role === 'user' ? USER_BLOCKS : ASSISTANT_BLOCKS
     for (const b of content) {
-      if (!b || typeof b !== 'object' || !BLOCK_TYPES.has((b as { type?: string }).type ?? '')) return null
+      if (!b || typeof b !== 'object' || !allowed.has((b as { type?: string }).type ?? '')) return null
     }
   }
   return messages as Anthropic.Beta.BetaMessageParam[]

@@ -4,7 +4,8 @@ export type AgentAction =
   | { tipo: 'desvio'; de: string; para: string; n: number; p: number; justificativa: string }
   | { tipo: 'semaforo'; intersecao: string; verdeS: number; justificativa: string }
 
-export type CardState = 'aguardando' | 'aplicada' | 'rejeitada' | 'expirada'
+/** 'nao-aplicada': approved, but the system could not apply it (e.g. signal control off). */
+export type CardState = 'aguardando' | 'aplicada' | 'nao-aplicada' | 'rejeitada' | 'expirada'
 
 export interface ApprovalCard {
   id: number

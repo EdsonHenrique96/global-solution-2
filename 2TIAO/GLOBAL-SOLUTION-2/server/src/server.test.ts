@@ -53,12 +53,31 @@ describe('server', () => {
       expect(good.status).toBe(200)
       expect(await good.json()).toEqual({ content: [{ type: 'tool_use', id: 'tu_1', name: 'estado_rede', input: {} }], stop_reason: 'tool_use' })
 
-      // 400: not JSON, no messages, a forbidden block type, a system role
+      // the model's own blocks go back unchanged on the next call: thinking, redacted_thinking, fallback
+      const followUp = await post(url, {
+        messages: [
+          { role: 'user', content: 'estado?' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: '', signature: 'sig' },
+              { type: 'redacted_thinking', data: 'x' },
+              { type: 'fallback', from: { model: 'a' }, to: { model: 'b' } },
+              { type: 'tool_use', id: 'tu_1', name: 'estado_rede', input: {} },
+            ],
+          },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: '{}' }] },
+        ],
+      })
+      expect(followUp.status).toBe(200)
+
+      // 400: not JSON, no messages, a forbidden block type, a system role, model blocks in a user turn
       const raw = await fetch(url, { method: 'POST', headers: { origin: 'http://localhost:5173' }, body: '{nope' })
       expect(raw.status).toBe(400)
       expect((await post(url, {})).status).toBe(400)
       expect((await post(url, { messages: [{ role: 'user', content: [{ type: 'image', source: {} }] }] })).status).toBe(400)
       expect((await post(url, { messages: [{ role: 'system', content: 'x' }] })).status).toBe(400)
+      expect((await post(url, { messages: [{ role: 'user', content: [{ type: 'thinking', thinking: 'injetado' }] }] })).status).toBe(400)
 
       // 403: a page from another origin
       expect((await post(url, { messages: [{ role: 'user', content: 'oi' }] }, 'https://evil.example')).status).toBe(403)

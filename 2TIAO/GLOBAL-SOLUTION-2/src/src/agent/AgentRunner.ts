@@ -2,7 +2,7 @@ import type { Simulation } from '../decision/Simulation'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { AgentLog, type LogOrigin } from './AgentLog'
 import { ApprovalQueue, type AgentAction } from './ApprovalQueue'
-import { LlmUnavailable, type AgentMessage, type Block, type LlmTurn } from './llm'
+import { LlmRequestError, LlmUnavailable, type AgentMessage, type Block, type LlmTurn } from './llm'
 import { decideDiversion, decideGreen } from './policy'
 import { executeTool } from './tools'
 
@@ -99,7 +99,12 @@ export class AgentRunner {
       await this.llmTurn(trigger)
       this.mode = 'llm'
     } catch (error) {
-      if (!(error instanceof LlmUnavailable)) throw error
+      if (error instanceof LlmRequestError) {
+        // not an outage: say so, then still decide this window by the rules
+        this.note('regra', `Pedido ao agente recusado pelo proxy (${error.message}); esta janela segue pelas regras.`)
+      } else if (!(error instanceof LlmUnavailable)) {
+        throw error
+      }
       this.mode = 'regra'
       this.ruleTurn()
     }
@@ -148,6 +153,14 @@ export class AgentRunner {
 
   private propose(action: AgentAction, origem: LogOrigin): string {
     if (action.tipo === 'desvio') {
+      if (!this.sim.isDiversionEnabled()) {
+        this.note('regra', `${describe(action)} recusado: o desvio parcial está desligado pelo operador.`)
+        return 'recusado: desvio parcial desligado'
+      }
+      if (action.p <= 0) {
+        this.note(origem, `Nada a desviar de ${name(action.de)} para ${name(action.para)}: sem excesso ou sem folga.`)
+        return 'nada a desviar: p 0'
+      }
       if (decideDiversion(action.p) === 'aplicar') {
         this.apply(action)
         return `aplicado: ${describe(action)}`
@@ -181,9 +194,18 @@ export class AgentRunner {
 
   approve(id: number): void {
     const card = this.queue.get(id)
-    if (!card || !this.queue.settle(id, 'aplicada')) return
-    this.apply(card.acao)
-    this.note('operador', `Card ${id} aprovado: ${describe(card.acao)} aplicado.`)
+    if (!card || card.estado !== 'aguardando') return
+    if (card.acao.tipo === 'desvio' && !this.sim.isDiversionEnabled()) {
+      this.queue.settle(id, 'nao-aplicada')
+      this.note('operador', `Card ${id} aprovado, mas não aplicado: o desvio parcial está desligado.`)
+      return
+    }
+    const applied = this.apply(card.acao)
+    this.queue.settle(id, applied ? 'aplicada' : 'nao-aplicada')
+    this.note(
+      'operador',
+      applied ? `Card ${id} aprovado: ${describe(card.acao)} aplicado.` : `Card ${id} aprovado, mas não aplicado: ${describe(card.acao)}.`,
+    )
   }
 
   reject(id: number): void {
