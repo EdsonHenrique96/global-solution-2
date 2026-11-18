@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
@@ -111,6 +112,12 @@ describe('render', () => {
       engine.updateCamera(c4, { position: { x: 170, y: 300 }, heading: 90, fov: 20, range: 140 })
       render(<App engine={engine} transport={new FakeTransport(true)} />)
       const map = mapper(lastFrame())
+      // on load the layer is "Estado": no data yet, so every segment line is grey and solid
+      expect(screen.getByRole('button', { name: 'Estado' })).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('button', { name: 'Cobertura' })).toHaveAttribute('aria-pressed', 'false')
+      const first = strokesOf(lastFrame(), map, [700, 300], [820, 300]).filter((x) => hueOf(x.style) === 'cinza')
+      expect(first).toHaveLength(1)
+      expect(first[0].dashed).toBe(false)
       const best = (id: string) => Math.max(0, ...engine.coverage.entries(id).map((e) => e.cobertura))
       expect(best('central-I1-I2')).toBeGreaterThanOrEqual(0.3)
       expect(best('central-I1-I2')).toBeLessThan(0.8)
@@ -168,8 +175,12 @@ describe('render', () => {
       const cov = Math.round(engine.coverage.entries('central-I1-I2')[0].cobertura * 100)
       expect(within(tip).getByTestId('tooltip-sensores')).toHaveTextContent(`C2 ${cov}%`)
       expect(within(tip).getByTestId('tooltip-fontes')).toHaveTextContent('C2')
-      expect(within(tip).getByTestId('tooltip-confianca')).toHaveTextContent(/^\d,\d\d$/)
-      expect(within(tip).getByTestId('tooltip-idade')).toHaveTextContent(/^\d+ s$/)
+      // exact values from the fused state the tooltip reads
+      const covC2 = engine.coverage.entries('central-I1-I2')[0].cobertura
+      const conf = covC2 >= 0.8 ? 1 : covC2 / 0.8 // fresh reading: no ageing yet
+      expect(within(tip).getByTestId('tooltip-confianca')).toHaveTextContent(conf.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+      // the last C2 window closed at 60 s; the page clock is at 62 s
+      expect(within(tip).getByTestId('tooltip-idade')).toHaveTextContent('2 s')
       expect(within(tip).getByTestId('tooltip-alertas')).toHaveTextContent('1')
       expect(within(tip).getByTestId('tooltip-demanda')).toHaveTextContent('300 veíc/h')
       expect(tip).not.toHaveTextContent('estimado')
@@ -200,7 +211,13 @@ describe('render', () => {
       fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y })
       expect(screen.getByRole('tooltip')).toBeInTheDocument()
       expect(within(screen.getByRole('tooltip')).getByTestId('tooltip-demanda')).toHaveTextContent('—')
+      // the limit is 14 px from the road: 13.5 px shows it, 14.5 px hides it
+      fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y + 13.5 })
+      expect(screen.getByRole('tooltip')).toBeInTheDocument()
+      fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y + 14.5 })
+      expect(screen.queryByRole('tooltip')).toBeNull()
       const away = map(500, 560)
+      fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y })
       fireEvent.mouseMove(canvas, { clientX: away.x, clientY: away.y })
       expect(screen.queryByRole('tooltip')).toBeNull()
       fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y })
@@ -232,6 +249,13 @@ describe('render', () => {
       const after = engine.coverage.entries('central-I1-I2')[0]?.cobertura ?? 0
       expect(before).toBeGreaterThanOrEqual(0.3)
       expect(after).toBeLessThan(0.3)
+      // and the next C2 reading leaves central I1->I2 out
+      engine.addCar('central', 450)
+      act(() => {
+        vi.advanceTimersByTime(10_000)
+      })
+      const turned = readings.filter((r) => r.sensorId === 'C2').at(-1)!
+      expect(turned.porTrecho.map((t) => t.trecho)).not.toContain('central-I1-I2')
       // range and FOV edits too
       fireEvent.change(within(row).getByLabelText(/alcance/i), { target: { value: '150' } })
       fireEvent.change(within(row).getByLabelText(/ângulo/i), { target: { value: '40' } })
@@ -289,7 +313,10 @@ describe('render', () => {
       expect(document.body.textContent).not.toMatch(/drone/i)
       // nor in labels a screen reader reads
       for (const el of document.querySelectorAll('[aria-label]')) expect(el.getAttribute('aria-label')).not.toMatch(/drone/i)
-      expect(document.title === '' || !/drone/i.test(document.title)).toBe(true)
+      // the page title lives in index.html, which jsdom does not load: read it
+      const html = readFileSync(`${process.cwd()}/index.html`, 'utf8')
+      expect(html).toMatch(/<title>Central de trânsito — gestão de tráfego<\/title>/)
+      expect(html).not.toMatch(/drone/i)
     })
   })
 })
