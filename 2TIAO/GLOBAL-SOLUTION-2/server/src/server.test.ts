@@ -36,9 +36,9 @@ describe('server', () => {
       expect(p.system).toBe(SYSTEM_PROMPT) // the page cannot override it
       expect(p.tools!.map((t) => (t as { name: string }).name)).toEqual(['estado_rede', 'propor_desvio', 'propor_semaforo', 'registrar_explicacao'])
       for (const t of p.tools!) expect((t as { strict?: boolean }).strict).toBe(true)
-      // the model chooses routes, never N or p
+      // the model chooses the segment to avoid, never N, p or who is notified
       const desvio = p.tools!.find((t) => (t as { name: string }).name === 'propor_desvio') as { input_schema: { properties: Record<string, unknown> } }
-      expect(Object.keys(desvio.input_schema.properties).sort()).toEqual(['de', 'justificativa', 'para'])
+      expect(Object.keys(desvio.input_schema.properties).sort()).toEqual(['justificativa', 'trecho'])
       expect(p.output_config).toEqual({ effort: 'low' })
       expect(p.fallbacks).toBe('default')
       expect(p.betas).toContain('server-side-fallback-2026-07-01')

@@ -8,7 +8,7 @@ export const MIN_SAMPLES = 5
 export const STALE_AFTER_MS = 20_000
 export const MAX_PLOTTED = 200
 
-/** One via's slice of a drone reading, as it arrives in the payload. */
+/** One segment's slice of a camera+radar reading, as it arrives in the payload. */
 export interface ViaInput {
   contagem: number
   velocidadeMediaKmh: number | null

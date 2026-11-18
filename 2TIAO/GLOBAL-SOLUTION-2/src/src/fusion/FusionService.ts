@@ -3,7 +3,7 @@ import { TELEMETRY_FILTER } from '../telemetry/TelemetryPublisher'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { ALERTS_TOPIC } from './AlertPublisher'
 import { agedConfidence, baseConfidence, FRESH_MS } from './confidence'
-import { OD_TOPIC } from './OdAggregator'
+import { APPS_TOPIC } from '../apps/AppFleet'
 
 export const ALERT_MERGE_M = 50
 export const ALERT_MERGE_MS = 60_000
@@ -22,10 +22,12 @@ export interface FusedAlert {
 
 /** The fused view of one road segment (spec item 4). */
 export interface FusedSegment {
+  /** Cars the camera counted in the last window (computer vision). */
+  contagem: number | null
   densidade: number | null
   velocidadeMedia: number | null
   alertas: FusedAlert[]
-  /** Demand from the OD matrix, veh/h; null when unknown. */
+  /** Demand from the drivers with a map app, scaled to all drivers, veh/h; null when unknown (AD-038). */
   demandaOD: number | null
   /** Sensors behind the current values; empty when estimated. */
   fontes: string[]
@@ -75,7 +77,7 @@ function distanceToPolyline(x: number, y: number, points: Segment['points']): nu
 
 /**
  * Fuses, per road segment, what arrives on the broker: sensor readings (highest coverage wins
- * within a window), operator alerts (deduplicated) and aggregated OD demand. It only ever sees
+ * within a window), operator alerts (deduplicated) and the demand the map apps report. It only ever sees
  * aggregate messages - never the simulation or individual cars (LGPD).
  */
 export class FusionService {
@@ -100,7 +102,7 @@ export class FusionService {
     this.offs = [
       this.transport.subscribe(TELEMETRY_FILTER, (_t, p) => this.onReading(p)),
       this.transport.subscribe(ALERTS_TOPIC, (_t, p) => this.onAlert(p)),
-      this.transport.subscribe(OD_TOPIC, (_t, p) => this.onDemand(p)),
+      this.transport.subscribe(APPS_TOPIC, (_t, p) => this.onDemand(p)),
     ]
   }
 
@@ -176,18 +178,14 @@ export class FusionService {
     this.alerts.set(home.id, list)
   }
 
+  /** Demand per segment from the map apps' aggregate (door 4): only what the apps' drivers reveal. */
   private onDemand(payload: string): void {
     const msg = FusionService.parse(payload)
-    if (!msg || typeof msg.janelaS !== 'number' || msg.janelaS <= 0 || !Array.isArray(msg.celulas)) return
-    const perHour = 3600 / msg.janelaS
-    const trips = (msg.celulas as Record<string, unknown>[])
-      .filter((c) => c && typeof c.viagens === 'number' && c.origem === 'oeste' && c.destino === 'leste')
-      .reduce((n, c) => n + (c.viagens as number), 0)
-    const valid = (msg.celulas as unknown[]).length > 0 && trips > 0
-    const routes = [...new Set(this.segments.flatMap((s) => s.routeIds))]
+    const demand = msg?.demandaPorTrecho
+    if (!demand || typeof demand !== 'object') return
     for (const s of this.segments) {
-      // trips spread evenly over the routes (round-robin); a shared segment carries all of them
-      this.demand.set(s.id, valid ? (trips * perHour * s.routeIds.length) / routes.length : null)
+      const v = (demand as Record<string, unknown>)[s.id]
+      this.demand.set(s.id, typeof v === 'number' && Number.isFinite(v) ? v : null)
     }
   }
 
@@ -217,6 +215,7 @@ export class FusionService {
         return [
           s.id,
           {
+            contagem: w ? w.best.contagem : null,
             densidade: w ? w.best.contagem / ((w.best.comprimentoCobertoM / 1000) * s.lanes) : null,
             velocidadeMedia: w ? w.best.velocidadeMediaKmh : null,
             alertas: (this.alerts.get(s.id) ?? []).map((a) => ({ ...a, ids: [...a.ids], membros: a.membros.map((m) => ({ ...m })) })),

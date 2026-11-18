@@ -1,5 +1,5 @@
 import type { Simulation } from '../decision/Simulation'
-import type { TelemetryTransport } from '../telemetry/transport'
+import { segmentName } from '../sensors/segments'
 import { AgentLog, type LogOrigin } from './AgentLog'
 import { ApprovalQueue, type AgentAction } from './ApprovalQueue'
 import { LlmRequestError, LlmUnavailable, type AgentMessage, type Block, type LlmTurn } from './llm'
@@ -8,23 +8,18 @@ import { executeTool } from './tools'
 
 export const TURN_EVERY_MS = 30_000
 export const MAX_MODEL_CALLS = 6
-export const NOTIFICATIONS_TOPIC = 'transito/notificacoes'
-export const NOTIFICATION_CHANNEL = 'app-de-mapa-simulado'
-const WINDOW_MS = 10_000
-const NAMES: Record<string, string> = { central: 'Central', norte: 'Norte', sul: 'Sul' }
-const name = (id: string) => NAMES[id] ?? id
 const pct = (p: number) => `${Math.round(p * 100)}%`
+const FASES = { H: 'alameda', V: 'rua' } as const
 
 function describe(action: AgentAction): string {
   return action.tipo === 'desvio'
-    ? `desvio ${name(action.de)} → ${name(action.para)} (N ${Math.round(action.n)} veíc/h, p ${pct(action.p)})`
-    : `verde de ${action.verdeS} s no semáforo ${action.intersecao}`
+    ? `desvio de ${segmentName(action.trecho)} (N ${Math.round(action.n)} veíc/h, p ${pct(action.p)})`
+    : `verde de ${action.verdeS} s na fase ${FASES[action.fase]} do semáforo ${action.intersecao}`
 }
 
 interface Options {
   sim: Simulation
   llm: LlmTurn
-  transport: TelemetryTransport
 }
 
 /**
@@ -37,19 +32,15 @@ export class AgentRunner {
   readonly queue = new ApprovalQueue()
   mode: 'llm' | 'regra' = 'llm'
   turns = 0
-  notified = 0
   private readonly sim: Simulation
   private readonly llm: LlmTurn
-  private readonly transport: TelemetryTransport
   private busy: Promise<void> | null = null
   private alertsSeen = 0
-  private lastDiverted = 0
   private lastSuggestion = 'inativo'
 
-  constructor({ sim, llm, transport }: Options) {
+  constructor({ sim, llm }: Options) {
     this.sim = sim
     this.llm = llm
-    this.transport = transport
   }
 
   private now(): number {
@@ -64,13 +55,12 @@ export class AgentRunner {
   tick(): void {
     const now = this.now()
     for (const card of this.queue.expire(now)) this.note('regra', `Card ${card.id} expirou sem resposta: ${describe(card.acao)} não aplicado.`)
-    if (now % WINDOW_MS === 0) this.notify(now)
 
-    // the rules end a diversion when the controller says the route recovered
+    // the rules end a diversion when the controller says the segment recovered
     const suggestion = this.sim.diversion.status
-    if (this.lastSuggestion === 'ativo' && suggestion === 'inativo' && this.sim.engine.getState().diversion) {
-      this.sim.engine.setDiversion(null)
-      this.note('regra', 'Rota recuperada (velocidade ≥ 35 km/h): desvio encerrado.')
+    if (this.lastSuggestion === 'ativo' && suggestion === 'inativo' && this.sim.active) {
+      this.sim.setActiveDiversion(null)
+      this.note('regra', 'Trecho recuperado (velocidade ≥ 35 km/h): desvio encerrado.')
     }
     this.lastSuggestion = suggestion
 
@@ -135,11 +125,11 @@ export class AgentRunner {
   /** The same decision without the model: the controller's suggestion, explained from a template. */
   private ruleTurn(): void {
     const d = this.sim.diversion
-    const current = this.sim.engine.getState().diversion
-    if (d.status === 'ativo' && d.p > 0 && !(current && current.from === d.from && current.to === d.to)) {
-      const routes = this.sim.capacity.routes()
-      const why = `${name(d.from)} congestionada (${routes[d.from].velocidade ?? '—'} km/h); ${name(d.to)} com folga de ${Math.round(routes[d.to].folga ?? 0)} veíc/h`
-      const outcome = this.propose({ tipo: 'desvio', de: d.from, para: d.to, n: d.n, p: d.p, justificativa: why }, 'regra')
+    const current = this.sim.active
+    if (d.status === 'ativo' && d.p > 0 && current?.trecho !== d.trecho) {
+      const e = this.sim.capacity.snapshot()[d.trecho]
+      const why = `${segmentName(d.trecho)} congestionado (${e?.velocidade ?? '—'} km/h); ${d.candidatos} motoristas com app ainda vão passar por ele`
+      const outcome = this.propose({ tipo: 'desvio', trecho: d.trecho, n: d.n, p: d.p, justificativa: why }, 'regra')
       this.note('regra', `Desvio pelas regras: ${why}. ${outcome}.`)
       return
     }
@@ -158,7 +148,7 @@ export class AgentRunner {
         return 'recusado: desvio parcial desligado'
       }
       if (action.p <= 0) {
-        this.note(origem, `Nada a desviar de ${name(action.de)} para ${name(action.para)}: sem excesso ou sem folga.`)
+        this.note(origem, `Nada a desviar de ${segmentName(action.trecho)}: sem excesso ou sem folga.`)
         return 'nada a desviar: p 0'
       }
       if (decideDiversion(action.p) === 'aplicar') {
@@ -171,7 +161,7 @@ export class AgentRunner {
     }
     const verdict = decideGreen(action.verdeS)
     if (verdict === 'recusar') {
-      this.note('regra', `Verde de ${action.verdeS} s no ${action.intersecao} recusado: fora de 10 a 60 s.`)
+      this.note('regra', `Verde de ${action.verdeS} s no ${action.intersecao} (${action.fase}) recusado: fora de 10 a 60 s.`)
       return 'recusado: fora de 10 a 60 s'
     }
     if (verdict === 'aprovar') {
@@ -184,10 +174,10 @@ export class AgentRunner {
 
   private apply(action: AgentAction): boolean {
     if (action.tipo === 'desvio') {
-      this.sim.engine.setDiversion({ from: action.de, to: action.para, fraction: action.p })
+      this.sim.setActiveDiversion({ trecho: action.trecho, p: action.p, mode: 'parcial' })
       return true
     }
-    const ok = this.sim.engine.setNextGreen(action.intersecao, action.verdeS)
+    const ok = this.sim.engine.setNextGreen(action.intersecao, action.fase, action.verdeS)
     if (!ok) this.note('regra', `Verde do ${action.intersecao} não aplicado: controle de semáforos desligado.`)
     return ok
   }
@@ -212,24 +202,5 @@ export class AgentRunner {
     const card = this.queue.get(id)
     if (!card || !this.queue.settle(id, 'rejeitada')) return
     this.note('operador', `Card ${id} rejeitado: ${describe(card.acao)} não aplicado.`)
-  }
-
-  /** One aggregated notice per window to the drivers' map app (simulated channel, AD-026). */
-  private notify(now: number): void {
-    const total = this.sim.engine.getState().divertedTotal
-    const diverted = total - this.lastDiverted
-    this.lastDiverted = total
-    const d = this.sim.engine.getState().diversion
-    if (diverted <= 0 || !d) return
-    this.notified += diverted
-    const msg = {
-      ts: now,
-      canal: NOTIFICATION_CHANNEL,
-      de: d.from,
-      para: d.to,
-      quantidade: diverted,
-      mensagem: `Trânsito lento na ${name(d.from)}: siga pela ${name(d.to)}.`,
-    }
-    this.transport.publish(NOTIFICATIONS_TOPIC, JSON.stringify(msg), { qos: 0, retain: false })
   }
 }

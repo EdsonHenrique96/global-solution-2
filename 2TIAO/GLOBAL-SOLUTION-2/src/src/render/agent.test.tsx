@@ -16,19 +16,18 @@ afterEach(() => {
 
 describe('render', () => {
   describe('AgentPanel', () => {
-    it('shows the log the cards the mode and the notification channel', async () => {
+    it('shows the log the cards and the mode', async () => {
       const onApprove = vi.fn()
       const onReject = vi.fn()
       const { rerender } = render(
         <AgentPanel
           mode="llm"
-          notified={42}
           log={[
-            { at: 95_000, origem: 'agente', texto: 'Central congestionada; desvio de 25% para a Norte.' },
+            { at: 95_000, origem: 'agente', texto: 'Al. Santos congestionada; desvio de 25% dos motoristas com app.' },
             { at: 60_000, origem: 'regra', texto: 'Nada a mudar.' },
           ]}
           cards={[
-            { id: 7, criadoEm: 90_000, estado: 'aguardando', acao: { tipo: 'desvio', de: 'central', para: 'sul', n: 120, p: 0.4, justificativa: 'acidente na central' } },
+            { id: 7, criadoEm: 90_000, estado: 'aguardando', acao: { tipo: 'desvio', trecho: 'I12>I13', n: 120, p: 0.4, justificativa: 'acidente na Al. Santos' } },
           ]}
           onApprove={onApprove}
           onReject={onReject}
@@ -36,19 +35,19 @@ describe('render', () => {
       )
       const panel = screen.getByRole('region', { name: 'Agente' })
       expect(within(panel).getByTestId('agent-mode')).toHaveTextContent('modo LLM')
-      expect(panel).toHaveTextContent('App de mapa do motorista (simulado)')
-      expect(within(panel).getByTestId('agent-notified')).toHaveTextContent('42')
+      // the drivers' channel moved to the map apps panel
+      expect(within(panel).queryByTestId('agent-notified')).toBeNull()
       const entries = within(panel).getAllByTestId('agent-log-entry')
-      expect(entries[0]).toHaveTextContent('1:35 agente Central congestionada; desvio de 25% para a Norte.')
+      expect(entries[0]).toHaveTextContent('1:35 agente Al. Santos congestionada; desvio de 25% dos motoristas com app.')
       expect(entries[1]).toHaveTextContent('1:00 regra Nada a mudar.')
       const card = within(panel).getByTestId('card-7')
-      expect(card).toHaveTextContent('Desvio Central → Sul · N 120 veíc/h · p 40%')
-      expect(card).toHaveTextContent('acidente na central')
+      expect(card).toHaveTextContent('Desvio de Al. Santos, R. Bela Cintra → R. Haddock Lobo · N 120 veíc/h · p 40%')
+      expect(card).toHaveTextContent('acidente na Al. Santos')
       fireEvent.click(within(card).getByRole('button', { name: 'Aprovar' }))
       expect(onApprove).toHaveBeenCalledWith(7)
       fireEvent.click(within(card).getByRole('button', { name: 'Rejeitar' }))
       expect(onReject).toHaveBeenCalledWith(7)
-      rerender(<AgentPanel mode="regra" notified={0} log={[]} cards={[]} onApprove={onApprove} onReject={onReject} />)
+      rerender(<AgentPanel mode="regra" log={[]} cards={[]} onApprove={onApprove} onReject={onReject} />)
       expect(within(panel).getByTestId('agent-mode')).toHaveTextContent('modo sem LLM')
       expect(within(panel).queryByRole('list', { name: 'Aguardando aprovação' })).toBeNull()
 

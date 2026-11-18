@@ -7,21 +7,29 @@ export const WINDOW_MS = 10_000
 export const MAX_NOISE_PCT = 30
 export const DEFAULT_NOISE_PCT = 10
 export const DEFAULT_SEED = 42
+/** The radar is more precise than the camera: it gets this share of the configured noise (AD-035). */
+export const RADAR_NOISE_SHARE = 0.5
 
-/** What a sensor saw of one segment in a window (trechos-cameras door 1). */
+/** What one unit saw of one segment in a window (door 3). */
 export interface SegmentReading {
   trecho: string
+  /** Cars inside the camera's cone at the close of the window. */
   contagem: number
+  fonteContagem: 'visao-computacional'
+  /** Mean speed of the cars the radar measured in the window; null when it measured none. */
   velocidadeMediaKmh: number | null
-  /** Segment length inside the sensor's polygon, metres. */
+  fonteVelocidade: 'radar'
+  /** Car samples the radar took in the window (one per car per tick). */
+  amostrasRadar: number
+  /** Segment length inside the camera's cone, metres. */
   comprimentoCobertoM: number
   cobertura: number
 }
 
-/** One sensor's reading for a closed window - the telemetry payload. */
+/** One unit's reading for a closed window - the telemetry payload (door 3). */
 export interface Reading {
   sensorId: string
-  tipo: 'fixo'
+  tipo: 'camera+radar'
   /** Simulated time when the window closed, ms. */
   ts: number
   janelaS: number
@@ -54,9 +62,10 @@ interface Options {
 }
 
 /**
- * Samples, every tick, the cars inside each camera's polygon - and only those (AC 6). When a
- * window closes it reports per camera the cars inside at the close and the mean sampled speed,
- * and the same per segment the camera covers at least COVERAGE_MIN of.
+ * Every tick, each unit's camera sees the cars inside its cone and its radar measures the speed of
+ * the cars inside its beam - and only those (AC 9). When a window closes it reports per unit the
+ * cars in the cone at the close and the mean radar speed, and the same per segment the camera
+ * covers at least COVERAGE_MIN of. The radar gets half the camera's noise.
  */
 export class SensorReader {
   private readonly windowMs: number
@@ -79,9 +88,9 @@ export class SensorReader {
     this.noisePct = clampNoise(pct)
   }
 
-  private add(key: string, seen: readonly CarSample[]) {
+  private add(key: string, measured: readonly CarSample[]) {
     const acc = this.sums.get(key) ?? { total: 0, samples: 0 }
-    for (const s of seen) {
+    for (const s of measured) {
       acc.total += s.speedKmh
       acc.samples += 1
     }
@@ -95,7 +104,7 @@ export class SensorReader {
   private noisyMean(key: string): number | null {
     const acc = this.sums.get(key)
     if (!acc || acc.samples === 0) return null
-    return Math.max(0, round1(applyNoise(acc.total / acc.samples, this.noisePct, this.rng)))
+    return Math.max(0, round1(applyNoise(acc.total / acc.samples, this.noisePct * RADAR_NOISE_SHARE, this.rng)))
   }
 
   observe(
@@ -107,12 +116,13 @@ export class SensorReader {
   ): Reading[] {
     const seenBy = new Map<string, CarSample[]>()
     for (const camera of cameras) {
-      const polygon = index.polygon(camera.id)
-      const seen = polygon ? cars.filter((c) => insidePolygon(c, polygon)) : []
-      seenBy.set(camera.id, seen)
-      this.add(camera.id, seen)
+      const cone = index.polygon(camera.id)
+      const beam = index.beam(camera.id)
+      seenBy.set(camera.id, cone ? cars.filter((c) => insidePolygon(c, cone)) : [])
+      const measured = beam ? cars.filter((c) => insidePolygon(c, beam)) : []
+      this.add(camera.id, measured)
       for (const { segmentId } of index.coveredBy(camera.id)) {
-        this.add(`${camera.id}|${segmentId}`, seen.filter((c) => c.segmentId === segmentId))
+        this.add(`${camera.id}|${segmentId}`, measured.filter((c) => c.segmentId === segmentId))
       }
     }
 
@@ -130,14 +140,17 @@ export class SensorReader {
         porTrecho.push({
           trecho: segmentId,
           contagem: this.noisyCount(seen.filter((c) => c.segmentId === segmentId).length),
+          fonteContagem: 'visao-computacional',
           velocidadeMediaKmh: this.noisyMean(`${camera.id}|${segmentId}`),
+          fonteVelocidade: 'radar',
+          amostrasRadar: this.sums.get(`${camera.id}|${segmentId}`)?.samples ?? 0,
           comprimentoCobertoM: round1(cobertura * index.lengthOf(segmentId)),
           cobertura: round3(cobertura),
         })
       }
       return {
         sensorId: camera.id,
-        tipo: 'fixo',
+        tipo: 'camera+radar',
         ts: nowMs,
         janelaS: this.windowMs / 1000,
         contagem,

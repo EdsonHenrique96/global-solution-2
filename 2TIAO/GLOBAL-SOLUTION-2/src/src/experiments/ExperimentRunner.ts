@@ -7,7 +7,8 @@ export type Scenario = (typeof SCENARIOS)[number]
 
 export const RUN_MS = 900_000
 export const RATE_PER_MINUTE = 15
-export const ACCIDENT = { routeId: 'central', distance: 500, startMs: 300_000 } as const
+/** Al. Santos, R. Bela Cintra → R. Haddock Lobo, in the middle of the block (AC 31). */
+export const ACCIDENT = { segmentId: 'I12>I13', startMs: 300_000 } as const
 export const ACCIDENT_MINUTES = [2, 5] as const
 export const DEMAND_MIN = 10
 export const DEMAND_MAX = 20
@@ -70,29 +71,28 @@ export function* scenarioSteps(
   const arrivals: Arrival[] = []
   engine.onArrival((a) => arrivals.push(a))
   // what the engine itself did with the accident, not what this runner meant to do
-  const blockages: { routeId: string; distance: number; ativo: boolean; ts: number }[] = []
-  engine.onBlockage((e) => blockages.push({ routeId: e.blockage.routeId, distance: e.blockage.distance, ativo: e.ativo, ts: e.ts }))
-  // alternatives: the routes without the accident, sampled every 10 s in every scenario (AD-030)
+  const blockages: { segmentId: string; distance: number; ativo: boolean; ts: number }[] = []
+  engine.onBlockage((e) => blockages.push({ segmentId: e.blockage.segmentId, distance: e.blockage.distance, ativo: e.ativo, ts: e.ts }))
+  const accidentAt = engine.segment(ACCIDENT.segmentId)!.length / 2
+  // alternatives: every segment but the accident's, sampled every 10 s in every scenario (AD-030)
   const altFlowMax: Record<string, number> = {}
   const queueBySecond: number[] = []
-  let maxFraction = 0
   const total = RUN_MS / TICK_MS
   for (let tick = 1; tick <= total; tick++) {
-    if (engine.getState().timeMs === ACCIDENT.startMs) engine.addBlockage(ACCIDENT.routeId, ACCIDENT.distance, params.acidenteMin * 60_000)
+    if (engine.getState().timeMs === ACCIDENT.startMs) engine.addBlockage(ACCIDENT.segmentId, accidentAt, params.acidenteMin * 60_000)
     sim.tick()
-    const { timeMs, diversion } = engine.getState()
+    const { timeMs } = engine.getState()
     if (timeMs % 1000 === 0) queueBySecond.push(engine.queueTotal())
-    if (diversion) maxFraction = Math.max(maxFraction, diversion.fraction)
     if (timeMs % 10_000 === 0) {
-      for (const [id, r] of Object.entries(sim.capacity.routes())) {
-        if (id !== ACCIDENT.routeId) altFlowMax[id] = Math.max(altFlowMax[id] ?? 0, r.fluxo)
+      for (const [id, e] of Object.entries(sim.capacity.snapshot())) {
+        if (id !== ACCIDENT.segmentId && e.estado !== 'sem dados') altFlowMax[id] = Math.max(altFlowMax[id] ?? 0, e.fluxo)
       }
     }
     if (tick % chunkTicks === 0) yield tick / total
   }
   // saturation: each alternative's peak flow over its capacity learned by the end of the run
-  const finalRoutes = sim.capacity.routes()
-  const altCapacity: Record<string, number | null> = Object.fromEntries(Object.keys(altFlowMax).map((id) => [id, finalRoutes[id]?.capacidade ?? null]))
+  const finalEstimates = sim.capacity.snapshot()
+  const altCapacity: Record<string, number | null> = Object.fromEntries(Object.keys(altFlowMax).map((id) => [id, finalEstimates[id]?.capacidade ?? null]))
   const ratios = Object.keys(altFlowMax)
     .filter((id) => altCapacity[id])
     .map((id) => (100 * altFlowMax[id]) / (altCapacity[id] as number))
@@ -107,7 +107,7 @@ export function* scenarioSteps(
     filaMaxima: Math.max(0, ...queueBySecond),
     tempoNormalizarS: normalisationS(queueBySecond, ACCIDENT.startMs / 1000),
     saturacaoAlternativaPct: ratios.length ? Math.max(...ratios) : null,
-    desviadosPct: s.spawnedTotal ? (100 * s.divertedTotal) / s.spawnedTotal : 0,
+    desviadosPct: s.spawnedTotal ? (100 * s.reroutedTotal) / s.spawnedTotal : 0,
   }
   return {
     ...metrics,
@@ -117,11 +117,11 @@ export function* scenarioSteps(
       demanda,
       acidenteMin: params.acidenteMin,
       spawned: s.spawnedTotal,
-      diverted: s.divertedTotal,
+      notified: sim.notifier.total,
+      rerouted: s.reroutedTotal,
       adaptiveSignals: scenario === 'desvio-parcial',
       diversionEnabled: scenario !== 'sem-sistema',
       diversionMode: scenario === 'notificar-todos' ? 'todos' : 'parcial',
-      maxFraction,
       arrivals: arrivals.map((a) => ({ travelS: a.travelS, co2G: a.co2G, distanciaM: a.distanciaM, paradoS: a.paradoS })),
       co2TotalG: s.co2TotalG,
       distanceTotalM: s.distanceTotalM,

@@ -6,7 +6,7 @@ import { lineSplit } from '@turf/line-split'
 import type { Feature, Polygon } from 'geojson'
 import RBush from 'rbush'
 import type { Point } from '../sim/types'
-import { cameraPolygon, insidePolygon, type FixedCamera } from './camera'
+import { cameraPolygon, insidePolygon, radarPolygon, type FixedCamera } from './camera'
 import { fromLngLat, toLngLat } from './geo'
 import type { Segment } from './segments'
 
@@ -15,7 +15,7 @@ export const COVERAGE_MIN = 0.3
 
 export interface CoverageEntry {
   sensorId: string
-  tipo: 'fixo'
+  tipo: 'camera+radar'
   cobertura: number
 }
 
@@ -52,13 +52,14 @@ const sameCamera = (a: FixedCamera, b: FixedCamera) =>
   a.range === b.range
 
 /**
- * segmentId -> sensors covering it, with coverage. An R-tree of segment bounding boxes finds the
+ * segmentId -> camera+radar units covering it, with the camera's coverage. An R-tree of segment bounding boxes finds the
  * candidates for each camera polygon. Rebuilt only when a camera changes, never per tick.
  */
 export class CoverageIndex {
   private readonly tree = new RBush<Box>()
   private cameras = new Map<string, FixedCamera>()
   private polygons = new Map<string, Feature<Polygon>>()
+  private beams = new Map<string, Feature<Polygon>>()
   private index = new Map<string, CoverageEntry[]>()
   private readonly lengths: Map<string, number>
   rebuilds = 0
@@ -90,6 +91,11 @@ export class CoverageIndex {
     return this.polygons.get(cameraId)
   }
 
+  /** The unit's radar beam. */
+  beam(cameraId: string): Feature<Polygon> | undefined {
+    return this.beams.get(cameraId)
+  }
+
   lengthOf(segmentId: string): number {
     return this.lengths.get(segmentId) ?? 0
   }
@@ -111,16 +117,18 @@ export class CoverageIndex {
   private rebuild(): void {
     this.rebuilds += 1
     this.polygons = new Map()
+    this.beams = new Map()
     this.index = new Map()
     for (const camera of this.cameras.values()) {
       const polygon = cameraPolygon(camera)
       this.polygons.set(camera.id, polygon)
+      this.beams.set(camera.id, radarPolygon(camera))
       const [minX, minY, maxX, maxY] = bbox(polygon)
       for (const { segment } of this.tree.search({ minX, minY, maxX, maxY })) {
         const cobertura = segmentCoverage(segment.points, polygon)
         if (cobertura <= 0) continue
         const list = this.index.get(segment.id) ?? []
-        list.push({ sensorId: camera.id, tipo: 'fixo', cobertura })
+        list.push({ sensorId: camera.id, tipo: 'camera+radar', cobertura })
         this.index.set(segment.id, list)
       }
     }

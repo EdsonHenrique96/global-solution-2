@@ -2,7 +2,7 @@ export type ConnectionStatus = 'connected' | 'disconnected'
 
 export interface PublishOptions {
   qos: 0
-  retain: false
+  retain: boolean
 }
 
 /** What the page needs from a message broker; MQTT in the page, an in-memory fake in tests. */

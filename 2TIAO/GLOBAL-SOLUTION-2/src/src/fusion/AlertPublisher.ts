@@ -1,4 +1,4 @@
-import { positionOnRoute } from '../sim/car'
+import { pointOnSegment } from '../sensors/segments'
 import type { SimulationEngine } from '../sim/SimulationEngine'
 import type { TelemetryTransport } from '../telemetry/transport'
 
@@ -18,9 +18,9 @@ export interface Alert {
 /** Publishes an accident alert when the operator blocks a road, and its end when it clears. */
 export function wireAlerts(engine: SimulationEngine, transport: TelemetryTransport): () => void {
   return engine.onBlockage(({ blockage, ativo, ts }) => {
-    const route = engine.getState().network.routes.find((r) => r.id === blockage.routeId)
-    if (!route) return
-    const p = positionOnRoute(route, blockage.distance)
+    const segment = engine.segment(blockage.segmentId)
+    if (!segment) return
+    const p = pointOnSegment(segment, blockage.distance)
     const alert: Alert = { id: blockage.id, tipo: 'acidente', x: p.x, y: p.y, ts, fonte: 'operador', ativo }
     transport.publish(ALERTS_TOPIC, JSON.stringify(alert), { qos: 0, retain: false })
   })

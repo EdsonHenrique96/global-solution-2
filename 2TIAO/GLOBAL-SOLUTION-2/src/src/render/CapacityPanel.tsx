@@ -1,5 +1,8 @@
-import type { Estimate } from '../capacity/CapacityModel'
+import type { Estimate, RouteStatus } from '../capacity/CapacityModel'
+import type { FusedSegment } from '../fusion/FusionService'
+import type { CoverageEntry } from '../sensors/coverage'
 import { segmentName } from '../sensors/segments'
+import { coveringUnit, SEM_DADO } from './tooltip'
 
 const W = 300
 const H = 180
@@ -7,32 +10,45 @@ const PAD = { left: 40, right: 10, top: 10, bottom: 30 }
 
 interface Props {
   segmentId: string
-  estimate: Estimate
+  estimate: Estimate | undefined
+  /** State as the operator sees it (fusedStatus); the estimate's own when absent. */
+  status?: RouteStatus
+  fused?: FusedSegment
+  coverage?: readonly CoverageEntry[]
 }
 
 const fmt = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
+const orNone = (v: number | null | undefined, unit: string) => (v === null || v === undefined ? SEM_DADO : `${fmt(v)} ${unit}`)
 
-/** Capacity of the selected road segment and its flow x density curve forming live. */
-export function CapacityPanel({ segmentId, estimate }: Props) {
-  const { estado, capacidade, fluxo, folga, vf, kj, amostras } = estimate
+/** The selected segment's metrics (AC 16) and its flow x density curve forming live. */
+export function CapacityPanel({ segmentId, estimate, status, fused, coverage = [] }: Props) {
+  const estado = status ?? estimate?.estado ?? 'sem dados'
   return (
-    <section className="capacity" aria-label="Capacidade do trecho">
+    <section className="capacity" aria-label="Métricas do trecho">
       <h2>
-        Trecho <span data-testid="capacity-via">{segmentName(segmentId)}</span>
+        <span data-testid="capacity-via">{segmentName(segmentId)}</span>
       </h2>
       <dl className="capacity-facts">
         <dt>Estado</dt>
         <dd data-testid="capacity-estado" className={`estado ${estado.replace(' ', '-')}`}>
-          {estado}
+          {estado === 'sem dados' ? SEM_DADO : estado}
         </dd>
+        <dt>Unidade</dt>
+        <dd data-testid="capacity-unidade">{coveringUnit(coverage)}</dd>
+        <dt>Contagem (câmera)</dt>
+        <dd data-testid="capacity-contagem">{orNone(fused?.contagem, 'veíc')}</dd>
+        <dt>Velocidade (radar)</dt>
+        <dd data-testid="capacity-velocidade">{orNone(fused?.velocidadeMedia, 'km/h')}</dd>
+        <dt>Densidade</dt>
+        <dd data-testid="capacity-densidade">{orNone(fused?.densidade, 'veíc/km')}</dd>
+        <dt>Fluxo</dt>
+        <dd data-testid="capacity-fluxo">{estimate && estado !== 'sem dados' ? `${fmt(estimate.fluxo)} veíc/h` : SEM_DADO}</dd>
         <dt>Capacidade</dt>
-        <dd data-testid="capacity-capacidade">{capacidade === null ? 'aprendendo' : `${fmt(capacidade)} veíc/h`}</dd>
-        <dt>Fluxo atual</dt>
-        <dd data-testid="capacity-fluxo">{fmt(fluxo)} veíc/h</dd>
+        <dd data-testid="capacity-capacidade">{estimate?.capacidade == null ? 'aprendendo' : `${fmt(estimate.capacidade)} veíc/h`}</dd>
         <dt>Folga</dt>
-        <dd data-testid="capacity-folga">{folga === null ? 'aprendendo' : `${fmt(folga)} veíc/h`}</dd>
+        <dd data-testid="capacity-folga">{estimate?.folga == null ? 'aprendendo' : `${fmt(estimate.folga)} veíc/h`}</dd>
       </dl>
-      <Chart samples={amostras} vf={vf} kj={kj} capacidade={capacidade} />
+      <Chart samples={estimate?.amostras ?? []} vf={estimate?.vf ?? null} kj={estimate?.kj ?? null} capacidade={estimate?.capacidade ?? null} />
     </section>
   )
 }

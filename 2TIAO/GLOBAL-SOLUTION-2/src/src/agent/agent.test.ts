@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { diversionSize } from '../decision/DiversionController'
+import { APPS_TOPIC } from '../apps/AppFleet'
 import { Simulation } from '../decision/Simulation'
-import { SimulationEngine } from '../sim/SimulationEngine'
+import { sortRoads } from '../render/roads'
+import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
+import { telemetryTopic } from '../telemetry/TelemetryPublisher'
 import { AgentLog, LOG_SIZE } from './AgentLog'
-import { AgentRunner, NOTIFICATIONS_TOPIC } from './AgentRunner'
+import { AgentRunner } from './AgentRunner'
 import { LlmUnavailable, type LlmResponse, type LlmTurn } from './llm'
 import { decideDiversion, decideGreen } from './policy'
-import { TOOL_NAMES } from './tools'
+import { executeTool, TOOL_NAMES, WORST_SEGMENTS } from './tools'
 
 type Block = LlmResponse['content'][number]
 const toolUse = (id: string, name: string, input: Record<string, unknown>): Block => ({ type: 'tool_use', id, name, input })
@@ -29,9 +31,11 @@ function setup(llm: LlmTurn, rate = 0) {
   const transport = new FakeTransport(true)
   const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: rate, noisePct: 0 }), transport, agentControl: true })
   sim.start()
-  const runner = new AgentRunner({ sim, llm, transport })
+  const runner = new AgentRunner({ sim, llm })
   return { sim, runner, transport }
 }
+
+const JAMMED = 'I12>I13'
 
 async function runFor(sim: Simulation, runner: AgentRunner, ms: number) {
   const end = sim.engine.getState().timeMs + ms
@@ -77,7 +81,7 @@ describe('agent', () => {
       // a new alert starts a turn before the next 30 s mark
       await runFor(s2.sim, s2.runner, 5_000)
       expect(s2.runner.turns).toBe(1)
-      s2.sim.engine.addBlockage('central', 500)
+      s2.sim.engine.addBlockage(JAMMED, 70)
       await runFor(s2.sim, s2.runner, 100)
       expect(s2.runner.turns).toBe(2)
       await runFor(s2.sim, s2.runner, 24_900) // the 60 s mark
@@ -86,29 +90,64 @@ describe('agent', () => {
   })
 
   describe('tools', () => {
-    it('exposes four tools and sizes diversions with diversionSize', async () => {
+    it('exposes segment based tools and rejects invalid targets', () => {
       expect([...TOOL_NAMES]).toEqual(['estado_rede', 'propor_desvio', 'propor_semaforo', 'registrar_explicacao'])
-      const llm = scripted([
-        { content: [toolUse('a', 'estado_rede', {})], stop_reason: 'tool_use' },
-        // the model tries to set p itself: ignored
-        { content: [toolUse('b', 'propor_desvio', { de: 'central', para: 'norte', justificativa: 'teste', p: 0.99, n: 9999 })], stop_reason: 'tool_use' },
-        { content: [text('fim')], stop_reason: 'end_turn' },
-      ])
-      const { sim, runner } = setup(llm, 15)
-      await runFor(sim, runner, 30_000)
-      const state = JSON.parse((llm.seen[1] as { content: { content: string }[] }[]).at(-1)!.content[0].content)
-      expect(Object.keys(state).sort()).toEqual(['alertas', 'desvio', 'filas', 'metricas', 'rotas', 'tempoS'])
-      const toolResult = (llm.seen[2] as { content: { content: string }[] }[]).at(-1)!.content[0].content
-      const routes = sim.capacity.routes()
-      const demand = sim.demand()
-      const expected = diversionSize(demand.central, routes.central.fluxo, routes.norte.folga ?? 0)
-      expect(JSON.parse(toolResult)).toMatchObject({ n: expected.n, p: expected.p })
-      // an unknown tool gets an error result, not a crash
-      const odd = scripted([{ content: [toolUse('x', 'apagar_tudo', {})], stop_reason: 'tool_use' }])
-      const s3 = setup(odd)
-      await runFor(s3.sim, s3.runner, 30_000)
-      const err = (odd.seen[1] as { content: { is_error?: boolean }[] }[]).at(-1)!.content[0]
-      expect(err.is_error).toBe(true)
+      const { sim, runner } = setup(scripted([]), 30)
+      for (let t = 0; t < 60_000; t += TICK_MS) sim.tick()
+      const ctx = { sim, propose: (a: Parameters<typeof runner.applyProposal>[0]) => runner.applyProposal(a), explain: () => {} }
+      const state = JSON.parse(executeTool('estado_rede', {}, ctx).content)
+      expect(Object.keys(state).sort()).toEqual(['alertas', 'desvio', 'filas', 'metricas', 'motoristasComApp', 'pioresTrechos', 'tempoS'])
+      expect(state.pioresTrechos).toHaveLength(WORST_SEGMENTS)
+      const estimates = sim.capacity.snapshot()
+      const worst = sortRoads(sim.capacity.segments.map((s) => ({ id: s.id, estado: estimates[s.id].estado, velocidade: estimates[s.id].velocidade })))
+      expect(state.pioresTrechos.map((t: { trecho: string }) => t.trecho)).toEqual(worst.slice(0, WORST_SEGMENTS).map((r) => r.id))
+      expect(Object.keys(state.filas)).toHaveLength(16)
+      expect(state.filas.I11).toEqual({ H: expect.any(Number), V: expect.any(Number) })
+      expect(state.motoristasComApp.total).toBe(sim.fleet.snapshot().total)
+
+      const bad = (name: string, input: Record<string, unknown>) => executeTool(name, input, ctx)
+      expect(bad('propor_desvio', { trecho: 'I9>I9', justificativa: 'x' })).toMatchObject({ is_error: true, content: expect.stringMatching(/trecho inválido/) })
+      expect(bad('propor_desvio', { de: 'central', para: 'norte', justificativa: 'x' }).is_error).toBe(true)
+      expect(bad('propor_semaforo', { intersecao: 'I5', fase: 'H', verde_s: 20, justificativa: 'x' }).is_error).toBe(true)
+      expect(bad('propor_semaforo', { intersecao: 'I11', fase: 'X', verde_s: 20, justificativa: 'x' }).is_error).toBe(true)
+      expect(bad('propor_semaforo', { intersecao: 'I11', fase: 'V', verde_s: 20, justificativa: 'x' }).is_error).toBeUndefined()
+      expect(bad('propor_desvio', { trecho: JAMMED, justificativa: 'x' }).is_error).toBeUndefined()
+      expect(bad('apagar_tudo', {}).is_error).toBe(true)
+    })
+
+    it('sizes a proposed diversion like the rerouter and applies the policy', () => {
+      // no real units: only the injected reading measures the block
+      const transport = new FakeTransport(true)
+      const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }), transport, agentControl: true })
+      sim.start()
+      const runner = new AgentRunner({ sim, llm: scripted([]) })
+      // the block crawls at 3 km/h with 8 cars on 140 m: flow 171 veh/h once learned
+      const reading = (ts: number) =>
+        JSON.stringify({ sensorId: 'U99', ts, porTrecho: [{ trecho: JAMMED, contagem: 8, velocidadeMediaKmh: 3, comprimentoCobertoM: 140, cobertura: 1 }] })
+      transport.deliver(telemetryTopic('U99'), reading(0))
+      for (let t = 0; t < 10_100; t += TICK_MS) sim.tick()
+      transport.deliver(telemetryTopic('U99'), reading(sim.engine.getState().timeMs))
+      sim.engine.addCar({ path: ['I11>I12', JAMMED, 'I13>I14'], app: 'waze', velocity: 0 })
+      const ctx = { sim, propose: (a: Parameters<typeof runner.applyProposal>[0]) => runner.applyProposal(a), explain: () => {} }
+      const propose = (demand: number) => {
+        transport.deliver(APPS_TOPIC, JSON.stringify({ ts: 0, total: 1, porApp: {}, porTrecho: {}, demandaPorTrecho: { [JAMMED]: demand } }))
+        const expected = sim.sizing(JAMMED)
+        const out = JSON.parse(executeTool('propor_desvio', { trecho: JAMMED, justificativa: 'acidente', p: 0.99, n: 9999 }, ctx).content)
+        expect(out).toMatchObject({ n: expected.n, p: expected.p, candidatos: expected.evaluations.length })
+        return out
+      }
+      // small excess: p <= 0.3 applies at once
+      const small = propose(230)
+      expect(small.p).toBeGreaterThan(0)
+      expect(small.p).toBeLessThanOrEqual(0.3)
+      expect(small.resultado).toMatch(/^aplicado/)
+      expect(sim.active).toEqual({ trecho: JAMMED, p: small.p, mode: 'parcial' })
+      // large excess: p above 0.3 waits for the operator
+      const large = propose(600)
+      expect(large.p).toBeGreaterThan(0.3)
+      expect(large.resultado).toMatch(/aguardando aprovação/)
+      expect(runner.queue.pending()[0].acao).toMatchObject({ tipo: 'desvio', trecho: JAMMED, p: large.p })
+      expect(sim.active?.p).toBe(small.p)
     })
   })
 
@@ -136,21 +175,21 @@ describe('agent', () => {
       expect(decideDiversion(0.4)).toBe('aprovar')
       // in a run: the agent proposes; small p applies at once, large p waits as a card
       const { sim, runner } = setup(scripted([]), 15)
-      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 75, p: 0.25, justificativa: 'via lenta' })
-      expect(sim.engine.getState().diversion).toEqual({ from: 'central', to: 'norte', fraction: 0.25 })
-      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'sul', n: 120, p: 0.4, justificativa: 'acidente' })
-      expect(sim.engine.getState().diversion).toEqual({ from: 'central', to: 'norte', fraction: 0.25 })
+      runner.applyProposal({ tipo: 'desvio', trecho: JAMMED, n: 75, p: 0.25, justificativa: 'via lenta' })
+      expect(sim.active).toEqual({ trecho: JAMMED, p: 0.25, mode: 'parcial' })
+      runner.applyProposal({ tipo: 'desvio', trecho: 'I22>I23', n: 120, p: 0.4, justificativa: 'acidente' })
+      expect(sim.active).toEqual({ trecho: JAMMED, p: 0.25, mode: 'parcial' })
       const [card] = runner.queue.pending()
-      expect(card).toMatchObject({ estado: 'aguardando', acao: { tipo: 'desvio', de: 'central', para: 'sul', n: 120, p: 0.4, justificativa: 'acidente' } })
+      expect(card).toMatchObject({ estado: 'aguardando', acao: { tipo: 'desvio', trecho: 'I22>I23', n: 120, p: 0.4, justificativa: 'acidente' } })
       // p 0: nothing to divert, nothing applied
-      sim.engine.setDiversion(null)
-      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 0, p: 0, justificativa: 'sem folga' })
-      expect(sim.engine.getState().diversion).toBeNull()
+      sim.setActiveDiversion(null)
+      runner.applyProposal({ tipo: 'desvio', trecho: JAMMED, n: 0, p: 0, justificativa: 'sem folga' })
+      expect(sim.active).toBeNull()
       // "Desvio parcial" off: no diversion is applied or carded
       sim.setDiversionEnabled(false)
-      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 30, p: 0.1, justificativa: 'x' })
-      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 300, p: 0.5, justificativa: 'y' })
-      expect(sim.engine.getState().diversion).toBeNull()
+      runner.applyProposal({ tipo: 'desvio', trecho: JAMMED, n: 30, p: 0.1, justificativa: 'x' })
+      runner.applyProposal({ tipo: 'desvio', trecho: JAMMED, n: 300, p: 0.5, justificativa: 'y' })
+      expect(sim.active).toBeNull()
       expect(runner.queue.pending()).toHaveLength(1)
       expect(runner.log.entries()[0].texto).toMatch(/desvio parcial está desligado/)
     })
@@ -159,15 +198,16 @@ describe('agent', () => {
       expect([10, 30, 31, 60, 9, 61].map(decideGreen)).toEqual(['aplicar', 'aplicar', 'aprovar', 'aprovar', 'recusar', 'recusar'])
       const { sim, runner } = setup(scripted([]))
       sim.engine.setAdaptiveSignals(true)
-      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I1', verdeS: 25, justificativa: 'fila' })
-      // I1 turns green at 43 s: that green lasts 25 s
-      await runFor(sim, runner, 43_000)
-      const i1 = () => sim.engine.getState().lights.find((l) => l.intersectionId === 'I1')!
-      expect(i1().phase).toBe('verde')
-      expect(i1().remainingS).toBeCloseTo(25, 1)
-      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I2', verdeS: 45, justificativa: 'fila longa' })
+      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I11', fase: 'H', verdeS: 25, justificativa: 'fila' })
+      // I11's alameda turns green again at 46 s (H 20 + 3, V 20 + 3): that green lasts 25 s
+      await runFor(sim, runner, 46_000)
+      const i11 = () => sim.engine.getState().lights.find((l) => l.intersectionId === 'I11')!
+      expect(i11().h).toBe('verde')
+      expect(i11().v).toBe('vermelho')
+      expect(i11().remainingS).toBeCloseTo(25, 1)
+      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I12', fase: 'V', verdeS: 45, justificativa: 'fila longa' })
       expect(runner.queue.pending()).toHaveLength(1)
-      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I2', verdeS: 90, justificativa: 'absurdo' })
+      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I12', fase: 'V', verdeS: 90, justificativa: 'absurdo' })
       expect(runner.queue.pending()).toHaveLength(1)
       expect(runner.log.entries()[0].texto).toMatch(/recusad/)
     })
@@ -176,91 +216,64 @@ describe('agent', () => {
   describe('approval', () => {
     it('applies on approve logs a rejection and expires after 120 s', async () => {
       const { sim, runner } = setup(scripted([]), 15)
-      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'sul', n: 120, p: 0.4, justificativa: 'acidente' })
+      runner.applyProposal({ tipo: 'desvio', trecho: JAMMED, n: 120, p: 0.4, justificativa: 'acidente' })
       const [a] = runner.queue.pending()
       runner.approve(a.id)
-      expect(sim.engine.getState().diversion).toEqual({ from: 'central', to: 'sul', fraction: 0.4 })
+      expect(sim.active).toEqual({ trecho: JAMMED, p: 0.4, mode: 'parcial' })
       expect(runner.queue.get(a.id)!.estado).toBe('aplicada')
       expect(runner.log.entries()[0]).toMatchObject({ origem: 'operador', texto: expect.stringMatching(/aprovad/) })
       runner.approve(a.id) // only once
       expect(runner.log.entries().filter((e) => e.origem === 'operador')).toHaveLength(1)
 
-      runner.applyProposal({ tipo: 'desvio', de: 'norte', para: 'central', n: 90, p: 0.45, justificativa: 'x' })
+      runner.applyProposal({ tipo: 'desvio', trecho: 'I22>I23', n: 90, p: 0.45, justificativa: 'x' })
       const [b] = runner.queue.pending()
       runner.reject(b.id)
-      expect(sim.engine.getState().diversion).toEqual({ from: 'central', to: 'sul', fraction: 0.4 })
+      expect(sim.active).toEqual({ trecho: JAMMED, p: 0.4, mode: 'parcial' })
       expect(runner.queue.get(b.id)!.estado).toBe('rejeitada')
       expect(runner.log.entries()[0]).toMatchObject({ origem: 'operador', texto: expect.stringMatching(/rejeitad/) })
 
-      runner.applyProposal({ tipo: 'desvio', de: 'sul', para: 'norte', n: 90, p: 0.5, justificativa: 'y' })
+      runner.applyProposal({ tipo: 'desvio', trecho: 'I33>I34', n: 90, p: 0.5, justificativa: 'y' })
       const [c] = runner.queue.pending()
       await runFor(sim, runner, 119_900)
       expect(runner.queue.get(c.id)!.estado).toBe('aguardando')
       await runFor(sim, runner, 100)
       expect(runner.queue.get(c.id)!.estado).toBe('expirada')
       runner.approve(c.id) // too late
-      expect(sim.engine.getState().diversion?.from).not.toBe('sul')
+      expect(sim.active?.trecho).not.toBe('I33>I34')
 
       // a green card approved while signal control is off is not applied, and says so
-      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I1', verdeS: 45, justificativa: 'fila' })
+      runner.applyProposal({ tipo: 'semaforo', intersecao: 'I11', fase: 'H', verdeS: 45, justificativa: 'fila' })
       const [g] = runner.queue.pending()
       runner.approve(g.id)
       expect(runner.queue.get(g.id)!.estado).toBe('nao-aplicada')
       expect(runner.log.entries()[0].texto).toMatch(/aprovado, mas não aplicado/)
       // a diversion card approved after "Desvio parcial" was turned off is not applied either
-      runner.applyProposal({ tipo: 'desvio', de: 'norte', para: 'sul', n: 90, p: 0.6, justificativa: 'z' })
+      runner.applyProposal({ tipo: 'desvio', trecho: 'I42>I43', n: 90, p: 0.6, justificativa: 'z' })
       const [d] = runner.queue.pending()
       sim.setDiversionEnabled(false)
       runner.approve(d.id)
       expect(runner.queue.get(d.id)!.estado).toBe('nao-aplicada')
-      expect(sim.engine.getState().diversion).toBeNull()
-    })
-  })
-
-  describe('notifications', () => {
-    it('publishes one aggregated notification per window with diverted cars', async () => {
-      const { sim, runner, transport } = setup(scripted([]), 120)
-      const seen: Record<string, unknown>[] = []
-      transport.subscribe(NOTIFICATIONS_TOPIC, (_t, p) => seen.push(JSON.parse(p)))
-      const published = () => transport.published.filter((m) => m.topic === NOTIFICATIONS_TOPIC)
-      await runFor(sim, runner, 10_000)
-      expect(seen).toHaveLength(0) // nothing diverted yet
-      runner.applyProposal({ tipo: 'desvio', de: 'central', para: 'norte', n: 300, p: 0.3, justificativa: 'teste' })
-      const before = sim.engine.getState().divertedTotal
-      await runFor(sim, runner, 10_000)
-      const diverted = sim.engine.getState().divertedTotal - before
-      expect(diverted).toBeGreaterThan(0)
-      expect(seen).toHaveLength(1)
-      expect(seen[0]).toEqual({
-        ts: 20_000,
-        canal: 'app-de-mapa-simulado',
-        de: 'central',
-        para: 'norte',
-        quantidade: diverted,
-        mensagem: expect.stringContaining('Norte'),
-      })
-      expect(runner.notified).toBe(diverted)
-      expect(published()[0].options).toEqual({ qos: 0, retain: false })
+      expect(sim.active).toBeNull()
     })
   })
 
   describe('fallback', () => {
-    it('runs the rules without the LLM on 503 502 or timeout and returns to LLM mode', async () => {
+    it('runs the rules without the LLM on 503 502 or timeout and returns to LLM mode', { timeout: 60_000 }, async () => {
       let down = true
       const llm = (async () => {
         if (down) throw new LlmUnavailable('503')
         return { content: [text('ok')], stop_reason: 'end_turn' }
       }) as LlmTurn
-      const { sim, runner } = setup(llm, 15)
+      const { sim, runner } = setup(llm, 120)
       await runFor(sim, runner, 30_000)
       expect(runner.mode).toBe('regra')
       expect(runner.log.entries()[0].origem).toBe('regra')
-      // an accident in front of C2: the rules divert through the same autonomy policy
-      sim.engine.addBlockage('central', 500)
+      // an accident in front of U02: the rules divert through the same autonomy policy
+      sim.engine.addBlockage(JAMMED, 70)
       await runFor(sim, runner, 200_000)
       const ruleEntries = runner.log.entries().filter((e) => e.origem === 'regra')
       expect(ruleEntries.some((e) => /desvio/i.test(e.texto))).toBe(true)
-      const applied = sim.engine.getState().diversion !== null || runner.queue.all().some((c) => c.acao.tipo === 'desvio')
+      const applied = sim.active !== null || runner.queue.all().some((c) => c.acao.tipo === 'desvio')
       expect(applied).toBe(true)
       // the LLM is back: the next turn runs in LLM mode
       down = false

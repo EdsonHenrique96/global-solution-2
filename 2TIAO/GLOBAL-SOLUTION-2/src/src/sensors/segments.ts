@@ -1,96 +1,92 @@
-import { distanceAlongRoute, positionOnRoute, routeLength } from '../sim/car'
-import type { Point, RoadNetwork, Route } from '../sim/types'
+import { ALAMEDAS, RUAS } from '../sim/cityNetwork'
+import type { Axis, Point, RoadNetwork } from '../sim/types'
 
-/** Length of each route's entrance lane and of the shared arrival stretch, metres. */
-export const SHARED_M = 120
+/** Each direction is drawn and measured this far to the right of the street's centre line. */
+export const LANE_OFFSET_M = 4
 
-/** A road segment between two nodes of the network: the unit of decision (AD-022). */
+/** A directed road segment between two neighbouring corners: the unit of decision (AD-022). */
 export interface Segment {
+  /** `<de>><para>`, e.g. `I11>I12` (door 1). */
   id: string
-  /** Routes that drive along it. */
-  routeIds: string[]
-  /** Where it starts and ends along each of those routes, metres. */
-  from: Record<string, number>
-  to: Record<string, number>
+  from: string
+  to: string
+  /** The street it runs along. */
+  rua: string
+  axis: Axis
+  /** Its lane: start and end, offset to the right of travel. */
   points: Point[]
+  /** Corner to corner, metres. */
   length: number
   lanes: number
 }
 
-/** The part of a route's polyline between two distances along it. */
-export function slicePolyline(route: Route, d0: number, d1: number): Point[] {
-  const out: Point[] = [positionOnRoute(route, d0)]
-  let walked = 0
-  for (let i = 1; i < route.points.length; i++) {
-    const a = route.points[i - 1]
-    const b = route.points[i]
-    walked += Math.hypot(b.x - a.x, b.y - a.y)
-    if (walked > d0 + 1e-9 && walked < d1 - 1e-9) out.push({ ...b })
-  }
-  out.push(positionOnRoute(route, d1))
-  return out
-}
-
-/**
- * The network's segments: each route's entrance lane (origin -> fork), its middle stretches cut
- * at its traffic lights, and the arrival stretch (junction -> destination) all routes share.
- */
+/** Every pair of neighbouring corners, both directions: 24 blocks × 2 = 48 segments. */
 export function buildSegments(network: RoadNetwork): Segment[] {
-  const positions = new Map(network.intersections.map((i) => [i.id, i.position]))
+  const at = new Map(network.intersections.map((i) => [`${i.row},${i.col}`, i]))
   const segments: Segment[] = []
-  for (const route of network.routes) {
-    const L = routeLength(route)
-    const lights = route.intersectionIds
-      .map((id) => ({ id, at: distanceAlongRoute(route, positions.get(id)!) }))
-      .sort((a, b) => a.at - b.at)
-    const nodes = [
-      { name: 'F', at: SHARED_M },
-      ...lights.map((l) => ({ name: l.id, at: l.at })),
-      { name: 'M', at: L - SHARED_M },
-    ]
-    const add = (id: string, d0: number, d1: number) =>
+  const add = (a: RoadNetwork['intersections'][number], b: RoadNetwork['intersections'][number], axis: Axis) => {
+    for (const [p, q] of [
+      [a, b],
+      [b, a],
+    ]) {
+      const dx = q.position.x - p.position.x
+      const dy = q.position.y - p.position.y
+      const length = Math.hypot(dx, dy)
+      // right of travel, with y pointing south: (-dy, dx) / length
+      const ox = (-dy / length) * LANE_OFFSET_M
+      const oy = (dx / length) * LANE_OFFSET_M
       segments.push({
-        id,
-        routeIds: [route.id],
-        from: { [route.id]: d0 },
-        to: { [route.id]: d1 },
-        points: slicePolyline(route, d0, d1),
-        length: d1 - d0,
+        id: `${p.id}>${q.id}`,
+        from: p.id,
+        to: q.id,
+        rua: axis === 'H' ? ALAMEDAS[p.row - 1] : RUAS[p.col - 1],
+        axis,
+        points: [
+          { x: p.position.x + ox, y: p.position.y + oy },
+          { x: q.position.x + ox, y: q.position.y + oy },
+        ],
+        length,
         lanes: 1,
       })
-    add(`${route.id}-entrada`, 0, SHARED_M)
-    for (let i = 1; i < nodes.length; i++) add(`${route.id}-${nodes[i - 1].name}-${nodes[i].name}`, nodes[i - 1].at, nodes[i].at)
+    }
   }
-  // the arrival stretch is one physical segment for every route
-  const first = network.routes[0]
-  const L0 = routeLength(first)
-  segments.push({
-    id: 'chegada',
-    routeIds: network.routes.map((r) => r.id),
-    from: Object.fromEntries(network.routes.map((r) => [r.id, routeLength(r) - SHARED_M])),
-    to: Object.fromEntries(network.routes.map((r) => [r.id, routeLength(r)])),
-    points: slicePolyline(first, L0 - SHARED_M, L0),
-    length: SHARED_M,
-    lanes: 1,
-  })
+  for (const i of network.intersections) {
+    const right = at.get(`${i.row},${i.col + 1}`)
+    const below = at.get(`${i.row + 1},${i.col}`)
+    if (right) add(i, right, 'H')
+    if (below) add(i, below, 'V')
+  }
   return segments
 }
 
-/** The segment a car is on, given its route and distance along it. */
-export function segmentAt(segments: readonly Segment[], routeId: string, distance: number): Segment | undefined {
-  return segments.find(
-    (s) => s.routeIds.includes(routeId) && distance >= s.from[routeId] - 1e-9 && distance < s.to[routeId] + 1e-9,
-  )
+/** Point `d` metres along a segment's lane, clamped to its ends. */
+export function pointOnSegment(segment: Segment, d: number): Point {
+  const [a, b] = segment.points
+  const t = segment.length === 0 ? 0 : Math.min(1, Math.max(0, d / segment.length))
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }
 }
 
-const SEGMENT_ROUTE_NAMES: Record<string, string> = { central: 'Central', norte: 'Norte', sul: 'Sul' }
+const parse = (id: string) => {
+  const m = /^I(\d)(\d)>I(\d)(\d)$/.exec(id)
+  return m ? { r1: +m[1], c1: +m[2], r2: +m[3], c2: +m[4] } : null
+}
 
-/** "central-I1-I2" -> "Central I1→I2"; "norte-entrada" -> "Norte entrada"; "chegada" -> "Chegada". */
+/** "I14>I13" -> "Al. Santos, R. Augusta → R. Haddock Lobo"; "I12>I22" -> "R. Bela Cintra, Al. Santos → Al. Jaú". */
 export function segmentName(id: string): string {
-  if (id === 'chegada') return 'Chegada'
-  const [route, ...rest] = id.split('-')
-  const name = SEGMENT_ROUTE_NAMES[route] ?? route
-  if (rest.length === 1) return `${name} ${rest[0]}`
-  return `${name} ${rest.join('→')}`
+  const p = parse(id)
+  if (!p) return id
+  if (p.r1 === p.r2) return `${ALAMEDAS[p.r1 - 1]}, ${RUAS[p.c1 - 1]} → ${RUAS[p.c2 - 1]}`
+  return `${RUAS[p.c1 - 1]}, ${ALAMEDAS[p.r1 - 1]} → ${ALAMEDAS[p.r2 - 1]}`
 }
 
+/** Street names of a path, consecutive repeats merged: ["Al. Santos", "R. Augusta"]. */
+export function pathStreets(ids: readonly string[]): string[] {
+  const out: string[] = []
+  for (const id of ids) {
+    const p = parse(id)
+    if (!p) continue
+    const rua = p.r1 === p.r2 ? ALAMEDAS[p.r1 - 1] : RUAS[p.c1 - 1]
+    if (out[out.length - 1] !== rua) out.push(rua)
+  }
+  return out
+}

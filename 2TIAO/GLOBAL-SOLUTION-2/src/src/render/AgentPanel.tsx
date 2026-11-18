@@ -1,13 +1,14 @@
 import type { LogEntry } from '../agent/AgentLog'
 import type { AgentAction, ApprovalCard } from '../agent/ApprovalQueue'
+import { segmentName } from '../sensors/segments'
 
-const NAMES: Record<string, string> = { central: 'Central', norte: 'Norte', sul: 'Sul' }
+const FASES = { H: 'alameda', V: 'rua' } as const
 const ORIGIN: Record<LogEntry['origem'], string> = { agente: 'agente', regra: 'regra', operador: 'operador' }
 
 function actionText(a: AgentAction): string {
   return a.tipo === 'desvio'
-    ? `Desvio ${NAMES[a.de] ?? a.de} → ${NAMES[a.para] ?? a.para} · N ${Math.round(a.n)} veíc/h · p ${Math.round(a.p * 100)}%`
-    : `Verde de ${a.verdeS} s no semáforo ${a.intersecao}`
+    ? `Desvio de ${segmentName(a.trecho)} · N ${Math.round(a.n)} veíc/h · p ${Math.round(a.p * 100)}%`
+    : `Verde de ${a.verdeS} s na fase ${FASES[a.fase]} do semáforo ${a.intersecao}`
 }
 
 const time = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`
@@ -16,22 +17,17 @@ interface Props {
   mode: 'llm' | 'regra'
   log: LogEntry[]
   cards: ApprovalCard[]
-  notified: number
   onApprove: (id: number) => void
   onReject: (id: number) => void
 }
 
-/** The agent's explanations, the actions waiting for the operator, and the drivers' channel. */
-export function AgentPanel({ mode, log, cards, notified, onApprove, onReject }: Props) {
+/** The agent's explanations and the actions waiting for the operator. */
+export function AgentPanel({ mode, log, cards, onApprove, onReject }: Props) {
   return (
     <section className="agent" aria-label="Agente">
       <h2>
         Agente <span className={`mode ${mode}`} data-testid="agent-mode">{mode === 'llm' ? 'modo LLM' : 'modo sem LLM'}</span>
       </h2>
-      <p className="channel">
-        Canal de notificação: <strong>App de mapa do motorista (simulado)</strong> · notificados:{' '}
-        <strong data-testid="agent-notified">{notified}</strong>
-      </p>
       {cards.length > 0 && (
         <ul className="cards" aria-label="Aguardando aprovação">
           {cards.map((c) => (

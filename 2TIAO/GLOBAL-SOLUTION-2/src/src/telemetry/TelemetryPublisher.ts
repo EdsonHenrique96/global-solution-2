@@ -24,7 +24,10 @@ export class TelemetryPublisher {
       porTrecho: reading.porTrecho.map((t) => ({
         trecho: t.trecho,
         contagem: t.contagem,
+        fonteContagem: t.fonteContagem,
         velocidadeMediaKmh: t.velocidadeMediaKmh,
+        fonteVelocidade: t.fonteVelocidade,
+        amostrasRadar: t.amostrasRadar,
         comprimentoCobertoM: t.comprimentoCobertoM,
         cobertura: t.cobertura,
       })),

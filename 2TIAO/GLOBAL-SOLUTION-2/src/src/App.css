@@ -540,3 +540,115 @@
   fill: var(--text);
   font-size: 9px;
 }
+
+.map-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-column .map-area {
+  flex: 1;
+  min-height: 280px;
+}
+
+.roads {
+  flex: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 16px;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.roads h2 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+
+.roads-scroll {
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.roads table,
+.apps table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.roads th,
+.apps th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  text-align: left;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.roads td,
+.roads th,
+.apps td,
+.apps th {
+  padding: 3px 8px 3px 0;
+}
+
+.roads tbody tr {
+  cursor: pointer;
+}
+
+.roads tbody tr:hover {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.roads tr.selected {
+  background: rgba(56, 189, 248, 0.18);
+}
+
+.apps {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.apps h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.apps h3 {
+  margin: 10px 0 4px;
+  font-size: 0.85rem;
+}
+
+.apps tr.total td {
+  font-weight: 600;
+  border-top: 1px solid var(--border);
+}
+
+.apps .notices {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.78rem;
+}
+
+.segment-tooltip .avisos {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  color: #f97316;
+}
+
+@media (max-width: 900px) {
+  .workspace {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .side {
+    width: auto;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}

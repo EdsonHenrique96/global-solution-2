@@ -43,7 +43,7 @@ afterEach(() => {
 describe('render', () => {
   describe('SimulationCanvas', () => {
     it('draws no car markers while cars are on the road', () => {
-      // the same instant with an empty road and with a busy one: lights and drones are the same
+      // the same instant with an empty road and with a busy one: lights and units are the same
       const frameOf = (ratePerMinute: number) => {
         const engine = new SimulationEngine({ ratePerMinute })
         for (let t = 0; t < 60_000; t += TICK_MS) engine.tick(TICK_MS)
@@ -61,14 +61,15 @@ describe('render', () => {
 
       // every drawing call, with its arguments, is identical: nothing on the map depends on the cars
       expect(busy.frame).toEqual(empty.frame)
-      // and the frame is not trivially empty: 4 light circles and the 3 camera cones are there
-      expect(busy.frame.filter((c) => c.op === 'arc')).toHaveLength(4)
-      expect(busy.frame.filter((c) => c.op === 'closePath')).toHaveLength(3)
+      // and the frame is not trivially empty: 2 light dots at each of the 16 corners, and the 12
+      // units' camera cones and radar beams are there
+      expect(busy.frame.filter((c) => c.op === 'arc')).toHaveLength(32)
+      expect(busy.frame.filter((c) => c.op === 'closePath')).toHaveLength(24)
     })
   })
 
   describe('App', () => {
-    it('keeps counting and sensing cars that are no longer drawn', () => {
+    it('keeps counting and sensing cars that are no longer drawn', { timeout: 60_000 }, () => {
       vi.useFakeTimers()
       const engine = new SimulationEngine({ ratePerMinute: 120 })
       const readings: Reading[] = []

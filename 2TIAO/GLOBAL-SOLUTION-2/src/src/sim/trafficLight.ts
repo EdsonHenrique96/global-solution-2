@@ -1,62 +1,73 @@
+import type { Axis } from './types'
+
 export type Phase = 'verde' | 'amarelo' | 'vermelho'
 
+/** One intersection's light: the phase of the alameda approaches (H) and of the rua approaches (V). */
 export interface LightState {
   intersectionId: string
-  phase: Phase
-  /** Seconds left in the current phase (Infinity when lights are always green). */
+  h: Phase
+  v: Phase
+  /** Seconds left in the current stage (Infinity when lights are always green). */
   remainingS: number
 }
 
-const GREEN_MS = 20_000
-const YELLOW_MS = 3_000
-const RED_MS = 20_000
-export const CYCLE_MS = GREEN_MS + YELLOW_MS + RED_MS
+export const GREEN_MS = 20_000
+export const YELLOW_MS = 3_000
+/** Fixed cycle: H verde 20 s, H amarelo 3 s, V verde 20 s, V amarelo 3 s. */
+export const CYCLE_MS = 2 * (GREEN_MS + YELLOW_MS)
 
-/** How far into its cycle each light is at t = 0. */
-export const LIGHT_OFFSETS_S: Record<string, number> = { I1: 0, I2: 10, I3: 5, I4: 15 }
+/** How far into its cycle each light is at t = 0: a green wave of 10 s per block down the alamedas. */
+export function lightOffsetS(intersectionId: string): number {
+  const col = Number(intersectionId.slice(2)) || 1
+  const row = Number(intersectionId.slice(1, 2)) || 1
+  return ((col - 1) * 10 + (row - 1) * 5) % (CYCLE_MS / 1000)
+}
 
-/** Fixed-time cycle: verde 20 s -> amarelo 3 s -> vermelho 20 s. Integer ms keeps boundaries exact. */
+type Stage = { axis: Axis; phase: 'verde' | 'amarelo' }
+
+function stageLight(intersectionId: string, stage: Stage, remainingS: number): LightState {
+  const other: Phase = 'vermelho'
+  return stage.axis === 'H'
+    ? { intersectionId, h: stage.phase, v: other, remainingS }
+    : { intersectionId, h: other, v: stage.phase, remainingS }
+}
+
+/** The fixed-time light. Integer ms keeps the boundaries exact. Never green on both axes. */
 export function lightAt(intersectionId: string, timeMs: number): LightState {
-  const offsetMs = (LIGHT_OFFSETS_S[intersectionId] ?? 0) * 1000
-  const local = (((timeMs + offsetMs) % CYCLE_MS) + CYCLE_MS) % CYCLE_MS
-  if (local < GREEN_MS) return { intersectionId, phase: 'verde', remainingS: (GREEN_MS - local) / 1000 }
-  if (local < GREEN_MS + YELLOW_MS) {
-    return { intersectionId, phase: 'amarelo', remainingS: (GREEN_MS + YELLOW_MS - local) / 1000 }
-  }
-  return { intersectionId, phase: 'vermelho', remainingS: (CYCLE_MS - local) / 1000 }
+  const local = (((timeMs + lightOffsetS(intersectionId) * 1000) % CYCLE_MS) + CYCLE_MS) % CYCLE_MS
+  const half = GREEN_MS + YELLOW_MS
+  const axis: Axis = local < half ? 'H' : 'V'
+  const inStage = local % half
+  if (inStage < GREEN_MS) return stageLight(intersectionId, { axis, phase: 'verde' }, (GREEN_MS - inStage) / 1000)
+  return stageLight(intersectionId, { axis, phase: 'amarelo' }, (half - inStage) / 1000)
+}
+
+/** The phase a car on an approach along `axis` sees. */
+export function phaseFor(light: LightState, axis: Axis): Phase {
+  return axis === 'H' ? light.h : light.v
 }
 
 export const ADAPTIVE_BASE_GREEN_S = 20
 export const ADAPTIVE_K_S_PER_CAR = 2
 export const ADAPTIVE_MIN_GREEN_S = 15
-/** ±10 s around the base is automatic; more needs approval (Day 5). */
+/** ±10 s around the base is automatic; more needs approval. */
 export const ADAPTIVE_MAX_GREEN_S = 30
-const ADAPTIVE_YELLOW_MS = 3_000
-/** Shortest red in adaptive mode: with the 30 s automatic maximum, 30 + 3 + 10 fills the 43 s cycle. */
-export const ADAPTIVE_MIN_RED_MS = 10_000
 
-/** First instant at or after `t` where this light's fixed cycle starts a green. */
-export function nextAlignedStart(intersectionId: string, t: number): number {
-  const offsetMs = (LIGHT_OFFSETS_S[intersectionId] ?? 0) * 1000
-  return Math.ceil((t + offsetMs) / CYCLE_MS) * CYCLE_MS - offsetMs
-}
-
-/** Green for an approach: 20 + 2 (queue - average queue) s, clamped to 15-30 s (AD-015). */
+/** Green for a phase: 20 + 2 (its queue - mean queue of the two phases) s, clamped to 15-30 s (AD-015, AD-044). */
 export function adaptiveGreenS(queue: number, averageQueue: number): number {
   const raw = ADAPTIVE_BASE_GREEN_S + ADAPTIVE_K_S_PER_CAR * (queue - averageQueue)
   return Math.min(ADAPTIVE_MAX_GREEN_S, Math.max(ADAPTIVE_MIN_GREEN_S, raw))
 }
 
 /**
- * The lights of every intersection: the fixed-time cycle, or, when adaptive, the same 43 s cycle
- * and offsets with the green set from the queues at the start of each green and the red lasting
- * until the next aligned start (AD-031), so the green wave holds. Turning adaptive on continues
- * from the fixed cycle's current phase; turning it off returns to the fixed cycle.
+ * The lights of every intersection: the fixed cycle, or, when adaptive, each intersection
+ * alternates H and V with each green set when it starts from the queues of the two phases there
+ * (AD-044). Turning adaptive on continues from the fixed cycle's current stage.
  */
 export class SignalController {
   private adaptive = false
-  private readonly state = new Map<string, { phase: Phase; endsAtMs: number }>()
-  /** Greens set from outside (agent or operator) for the next green of a light, seconds. */
+  private readonly state = new Map<string, { stage: Stage; endsAtMs: number }>()
+  /** Greens set from outside (agent or operator) for the next green of a phase, seconds. */
   private readonly nextGreen = new Map<string, number>()
   private readonly ids: readonly string[]
 
@@ -68,10 +79,10 @@ export class SignalController {
     return this.adaptive
   }
 
-  /** Sets the length of a light's next green (adaptive mode only). Returns whether it was taken. */
-  setNextGreen(intersectionId: string, seconds: number): boolean {
+  /** Sets the length of a phase's next green (adaptive mode only). Returns whether it was taken. */
+  setNextGreen(intersectionId: string, axis: Axis, seconds: number): boolean {
     if (!this.adaptive || !this.ids.includes(intersectionId)) return false
-    this.nextGreen.set(intersectionId, seconds)
+    this.nextGreen.set(`${intersectionId}:${axis}`, seconds)
     return true
   }
 
@@ -82,31 +93,31 @@ export class SignalController {
     if (on) {
       for (const id of this.ids) {
         const l = lightAt(id, timeMs)
-        this.state.set(id, { phase: l.phase, endsAtMs: timeMs + Math.round(l.remainingS * 1000) })
+        const axis: Axis = l.h !== 'vermelho' ? 'H' : 'V'
+        const phase = (axis === 'H' ? l.h : l.v) as Stage['phase']
+        this.state.set(id, { stage: { axis, phase }, endsAtMs: timeMs + Math.round(l.remainingS * 1000) })
       }
     }
   }
 
-  /** Moves adaptive lights past every phase that ended by `timeMs`; `queueOf` is read at green. */
-  advance(timeMs: number, queueOf: (intersectionId: string) => number): void {
+  /** Moves adaptive lights past every stage that ended by `timeMs`; queues are read when a green starts. */
+  advance(timeMs: number, queueOf: (intersectionId: string, axis: Axis) => number): void {
     if (!this.adaptive) return
     for (const id of this.ids) {
       const s = this.state.get(id)!
       while (timeMs >= s.endsAtMs) {
-        if (s.phase === 'verde') {
-          s.phase = 'amarelo'
-          s.endsAtMs += ADAPTIVE_YELLOW_MS
-        } else if (s.phase === 'amarelo') {
-          s.phase = 'vermelho'
-          // a long approved green stretches this cycle only: red runs to the next aligned start
-          s.endsAtMs = nextAlignedStart(id, s.endsAtMs + ADAPTIVE_MIN_RED_MS)
+        if (s.stage.phase === 'verde') {
+          s.stage = { axis: s.stage.axis, phase: 'amarelo' }
+          s.endsAtMs += YELLOW_MS
         } else {
-          const queues = this.ids.map((i) => queueOf(i))
-          const average = queues.reduce((a, b) => a + b, 0) / queues.length
-          s.phase = 'verde'
-          const chosen = this.nextGreen.get(id)
-          this.nextGreen.delete(id)
-          s.endsAtMs += (chosen ?? adaptiveGreenS(queueOf(id), average)) * 1000
+          const axis: Axis = s.stage.axis === 'H' ? 'V' : 'H'
+          const mine = queueOf(id, axis)
+          const average = (mine + queueOf(id, s.stage.axis)) / 2
+          const key = `${id}:${axis}`
+          const chosen = this.nextGreen.get(key)
+          this.nextGreen.delete(key)
+          s.stage = { axis, phase: 'verde' }
+          s.endsAtMs += (chosen ?? adaptiveGreenS(mine, average)) * 1000
         }
       }
     }
@@ -116,7 +127,7 @@ export class SignalController {
     return this.ids.map((id) => {
       if (!this.adaptive) return lightAt(id, timeMs)
       const s = this.state.get(id)!
-      return { intersectionId: id, phase: s.phase, remainingS: (s.endsAtMs - timeMs) / 1000 }
+      return stageLight(id, s.stage, (s.endsAtMs - timeMs) / 1000)
     })
   }
 }

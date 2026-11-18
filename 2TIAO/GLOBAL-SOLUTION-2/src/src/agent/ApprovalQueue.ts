@@ -1,8 +1,8 @@
 export const CARD_TTL_MS = 120_000
 
 export type AgentAction =
-  | { tipo: 'desvio'; de: string; para: string; n: number; p: number; justificativa: string }
-  | { tipo: 'semaforo'; intersecao: string; verdeS: number; justificativa: string }
+  | { tipo: 'desvio'; trecho: string; n: number; p: number; justificativa: string }
+  | { tipo: 'semaforo'; intersecao: string; fase: 'H' | 'V'; verdeS: number; justificativa: string }
 
 /** 'nao-aplicada': approved, but the system could not apply it (e.g. signal control off). */
 export type CardState = 'aguardando' | 'aplicada' | 'nao-aplicada' | 'rejeitada' | 'expirada'

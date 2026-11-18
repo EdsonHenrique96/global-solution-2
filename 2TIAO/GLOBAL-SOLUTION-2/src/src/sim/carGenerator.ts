@@ -1,20 +1,16 @@
-import type { Car, Route } from './types'
-
 /** Free-flow speed: 50 km/h, in metres per second (1 network unit = 1 m). */
 export const DEFAULT_CAR_SPEED = 50 / 3.6
 
 const MS_PER_MINUTE = 60_000
 
 /**
- * Spawns cars at a configured rate (cars per minute) and assigns routes round-robin.
+ * Decides how many cars are born at a configured rate (cars per minute); their trips are drawn by
+ * the engine.
  * Integer bookkeeping (ms * cars/min) keeps the count exact over any whole number of minutes.
  */
 export class CarGenerator {
   private ratePerMinute: number
   private accumulator = 0
-  private nextRoute = 0
-  private nextId = 1
-  private readonly speed: number
   private readonly arrivals: 'deterministic' | 'poisson'
   private readonly rng: () => number
   /** Poisson mode: ms until the next car. */
@@ -22,11 +18,9 @@ export class CarGenerator {
 
   constructor(
     ratePerMinute: number,
-    speed = DEFAULT_CAR_SPEED,
     { arrivals = 'deterministic', rng = Math.random }: { arrivals?: 'deterministic' | 'poisson'; rng?: () => number } = {},
   ) {
     this.ratePerMinute = sanitizeRate(ratePerMinute)
-    this.speed = speed
     this.arrivals = arrivals
     this.rng = rng
   }
@@ -50,8 +44,9 @@ export class CarGenerator {
     this.untilNextMs = null
   }
 
-  tick(dtMs: number, routes: Route[]): Car[] {
-    if (this.ratePerMinute === 0 || routes.length === 0) return []
+  /** Cars due in this step. */
+  tick(dtMs: number): number {
+    if (this.ratePerMinute === 0) return 0
     let due = 0
     if (this.arrivals === 'poisson') {
       this.untilNextMs ??= this.drawGapMs()
@@ -67,13 +62,7 @@ export class CarGenerator {
         due += 1
       }
     }
-    const spawned: Car[] = []
-    for (; due > 0; due--) {
-      const route = routes[this.nextRoute % routes.length]
-      this.nextRoute = (this.nextRoute + 1) % routes.length
-      spawned.push({ id: this.nextId++, routeId: route.id, distance: 0, speed: this.speed })
-    }
-    return spawned
+    return due
   }
 }
 

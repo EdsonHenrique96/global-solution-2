@@ -71,34 +71,6 @@ function distinct<T>(items: T[]): T[] {
 
 describe('render', () => {
   describe('SimulationCanvas', () => {
-    it('draws the fixed mesh with 4 intersections', () => {
-      // the mesh alone: drones are circles too, so they are left out of this frame
-      render(<SimulationCanvas engine={new SimulationEngine({ ratePerMinute: 0, cameras: [] })} />)
-      const frame = lastFrame()
-      expect(frame.length).toBeGreaterThan(0)
-
-      // the map also strokes each road segment; a route is a stroke from the origin (the leftmost
-      // point drawn) all the way to the destination (the rightmost)
-      const lines = distinct(strokedPolylines(frame))
-      const xs = lines.flat().map(([x]) => x)
-      const left = Math.min(...xs)
-      const right = Math.max(...xs)
-      const routes = lines.filter((l) => l[0][0] === left && l[l.length - 1][0] === right)
-      expect(routes.length).toBeGreaterThanOrEqual(2)
-      expect(routes.length).toBeLessThanOrEqual(3)
-      // all routes share one origin and one destination, and they are different points
-      const origins = distinct(routes.map((r) => r[0]))
-      const destinations = distinct(routes.map((r) => r[r.length - 1]))
-      expect(origins).toHaveLength(1)
-      expect(destinations).toHaveLength(1)
-      expect(origins[0]).not.toEqual(destinations[0])
-
-      const intersections = distinct(
-        frame.filter((c) => c.op === 'arc').map((c) => [c.args[0], c.args[1]]),
-      )
-      expect(intersections).toHaveLength(4)
-    })
-
     it('resizes canvas to container on window resize', () => {
       const { container } = render(
         <SimulationCanvas engine={new SimulationEngine({ ratePerMinute: 0 })} />,

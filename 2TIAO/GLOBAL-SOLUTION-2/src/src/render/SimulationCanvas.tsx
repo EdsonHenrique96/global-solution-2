@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { RouteStatus } from '../capacity/CapacityModel'
-import { distanceAlongRoute, positionOnRoute } from '../sim/car'
+import { pointOnSegment } from '../sensors/segments'
 import type { SimulationEngine } from '../sim/SimulationEngine'
 import { BLOCKAGE_PICK_PX, cameraGrabRadius, distanceToSegment, drawScene, fitTransform, ROUTE_PICK_PX } from './draw'
 
@@ -10,9 +10,9 @@ interface Props {
   segmentStatus?: () => Record<string, RouteStatus>
   selectedSegment?: string
   onSelectSegment?: (segmentId: string) => void
-  /** In accident mode a click on a road blocks it, and a click on a marker removes it. */
+  /** In accident mode a click on a segment blocks it there, and a click on a marker removes it. */
   accidentMode?: boolean
-  onAccident?: (routeId: string, distance: number) => void
+  onAccident?: (segmentId: string, distance: number) => void
   onRemoveBlockage?: (id: number) => void
   layer?: 'estado' | 'cobertura'
   /** The segment under the mouse (null when none), with the mouse position in the canvas, px. */
@@ -21,7 +21,7 @@ interface Props {
 
 /**
  * Fills its container with a canvas and redraws the simulation on every animation frame.
- * A camera can be dragged with the mouse; it is dropped where the button is released.
+ * A camera+radar unit can be dragged with the mouse; it is dropped where the button is released.
  */
 export function SimulationCanvas({
   engine,
@@ -127,16 +127,20 @@ export function SimulationCanvas({
       const state = engine.getState()
       const screen = fit.map(point)
       const hit = state.blockages.find((b) => {
-        const route = state.network.routes.find((r) => r.id === b.routeId)
-        if (!route) return false
-        const c = fit.map(positionOnRoute(route, b.distance))
+        const segment = state.segments.find((s) => s.id === b.segmentId)
+        if (!segment) return false
+        const c = fit.map(pointOnSegment(segment, b.distance))
         return Math.hypot(c.x - screen.x, c.y - screen.y) <= BLOCKAGE_PICK_PX
       })
       if (hit) remove?.(hit.id)
       else {
         const segment = nearestSegment(fit, point)
-        const route = segment && state.network.routes.find((r) => r.id === segment.routeIds[0])
-        if (route) add?.(route.id, distanceAlongRoute(route, point))
+        if (segment) {
+          // where along the segment the click fell, metres
+          const [a, b] = segment.points
+          const t = ((point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y)) / (segment.length * segment.length)
+          add?.(segment.id, Math.min(1, Math.max(0, t)) * segment.length)
+        }
       }
       draw()
     }
@@ -197,7 +201,7 @@ export function SimulationCanvas({
 
   return (
     <div ref={wrapRef} className="sim-canvas">
-      <canvas ref={canvasRef} aria-label="Mapa da simulação de trânsito" role="img" />
+      <canvas ref={canvasRef} aria-label="Mapa da cidade: vias, semáforos e unidades câmera+radar" role="img" />
     </div>
   )
 }

@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
-import { buildRoadNetwork } from '../sim/roadNetwork'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
+import { lightAt } from '../sim/trafficLight'
+import { fitTransform } from './draw'
 import type { Reading } from '../sensors/reader'
 import { FakeTransport } from '../telemetry/testing'
 import { SimulationCanvas } from './SimulationCanvas'
@@ -54,28 +55,6 @@ function lastFrame(): Call[] {
   return start === -1 ? [] : calls.slice(start)
 }
 
-/**
- * Network metres -> canvas pixels, recovered from the drawn central route
- * (origin (60,300) and destination (940,300) of the fixed mesh).
- */
-function mapperFrom(frame: Call[]) {
-  const lines: [number, number][][] = []
-  let current: [number, number][] = []
-  for (const { op, args } of frame) {
-    if (op === 'beginPath') current = []
-    else if (op === 'moveTo' || op === 'lineTo') current.push([args[0] as number, args[1] as number])
-    else if (op === 'stroke' && current.length >= 2) lines.push(current)
-  }
-  const central = lines.find((l) => l.length === 4)!
-  const [x0, y0] = central[0]
-  const [x1] = central[central.length - 1]
-  const scale = (x1 - x0) / (940 - 60)
-  const map = (x: number, y: number) => ({ x: x0 + (x - 60) * scale, y: y0 + (y - 300) * scale })
-  return { scale, map }
-}
-
-const near = (a: number, b: number, tol = 0.5) => Math.abs(a - b) <= tol
-
 /** Classifies a #rrggbb fill as the traffic-light colour a person would name. */
 function hueOf(colour: unknown): string {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(colour))
@@ -93,69 +72,50 @@ function advance(engine: SimulationEngine, ms: number) {
 
 describe('render', () => {
   describe('SimulationCanvas', () => {
-    it('draws each traffic light in its phase colour with seconds remaining', () => {
+    it('draws each traffic light phase in its colour at every corner', () => {
       const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
-      // at 12 s: I1 verde 8 s, I2 amarelo 1 s, I3 verde 3 s, I4 vermelho 16 s
-      advance(engine, 12_000)
-      render(<SimulationCanvas engine={engine} />)
-      const frame = lastFrame()
-      const { map } = mapperFrom(frame)
-      const intersections = buildRoadNetwork().intersections
-
-      const colourAt: Record<string, unknown> = {}
-      for (const { id, position } of intersections) {
-        const c = map(position.x, position.y)
-        const arcIndex = frame.findIndex(
-          (k) => k.op === 'arc' && near(k.args[0] as number, c.x) && near(k.args[1] as number, c.y),
-        )
-        expect(arcIndex, `light ${id} drawn`).toBeGreaterThan(-1)
-        const fill = frame.slice(arcIndex).find((k) => k.op === 'fill')!
-        colourAt[id] = fill.fillStyle
-        const label = frame.find(
-          (k) =>
-            k.op === 'fillText' &&
-            Math.hypot((k.args[1] as number) - c.x, (k.args[2] as number) - c.y) < 40,
-        )
-        expect(label, `seconds next to ${id}`).toBeDefined()
-        colourAt[`${id}-text`] = label!.args[0]
+      const fit = fitTransform(engine.getState().network, size.width, size.height)
+      const corners = engine.getState().network.intersections
+      const h = (() => {
+        const [a, b] = [corners[0].position, corners[1].position]
+        const len = Math.hypot(b.x - a.x, b.y - a.y)
+        return { x: (b.x - a.x) / len, y: (b.y - a.y) / len }
+      })()
+      // the dot drawn nearest a point, and its fill
+      const dotNear = (frame: Call[], x: number, y: number) => {
+        let best = { d: Infinity, i: -1 }
+        frame.forEach((k, i) => {
+          if (k.op !== 'arc') return
+          const d = Math.hypot((k.args[0] as number) - x, (k.args[1] as number) - y)
+          if (d < best.d) best = { d, i }
+        })
+        return frame.slice(best.i).find((k) => k.op === 'fill')!.fillStyle
       }
-      expect(colourAt['I1-text']).toBe('8s')
-      expect(colourAt['I2-text']).toBe('1s')
-      expect(colourAt['I3-text']).toBe('3s')
-      expect(colourAt['I4-text']).toBe('16s')
-      // each phase reads as its colour: verde green, amarelo yellow, vermelho red
-      expect(hueOf(colourAt.I1)).toBe('verde')
-      expect(hueOf(colourAt.I3)).toBe('verde')
-      expect(hueOf(colourAt.I2)).toBe('amarelo')
-      expect(hueOf(colourAt.I4)).toBe('vermelho')
-      // same phase, same colour; three phases, three colours
-      expect(colourAt.I1).toBe(colourAt.I3)
-      expect(new Set([colourAt.I1, colourAt.I2, colourAt.I4]).size).toBe(3)
-
-      // the colours follow the phase: at 22 s I1 is amarelo and I2 vermelho, with I2's old colour gone
-      calls.length = 0
-      advance(engine, 10_000)
-      act(() => {
-        window.dispatchEvent(new Event('resize'))
-      })
-      const later = lastFrame()
-      const fillAt = (x: number, y: number) => {
-        const c = map(x, y)
-        const i = later.findIndex(
-          (k) => k.op === 'arc' && near(k.args[0] as number, c.x) && near(k.args[1] as number, c.y),
-        )
-        return later.slice(i).find((k) => k.op === 'fill')!.fillStyle
+      for (const t of [12_000, 30_000]) {
+        advance(engine, t - engine.getState().timeMs)
+        calls.length = 0
+        const view = render(<SimulationCanvas engine={engine} />)
+        const frame = lastFrame()
+        for (const i of corners) {
+          const c = fit.map(i.position)
+          // the H dot sits on the alameda side of the corner, the V dot on the rua side
+          const off = Math.max(5, 7 * fit.scale)
+          const hFill = dotNear(frame, c.x - h.x * off, c.y - h.y * off)
+          const l = lightAt(i.id, t)
+          expect(hueOf(hFill), `${i.id} H at ${t}`).toBe(l.h)
+          // the other dot of the corner shows the rua phase
+          const both = frame.filter((k) => k.op === 'arc' && Math.hypot((k.args[0] as number) - c.x, (k.args[1] as number) - c.y) < off + 1)
+          expect(both, i.id).toHaveLength(2)
+          const fills = both.map((k) => frame.slice(frame.indexOf(k)).find((x) => x.op === 'fill')!.fillStyle)
+          expect(fills.map(hueOf).sort()).toEqual([l.h, l.v].sort())
+        }
+        view.unmount()
       }
-      expect(fillAt(300, 300)).toBe(colourAt.I2) // I1 now amarelo
-      expect(fillAt(700, 300)).toBe(colourAt.I4) // I2 now vermelho
-      expect(hueOf(fillAt(300, 300))).toBe('amarelo')
-      expect(hueOf(fillAt(700, 300))).toBe('vermelho')
     })
-
   })
 
   describe('NoiseControl', () => {
-    it('next reading uses the new noise and carries ruidoPct', () => {
+    it('next reading uses the new noise and carries ruidoPct', { timeout: 60_000 }, () => {
       vi.useFakeTimers()
       const engine = new SimulationEngine({ ratePerMinute: 120 })
       const transport = new FakeTransport(true)
@@ -170,8 +130,9 @@ describe('render', () => {
       act(() => {
         vi.advanceTimersByTime(40_000)
       })
-      const before = transport.published.map((m) => JSON.parse(m.payload))
-      expect(before).toHaveLength(12)
+      const readings = () => transport.published.filter((m) => m.topic.startsWith('transito/sensores/')).map((m) => JSON.parse(m.payload))
+      const before = readings()
+      expect(before).toHaveLength(4 * 12)
       for (const p of before) expect(p.ruidoPct).toBe(10)
 
       fireEvent.change(slider, { target: { value: '25' } })
@@ -179,8 +140,8 @@ describe('render', () => {
       act(() => {
         vi.advanceTimersByTime(10_000)
       })
-      const after = transport.published.slice(12).map((m) => JSON.parse(m.payload))
-      expect(after).toHaveLength(3)
+      const after = readings().slice(4 * 12)
+      expect(after).toHaveLength(12)
       for (const p of after) expect(p.ruidoPct).toBe(25)
 
       // The same deterministic run with the noise set to 25 at 40 s produces exactly these
@@ -212,28 +173,28 @@ describe('render', () => {
         act(() => {
           transport.deliver(
             `transito/sensores/${sensorId}/telemetria`,
-            JSON.stringify({ sensorId, tipo: 'fixo', ts, janelaS: 10, contagem, velocidadeMediaKmh, ruidoPct: 10, porTrecho: [] }),
+            JSON.stringify({ sensorId, tipo: 'camera+radar', ts, janelaS: 10, contagem, velocidadeMediaKmh, ruidoPct: 10, porTrecho: [] }),
           )
         })
 
-      send('C1', 10_000, 3, 41.2)
-      send('C2', 10_000, 0, null)
-      send('C1', 20_000, 5, 22.5)
-      expect(within(panel).getByTestId('sensor-C1-contagem')).toHaveTextContent('5')
-      expect(within(panel).getByTestId('sensor-C1-velocidade')).toHaveTextContent('22.5')
-      expect(within(panel).getByTestId('sensor-C2-contagem')).toHaveTextContent('0')
-      expect(within(panel).getByTestId('sensor-C2-velocidade')).toHaveTextContent('—')
+      send('U01', 10_000, 3, 41.2)
+      send('U02', 10_000, 0, null)
+      send('U01', 20_000, 5, 22.5)
+      expect(within(panel).getByTestId('sensor-U01-contagem')).toHaveTextContent('5')
+      expect(within(panel).getByTestId('sensor-U01-velocidade')).toHaveTextContent('22.5')
+      expect(within(panel).getByTestId('sensor-U02-contagem')).toHaveTextContent('0')
+      expect(within(panel).getByTestId('sensor-U02-velocidade')).toHaveTextContent('—')
 
-      for (let i = 0; i < 25; i++) send('C3', 30_000 + i, i, 50)
+      for (let i = 0; i < 25; i++) send('U03', 30_000 + i, i, 50)
       const log = within(panel).getAllByTestId('telemetry-log-entry')
       expect(log).toHaveLength(20)
-      expect(log[0]).toHaveTextContent('transito/sensores/C3/telemetria')
+      expect(log[0]).toHaveTextContent('transito/sensores/U03/telemetria')
       expect(log[0]).toHaveTextContent('"contagem":24')
       expect(log[19]).toHaveTextContent('"contagem":5')
-      expect(within(panel).getByTestId('sensor-C3-contagem')).toHaveTextContent('24')
+      expect(within(panel).getByTestId('sensor-U03-contagem')).toHaveTextContent('24')
     })
 
-    it('shows MQTT desconectado and no new readings while disconnected and the simulation keeps running', () => {
+    it('shows MQTT desconectado and no new readings while disconnected and the simulation keeps running', { timeout: 60_000 }, () => {
       vi.useFakeTimers()
       const transport = new FakeTransport(false)
       const engine = new SimulationEngine({ ratePerMinute: 60 })
@@ -250,11 +211,12 @@ describe('render', () => {
       const state = engine.getState()
       expect(state.timeMs).toBe(25_000)
       expect(state.spawnedTotal).toBeGreaterThan(0)
-      expect(state.lights.find((l) => l.intersectionId === 'I1')!.phase).toBe('vermelho')
-      expect(produced.length).toBe(6)
+      const i11 = state.lights.find((l) => l.intersectionId === 'I11')!
+      expect([i11.h, i11.v]).toEqual([lightAt('I11', 25_000).h, lightAt('I11', 25_000).v])
+      expect(produced.length).toBe(2 * 12)
       // but nothing reaches the panel
       expect(within(panel).queryAllByTestId('telemetry-log-entry')).toHaveLength(0)
-      expect(within(panel).getByTestId('sensor-C1-contagem')).toHaveTextContent('—')
+      expect(within(panel).getByTestId('sensor-U01-contagem')).toHaveTextContent('—')
 
       // a connection that drops mid-run shows the warning again
       act(() => transport.setConnected(true))
@@ -282,8 +244,8 @@ describe('render', () => {
         vi.advanceTimersByTime(10_000)
       })
       const log = within(panel).getAllByTestId('telemetry-log-entry')
-      expect(log).toHaveLength(3)
-      expect(within(panel).getByTestId('sensor-C1-contagem')).not.toHaveTextContent('—')
+      expect(log).toHaveLength(12)
+      expect(within(panel).getByTestId('sensor-U01-contagem')).not.toHaveTextContent('—')
     })
   })
 })

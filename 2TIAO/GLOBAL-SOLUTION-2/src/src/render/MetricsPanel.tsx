@@ -1,8 +1,7 @@
 import type { DiversionState } from '../decision/DiversionController'
 import type { MetricsSample, MetricsSnapshot } from '../decision/MetricsRecorder'
 
-const ROUTE_NAMES: Record<string, string> = { central: 'Central', norte: 'Norte', sul: 'Sul' }
-const name = (id: string) => ROUTE_NAMES[id] ?? id
+import { segmentName } from '../sensors/segments'
 
 const fmt = (v: number, digits = 1) => v.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 const seconds = (v: number | null) => (v === null ? '—' : `${fmt(v)} s`)
@@ -10,9 +9,7 @@ const seconds = (v: number | null) => (v === null ? '—' : `${fmt(v)} s`)
 function diversionText(d: DiversionState): string {
   switch (d.status) {
     case 'ativo':
-      return `${name(d.from)} → ${name(d.to)} · N ${Math.round(d.n)} veíc/h · p ${Math.round(d.p * 100)}%`
-    case 'sem-alternativa':
-      return `${name(d.from)} congestionada, sem rota alternativa com folga`
+      return `evitar ${segmentName(d.trecho)} · ${d.candidatos} motoristas com app à frente · p ${Math.round(d.p * 100)}% · ${d.notificados} notificados na janela`
     case 'desligado':
       return 'desligado'
     default:
@@ -38,25 +35,14 @@ export function MetricsPanel({ metrics, diversion }: Props) {
         <dd data-testid="metric-travel-total">{seconds(metrics.travelAllS)}</dd>
         <dt>Fila total</dt>
         <dd data-testid="metric-queue">{metrics.queueTotal}</dd>
-        <dt>Desviados</dt>
+        <dt>Notificados</dt>
         <dd data-testid="metric-diverted">{fmt(metrics.pctDiverted)}%</dd>
         <dt>Desvio</dt>
         <dd data-testid="diversion-state">{diversionText(diversion)}</dd>
-        {diversion.status === 'ativo' && diversion.confianca !== undefined && (
-          <>
-            <dt>Confiança da rota alternativa</dt>
-            <dd data-testid="diversion-confidence">{fmt(diversion.confianca, 2)}</dd>
-          </>
-        )}
       </dl>
-      {diversion.status === 'ativo' && diversion.aviso && (
-        <p className="warning" role="alert" data-testid="diversion-warning">
-          {diversion.aviso}
-        </p>
-      )}
       <Spark id="chart-travel" label="Tempo médio de viagem (s)" samples={samples} value={(s) => s.travelS} />
       <Spark id="chart-queue" label="Fila total" samples={samples} value={(s) => s.queue} />
-      <Spark id="chart-diverted" label="Desviados (%)" samples={samples} value={(s) => s.pctDiverted} />
+      <Spark id="chart-diverted" label="Notificados (%)" samples={samples} value={(s) => s.pctDiverted} />
     </section>
   )
 }

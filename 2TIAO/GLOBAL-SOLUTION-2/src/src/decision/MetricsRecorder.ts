@@ -14,6 +14,7 @@ export interface MetricsSnapshot {
   travelLastMinuteS: number | null
   travelAllS: number | null
   queueTotal: number
+  /** Drivers notified and rerouted, % of the cars generated. */
   pctDiverted: number
   samples: MetricsSample[]
 }
@@ -43,7 +44,7 @@ export class MetricsRecorder {
       travelLastMinuteS: travel.lastMinuteAvgS,
       travelAllS: travel.allAvgS,
       queueTotal: this.engine.queueTotal(),
-      pctDiverted: s.spawnedTotal ? (100 * s.divertedTotal) / s.spawnedTotal : 0,
+      pctDiverted: s.spawnedTotal ? (100 * s.reroutedTotal) / s.spawnedTotal : 0,
     }
   }
 
