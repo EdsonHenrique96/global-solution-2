@@ -1,4 +1,4 @@
-import { MAX_NOISE_PCT } from '../telemetry/DroneSensor'
+import { MAX_NOISE_PCT } from '../sensors/reader'
 
 interface Props {
   value: number

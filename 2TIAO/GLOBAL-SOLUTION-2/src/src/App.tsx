@@ -25,7 +25,7 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
   const [rate, setRate] = useState(() => engine.getRate())
   const [noise, setNoise] = useState(() => engine.getNoise())
   const [stats, setStats] = useState({ active: 0, spawned: 0 })
-  const [selectedRoute, setSelectedRoute] = useState('central')
+  const [selectedSegment, setSelectedSegment] = useState('central-I1-I2')
   const [estimates, setEstimates] = useState(() => capacity.snapshot())
   const [metrics, setMetrics] = useState(() => sim.metrics.snapshot())
   const [diversion, setDiversion] = useState(() => sim.diversion)
@@ -101,17 +101,17 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
       <div className="workspace">
         <SimulationCanvas
           engine={engine}
-          routeStatus={() => Object.fromEntries(Object.entries(capacity.snapshot()).map(([id, e]) => [id, e.estado]))}
-          selectedRoute={selectedRoute}
-          onSelectRoute={setSelectedRoute}
+          segmentStatus={() => Object.fromEntries(Object.entries(capacity.snapshot()).map(([id, e]) => [id, e.estado]))}
+          selectedSegment={selectedSegment}
+          onSelectSegment={setSelectedSegment}
           accidentMode={accidentMode}
           onAccident={(routeId, distance) => engine.addBlockage(routeId, distance)}
           onRemoveBlockage={(id) => engine.removeBlockage(id)}
         />
         <div className="side">
           <MetricsPanel metrics={metrics} diversion={diversion} />
-          <CapacityPanel routeId={selectedRoute} estimate={estimates[selectedRoute]} />
-          <TelemetryPanel transport={transport} droneIds={engine.getState().drones.map((d) => d.id)} />
+          <CapacityPanel segmentId={selectedSegment} estimate={estimates[selectedSegment]} />
+          <TelemetryPanel transport={transport} sensorIds={engine.getState().cameras.map((c) => c.id)} />
         </div>
       </div>
     </main>

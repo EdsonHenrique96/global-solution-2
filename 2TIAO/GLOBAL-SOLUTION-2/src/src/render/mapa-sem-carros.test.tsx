@@ -2,7 +2,7 @@ import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
-import type { Reading } from '../telemetry/DroneSensor'
+import type { Reading } from '../sensors/reader'
 import { FakeTransport } from '../telemetry/testing'
 import { SimulationCanvas } from './SimulationCanvas'
 
@@ -61,8 +61,9 @@ describe('render', () => {
 
       // every drawing call, with its arguments, is identical: nothing on the map depends on the cars
       expect(busy.frame).toEqual(empty.frame)
-      // and the frame is not trivially empty: 4 lights + 3 drone circles are there
-      expect(busy.frame.filter((c) => c.op === 'arc')).toHaveLength(7)
+      // and the frame is not trivially empty: 4 light circles and the 3 camera cones are there
+      expect(busy.frame.filter((c) => c.op === 'arc')).toHaveLength(4)
+      expect(busy.frame.filter((c) => c.op === 'closePath')).toHaveLength(3)
     })
   })
 

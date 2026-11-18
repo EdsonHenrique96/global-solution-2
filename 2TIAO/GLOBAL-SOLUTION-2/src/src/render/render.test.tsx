@@ -73,11 +73,17 @@ describe('render', () => {
   describe('SimulationCanvas', () => {
     it('draws the fixed mesh with 4 intersections', () => {
       // the mesh alone: drones are circles too, so they are left out of this frame
-      render(<SimulationCanvas engine={new SimulationEngine({ ratePerMinute: 0, drones: [] })} />)
+      render(<SimulationCanvas engine={new SimulationEngine({ ratePerMinute: 0, cameras: [] })} />)
       const frame = lastFrame()
       expect(frame.length).toBeGreaterThan(0)
 
-      const routes = distinct(strokedPolylines(frame))
+      // the map also strokes each road segment; a route is a stroke from the origin (the leftmost
+      // point drawn) all the way to the destination (the rightmost)
+      const lines = distinct(strokedPolylines(frame))
+      const xs = lines.flat().map(([x]) => x)
+      const left = Math.min(...xs)
+      const right = Math.max(...xs)
+      const routes = lines.filter((l) => l[0][0] === left && l[l.length - 1][0] === right)
       expect(routes.length).toBeGreaterThanOrEqual(2)
       expect(routes.length).toBeLessThanOrEqual(3)
       // all routes share one origin and one destination, and they are different points

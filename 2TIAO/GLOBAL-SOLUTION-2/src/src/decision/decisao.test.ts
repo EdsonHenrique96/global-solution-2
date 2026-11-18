@@ -159,12 +159,15 @@ describe('decision', () => {
   })
 
   describe('scenario', () => {
-    it('a blockage inside D2 turns the central route congested within 60 s', () => {
+    it('a blockage inside C2 turns central I1-I2 congested within 60 s', () => {
       const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 60, noisePct: 0 }), transport: new FakeTransport(true) })
       sim.start()
-      sim.engine.addBlockage('central', 400)
+      // C2 sees roughly x 463-678 of the central road; 500 m along central is x = 560
+      sim.engine.addBlockage('central', 500)
       for (let t = 0; t < 60_000; t += TICK_MS) sim.tick()
-      expect(sim.capacity.snapshot().central.estado).toBe('congestionado')
+      expect(sim.capacity.snapshot()['central-I1-I2'].estado).toBe('congestionado')
+      // and the route view the diversion reads shows it
+      expect(sim.capacity.routes().central.estado).toBe('congestionado')
       sim.stop()
     })
 
@@ -188,7 +191,8 @@ describe('decision', () => {
           const now = sim.engine.getState().timeMs
           if (now === 300_000) {
             divertedBefore = sim.engine.getState().divertedTotal
-            sim.engine.addBlockage('central', 400)
+            // inside C2's view (x 560); a blockage in a blind spot is not seen without drones (AD-021)
+            sim.engine.addBlockage('central', 500)
           }
           sim.tick()
           const d = sim.diversion

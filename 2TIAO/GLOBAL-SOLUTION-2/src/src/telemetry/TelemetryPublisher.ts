@@ -1,9 +1,9 @@
+import type { Reading } from '../sensors/reader'
 import type { SimulationEngine } from '../sim/SimulationEngine'
-import type { Reading } from './DroneSensor'
 import type { TelemetryTransport } from './transport'
 
-export const TELEMETRY_FILTER = 'transito/drones/+/telemetria'
-export const telemetryTopic = (droneId: string) => `transito/drones/${droneId}/telemetria`
+export const TELEMETRY_FILTER = 'transito/sensores/+/telemetria'
+export const telemetryTopic = (sensorId: string) => `transito/sensores/${sensorId}/telemetria`
 
 export class TelemetryPublisher {
   private readonly transport: TelemetryTransport
@@ -14,20 +14,22 @@ export class TelemetryPublisher {
 
   publish(reading: Reading): void {
     const payload = {
-      droneId: reading.droneId,
+      sensorId: reading.sensorId,
+      tipo: reading.tipo,
       ts: reading.ts,
       janelaS: reading.janelaS,
       contagem: reading.contagem,
       velocidadeMediaKmh: reading.velocidadeMediaKmh,
       ruidoPct: reading.ruidoPct,
-      porVia: reading.porVia.map((v) => ({
-        via: v.via,
-        contagem: v.contagem,
-        velocidadeMediaKmh: v.velocidadeMediaKmh,
-        comprimentoM: v.comprimentoM,
+      porTrecho: reading.porTrecho.map((t) => ({
+        trecho: t.trecho,
+        contagem: t.contagem,
+        velocidadeMediaKmh: t.velocidadeMediaKmh,
+        comprimentoCobertoM: t.comprimentoCobertoM,
+        cobertura: t.cobertura,
       })),
     }
-    this.transport.publish(telemetryTopic(reading.droneId), JSON.stringify(payload), { qos: 0, retain: false })
+    this.transport.publish(telemetryTopic(reading.sensorId), JSON.stringify(payload), { qos: 0, retain: false })
   }
 }
 

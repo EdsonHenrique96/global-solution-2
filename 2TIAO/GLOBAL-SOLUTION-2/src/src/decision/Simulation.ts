@@ -27,7 +27,7 @@ export class Simulation {
   constructor({ engine, transport }: Options) {
     this.engine = engine ?? new SimulationEngine()
     this.transport = transport
-    this.capacity = new CapacityService(transport, () => this.engine.getState().timeMs)
+    this.capacity = new CapacityService(transport, () => this.engine.getState().timeMs, this.engine.getState().segments)
     this.metrics = new MetricsRecorder(this.engine)
   }
 
@@ -64,13 +64,7 @@ export class Simulation {
   }
 
   private decide(): void {
-    const snapshot = this.capacity.snapshot()
-    const routes: Record<string, RouteView> = Object.fromEntries(
-      Object.entries(snapshot).map(([id, e]) => [
-        id,
-        { estado: e.estado, velocidade: e.velocidade, fluxo: e.fluxo, capacidade: e.capacidade, folga: e.folga },
-      ]),
-    )
+    const routes: Record<string, RouteView> = this.capacity.routes()
     // demand of each route: its round-robin share of the generation rate, veh/h
     const perRoute = (this.engine.getRate() * 60) / Object.keys(routes).length
     const demand = Object.fromEntries(Object.keys(routes).map((id) => [id, perRoute]))

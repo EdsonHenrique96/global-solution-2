@@ -28,7 +28,7 @@ function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
 
 describe('integration', () => {
   describe('mqtt', () => {
-    it('an external subscriber receives readings from all 3 drones through Mosquitto', async () => {
+    it('an external subscriber receives per-segment readings from the 3 cameras through Mosquitto', async () => {
       const external = mqtt.connect(BROKER_TCP, { reconnectPeriod: 0 })
       open.push({ close: () => external.end(true) })
       const received: { topic: string; payload: Record<string, unknown> }[] = []
@@ -48,18 +48,23 @@ describe('integration', () => {
 
       await waitFor(() => received.length >= 3, 5000)
       expect(received.map((m) => m.topic).sort()).toEqual([
-        'transito/drones/D1/telemetria',
-        'transito/drones/D2/telemetria',
-        'transito/drones/D3/telemetria',
+        'transito/sensores/C1/telemetria',
+        'transito/sensores/C2/telemetria',
+        'transito/sensores/C3/telemetria',
       ])
       for (const { topic, payload } of received) {
-        expect(topic).toBe(`transito/drones/${payload.droneId}/telemetria`)
-        expect(payload).toMatchObject({ ts: 10_000, janelaS: 10, ruidoPct: 10 })
+        expect(topic).toBe(`transito/sensores/${payload.sensorId}/telemetria`)
+        expect(payload).toMatchObject({ tipo: 'fixo', ts: 10_000, janelaS: 10, ruidoPct: 10 })
         expect(typeof payload.contagem).toBe('number')
+        const perSegment = payload.porTrecho as { trecho: string; cobertura: number }[]
+        expect(perSegment.length).toBeGreaterThan(0)
+        for (const t of perSegment) expect(t.cobertura).toBeGreaterThanOrEqual(0.3)
       }
+      const c2 = received.find((m) => m.payload.sensorId === 'C2')!.payload.porTrecho as { trecho: string }[]
+      expect(c2.map((t) => t.trecho)).toContain('central-I1-I2')
     })
 
-    it('the capacity service learns from porVia readings received through Mosquitto', async () => {
+    it('the capacity service learns per segment from readings received through Mosquitto', async () => {
       const publisherSide = createMqttTransport(BROKER_WS)
       const modelSide = createMqttTransport(BROKER_WS)
       open.push(publisherSide, modelSide)
@@ -73,18 +78,20 @@ describe('integration', () => {
       await new Promise((r) => setTimeout(r, 300))
       wireTelemetry(engine, publisherSide)
 
-      // 60 simulated seconds: cars reach the drones from ~25 s on
+      // 60 simulated seconds: cars reach the cameras from ~25 s on
       for (let t = 0; t < 60_000; t += TICK_MS) engine.tick(TICK_MS)
-      await waitFor(() => service.snapshot().central.amostras.length > 0, 5000)
+      await waitFor(() => service.snapshot()['central-I1-I2'].amostras.length > 0, 5000)
 
-      const central = service.snapshot().central
+      const central = service.snapshot()['central-I1-I2']
+      const covered = engine.coverage.entries('central-I1-I2')[0].cobertura * 400
+      const coveredM = Math.round(covered * 10) / 10
       expect(central.estado).not.toBe('sem dados')
-      // a car can leave the circle before the window closes: count 0 with sampled speed is valid
+      // a car can leave the cone before the window closes: count 0 with sampled speed is valid
       for (const s of central.amostras) {
         expect(s.k).toBeGreaterThanOrEqual(0)
         expect(s.q).toBeGreaterThanOrEqual(0)
-        // density is the count over the 220 m under D2: a whole number of cars per 0.22 km
-        expect((s.k * 220) / 1000).toBeCloseTo(Math.round((s.k * 220) / 1000), 6)
+        // density is the count over the metres C2 sees: a whole number of cars per covered km
+        expect((s.k * coveredM) / 1000).toBeCloseTo(Math.round((s.k * coveredM) / 1000), 6)
       }
       expect(central.amostras.some((s) => s.k > 0)).toBe(true)
     })
@@ -99,7 +106,7 @@ describe('integration', () => {
       expect(statuses).not.toContain('connected')
       // publishing while disconnected neither throws nor queues
       expect(() =>
-        transport.publish('transito/drones/D1/telemetria', '{}', { qos: 0, retain: false }),
+        transport.publish('transito/sensores/C1/telemetria', '{}', { qos: 0, retain: false }),
       ).not.toThrow()
     })
   })

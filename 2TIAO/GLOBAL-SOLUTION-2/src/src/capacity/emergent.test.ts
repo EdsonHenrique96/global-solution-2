@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { wireTelemetry } from '../telemetry/TelemetryPublisher'
 import { FakeTransport } from '../telemetry/testing'
-import type { Reading } from '../telemetry/DroneSensor'
+import type { Reading } from '../sensors/reader'
 import { CapacityService } from './CapacityService'
 
 /** 10 simulated minutes at 120 cars/min, noise 0, readings through the (fake) broker. */
@@ -24,9 +24,9 @@ describe('capacity', () => {
   describe('emergent', () => {
     it('drones see lower mean speed at high density over 10 minutes at 120 cars per minute', () => {
       const samples = run.readings.flatMap((r) =>
-        r.porVia
-          .filter((v) => v.velocidadeMediaKmh !== null && v.comprimentoM > 0)
-          .map((v) => ({ k: v.contagem / (v.comprimentoM / 1000), v: v.velocidadeMediaKmh! })),
+        r.porTrecho
+          .filter((t) => t.velocidadeMediaKmh !== null && t.comprimentoCobertoM > 0)
+          .map((t) => ({ k: t.contagem / (t.comprimentoCobertoM / 1000), v: t.velocidadeMediaKmh! })),
       )
       const dense = samples.filter((s) => s.k >= 40)
       const light = samples.filter((s) => s.k <= 15)
@@ -37,7 +37,8 @@ describe('capacity', () => {
     })
 
     it('central learns a capacity between 500 and 3000 and kj between 60 and 250', () => {
-      const central = run.service.snapshot().central
+      // per segment now (AD-022): the central segment C2 watches
+      const central = run.service.snapshot()['central-I1-I2']
       expect(central.capacidade).not.toBeNull()
       expect(central.capacidade!).toBeGreaterThanOrEqual(500)
       expect(central.capacidade!).toBeLessThanOrEqual(3000)

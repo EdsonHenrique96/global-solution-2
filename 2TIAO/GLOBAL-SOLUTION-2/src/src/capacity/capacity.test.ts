@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { FakeTransport } from '../telemetry/testing'
-import { CapacityModel } from './CapacityModel'
-import { CapacityService } from './CapacityService'
+import { CapacityModel, type RouteStatus } from './CapacityModel'
+import { CapacityService, summariseRoute } from './CapacityService'
 
 const entry = (contagem: number, velocidadeMediaKmh: number | null, comprimentoM = 1000) => ({
   contagem,
@@ -19,8 +19,8 @@ function trainedModel(): CapacityModel {
   return model
 }
 
-function message(droneId: string, ts: number, porVia: unknown[]) {
-  return JSON.stringify({ droneId, ts, janelaS: 10, contagem: 0, velocidadeMediaKmh: null, ruidoPct: 0, porVia })
+function message(sensorId: string, ts: number, porTrecho: unknown[]) {
+  return JSON.stringify({ sensorId, tipo: 'fixo', ts, janelaS: 10, contagem: 0, velocidadeMediaKmh: null, ruidoPct: 0, porTrecho })
 }
 
 describe('capacity', () => {
@@ -108,84 +108,41 @@ describe('capacity', () => {
   })
 
   describe('CapacityService', () => {
-    it('turns each porVia entry from the subscription into density, speed and flow', () => {
-      const transport = new FakeTransport(true)
-      const service = new CapacityService(transport, () => 10_000)
-      service.start()
-      transport.deliver(
-        'transito/drones/D2/telemetria',
-        message('D2', 10_000, [
-          { via: 'central', contagem: 2, velocidadeMediaKmh: 40, comprimentoM: 220 },
-          { via: 'norte', contagem: 0, velocidadeMediaKmh: null, comprimentoM: 50 },
-          { via: 'sul', contagem: 3, velocidadeMediaKmh: 30, comprimentoM: 0 },
-        ]),
-      )
-      const central = service.snapshot().central
-      expect(central.densidade).toBeCloseTo(9.09, 2)
-      expect(central.velocidade).toBe(40)
-      expect(central.fluxo).toBeCloseTo(363.6, 1)
-      expect(central.amostras).toEqual([{ k: expect.closeTo(9.0909, 3), q: expect.closeTo(363.636, 2) }])
-
-      const norte = service.snapshot().norte
-      expect(norte.densidade).toBe(0)
-      expect(norte.fluxo).toBe(0)
-      expect(norte.amostras).toHaveLength(0)
-      expect(norte.estado).toBe('fluindo')
-
-      // comprimentoM 0: nothing learned for sul
-      expect(service.snapshot().sul.estado).toBe('sem dados')
-      expect(service.snapshot().sul.amostras).toHaveLength(0)
-
-      // malformed and old (no porVia) payloads are ignored
-      transport.deliver('transito/drones/D1/telemetria', 'not json')
-      transport.deliver(
-        'transito/drones/D1/telemetria',
-        JSON.stringify({ droneId: 'D1', ts: 10_000, janelaS: 10, contagem: 1, velocidadeMediaKmh: 9, ruidoPct: 0 }),
-      )
-      expect(service.snapshot().central.amostras).toHaveLength(1)
-    })
+    const topic = (id: string) => `transito/sensores/${id}/telemetria`
 
     it('marks a route sem dados after 20 s without readings and keeps its model', () => {
+      // per segment now (AD-022): the claim holds for each segment's model
       const transport = new FakeTransport(true)
       let now = 0
       const service = new CapacityService(transport, () => now)
       service.start()
-      expect(service.snapshot().central.estado).toBe('sem dados') // never received
+      expect(service.snapshot()['central-I1-I2'].estado).toBe('sem dados') // never received
 
       for (let i = 1; i <= 20; i++) {
         const k = 5 * i
         now = i * 10_000
         transport.deliver(
-          'transito/drones/D2/telemetria',
-          message('D2', now, [{ via: 'central', contagem: k, velocidadeMediaKmh: 50 * (1 - k / 100), comprimentoM: 1000 }]),
+          topic('C2'),
+          message('C2', now, [{ trecho: 'central-I1-I2', contagem: k, velocidadeMediaKmh: 50 * (1 - k / 100), comprimentoCobertoM: 1000, cobertura: 1 }]),
         )
       }
-      // last reading at 200 s: v = 0 -> congestionado
-      expect(service.snapshot().central.estado).toBe('congestionado')
-      const capacity = service.snapshot().central.capacidade
+      expect(service.snapshot()['central-I1-I2'].estado).toBe('congestionado')
+      const capacity = service.snapshot()['central-I1-I2'].capacidade
       expect(capacity).not.toBeNull()
-
-      now = 220_000 // exactly 20 s later: still valid
-      expect(service.snapshot().central.estado).toBe('congestionado')
-      now = 220_100 // more than 20 s
-      const stale = service.snapshot().central
+      now = 220_000
+      expect(service.snapshot()['central-I1-I2'].estado).toBe('congestionado')
+      now = 220_100
+      const stale = service.snapshot()['central-I1-I2']
       expect(stale.estado).toBe('sem dados')
       expect(stale.capacidade).toBe(capacity)
       expect(stale.amostras).toHaveLength(20)
 
-      // validity follows the most recent ts: a late, older reading does not rewind it
+      // a late, older reading does not rewind the validity
       now = 230_000
-      transport.deliver(
-        'transito/drones/D1/telemetria',
-        message('D1', 230_000, [{ via: 'central', contagem: 10, velocidadeMediaKmh: 45, comprimentoM: 1000 }]),
-      )
-      transport.deliver(
-        'transito/drones/D2/telemetria',
-        message('D2', 5_000, [{ via: 'central', contagem: 80, velocidadeMediaKmh: 10, comprimentoM: 1000 }]),
-      )
-      const latest = service.snapshot().central
-      expect(latest.estado).toBe('fluindo')
-      expect(latest.velocidade).toBe(45)
+      transport.deliver(topic('C2'), message('C2', 230_000, [{ trecho: 'central-I1-I2', contagem: 10, velocidadeMediaKmh: 45, comprimentoCobertoM: 1000, cobertura: 1 }]))
+      transport.deliver(topic('C9'), message('C9', 5_000, [{ trecho: 'central-I1-I2', contagem: 80, velocidadeMediaKmh: 10, comprimentoCobertoM: 1000, cobertura: 1 }]))
+      expect(service.snapshot()['central-I1-I2'].estado).toBe('fluindo')
+      expect(service.snapshot()['central-I1-I2'].velocidade).toBe(45)
     })
 
     it('learns nothing while disconnected and resumes after reconnecting', () => {
@@ -193,22 +150,70 @@ describe('capacity', () => {
       const service = new CapacityService(transport, () => 10_000)
       service.start()
       const send = () =>
-        transport.deliver(
-          'transito/drones/D2/telemetria',
-          message('D2', 10_000, [{ via: 'central', contagem: 2, velocidadeMediaKmh: 40, comprimentoM: 220 }]),
-        )
+        transport.deliver(topic('C2'), message('C2', 10_000, [{ trecho: 'central-I1-I2', contagem: 2, velocidadeMediaKmh: 40, comprimentoCobertoM: 220, cobertura: 0.55 }]))
       send()
-      expect(service.snapshot().central.amostras).toHaveLength(0)
-      expect(service.snapshot().central.estado).toBe('sem dados')
-
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(0)
       transport.setConnected(true)
       send()
-      expect(service.snapshot().central.amostras).toHaveLength(1)
-      expect(service.snapshot().central.estado).toBe('fluindo')
-
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(1)
+      expect(service.snapshot()['central-I1-I2'].estado).toBe('fluindo')
       transport.setConnected(false)
       send()
-      expect(service.snapshot().central.amostras).toHaveLength(1)
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(1)
+    })
+  })
+
+  describe('segments', () => {
+    const topic = (id: string) => `transito/sensores/${id}/telemetria`
+
+    it('learns per segment from porTrecho entries', () => {
+      const transport = new FakeTransport(true)
+      const service = new CapacityService(transport, () => 10_000)
+      service.start()
+      transport.deliver(
+        topic('C2'),
+        message('C2', 10_000, [
+          // 2 cars on the 220 m the camera sees, 1 lane -> k 9.09 veh/km; at 40 km/h q 363.6 veh/h
+          { trecho: 'central-I1-I2', contagem: 2, velocidadeMediaKmh: 40, comprimentoCobertoM: 220, cobertura: 0.55 },
+          { trecho: 'central-I2-M', contagem: 0, velocidadeMediaKmh: null, comprimentoCobertoM: 50, cobertura: 0.42 },
+        ]),
+      )
+      const s = service.snapshot()
+      expect(Object.keys(s)).toHaveLength(11)
+      expect(s['central-I1-I2'].densidade).toBeCloseTo(9.09, 2)
+      expect(s['central-I1-I2'].velocidade).toBe(40)
+      expect(s['central-I1-I2'].fluxo).toBeCloseTo(363.6, 1)
+      expect(s['central-I1-I2'].amostras).toHaveLength(1)
+      expect(s['central-I2-M'].densidade).toBe(0)
+      expect(s['central-I2-M'].amostras).toHaveLength(0)
+      expect(s['central-I2-M'].estado).toBe('fluindo')
+      // a segment no sensor reports stays without data
+      expect(s['central-F-I1'].estado).toBe('sem dados')
+      expect(s['norte-I3-M'].estado).toBe('sem dados')
+      // old route-based messages (porVia) are ignored
+      transport.deliver(topic('C2'), JSON.stringify({ ts: 10_000, porVia: [{ via: 'central', contagem: 9, velocidadeMediaKmh: 9, comprimentoM: 220 }] }))
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(1)
+    })
+
+    it('summarises each route by its bottleneck segment', () => {
+      const estimate = (estado: RouteStatus, velocidade: number | null, fluxo: number, capacidade: number | null, folga: number | null) => ({
+        estado, velocidade, fluxo, capacidade, folga, densidade: 0, vf: null, kj: null, amostras: [],
+      })
+      const segs = new CapacityService(new FakeTransport(true), () => 0).segments
+      const blank = Object.fromEntries(segs.map((s) => [s.id, estimate('sem dados', null, 0, null, null)]))
+      // no data on any central segment -> sem dados
+      expect(summariseRoute('central', segs, blank)).toEqual({ estado: 'sem dados', velocidade: null, fluxo: 0, capacidade: null, folga: null })
+
+      const est = {
+        ...blank,
+        'central-F-I1': estimate('fluindo', 48, 300, 1200, 900),
+        'central-I1-I2': estimate('congestionado', 12, 500, 900, 400),
+        'central-I2-M': estimate('fluindo', null, 0, 1500, 1500), // empty road counts as free flow
+        chegada: estimate('carregado', 30, 700, null, null),
+      }
+      expect(summariseRoute('central', segs, est)).toEqual({ estado: 'congestionado', velocidade: 12, fluxo: 500, capacidade: 900, folga: 400 })
+      // the shared arrival stretch is part of every route
+      expect(summariseRoute('norte', segs, est)).toEqual({ estado: 'carregado', velocidade: 30, fluxo: 700, capacidade: null, folga: null })
     })
   })
 })

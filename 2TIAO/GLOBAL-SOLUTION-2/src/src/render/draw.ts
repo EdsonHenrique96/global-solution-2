@@ -1,6 +1,8 @@
 import { positionOnRoute } from '../sim/car'
 import type { SimulationState } from '../sim/SimulationEngine'
 import type { RouteStatus } from '../capacity/CapacityModel'
+import { cameraPolygon } from '../sensors/camera'
+import { fromLngLat } from '../sensors/geo'
 import type { Phase } from '../sim/trafficLight'
 import type { Point, RoadNetwork } from '../sim/types'
 
@@ -17,9 +19,9 @@ const COLORS = {
   endpoint: '#e2e8f0',
   label: '#e2e8f0',
   lightText: '#0f172a',
-  droneArea: 'rgba(56, 189, 248, 0.10)',
-  droneEdge: 'rgba(56, 189, 248, 0.55)',
-  droneBody: '#38bdf8',
+  cameraArea: 'rgba(56, 189, 248, 0.10)',
+  cameraEdge: 'rgba(56, 189, 248, 0.55)',
+  cameraBody: '#38bdf8',
 }
 
 const STATUS_COLORS: Record<RouteStatus, string> = {
@@ -29,10 +31,10 @@ const STATUS_COLORS: Record<RouteStatus, string> = {
   'sem dados': '#94a3b8',
 }
 
-/** What the capacity layer adds to a frame. */
+/** What the capacity layer adds to a frame: the state of each road segment and the selection. */
 export interface SceneOverlay {
-  routeStatus?: Record<string, RouteStatus>
-  selectedRoute?: string
+  segmentStatus?: Record<string, RouteStatus>
+  selectedSegment?: string
 }
 
 const PHASE_COLORS: Record<Phase, string> = {
@@ -56,7 +58,7 @@ export function fitTransform(network: RoadNetwork, width: number, height: number
   }
 }
 
-/** Screen distance (px) within which a click picks a route. */
+/** Screen distance (px) within which a click picks a road segment. */
 export const ROUTE_PICK_PX = 14
 
 /** Distance from p to segment ab. */
@@ -71,8 +73,8 @@ export function distanceToSegment(p: Point, a: Point, b: Point): number {
 /** Screen radius (px) within which a click hits an accident marker. */
 export const BLOCKAGE_PICK_PX = 14
 
-/** Screen radius (px) within which a press grabs a drone. */
-export function droneGrabRadius(scale: number): number {
+/** Screen radius (px) within which a press grabs a camera. */
+export function cameraGrabRadius(scale: number): number {
   return Math.max(14, 22 * scale)
 }
 
@@ -103,12 +105,12 @@ export function drawScene(
     })
   }
 
-  // Roads: the selected one gets a light halo, then asphalt, then a centre line in the
-  // colour of the route's state (grey without data).
+  // Roads: asphalt per route; the selected segment gets a light halo under it, and every segment
+  // gets a centre line in the colour of its state (grey without data).
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
   ctx.setLineDash([])
-  const selected = network.routes.find((r) => r.id === overlay.selectedRoute)
+  const selected = state.segments.find((s) => s.id === overlay.selectedSegment)
   if (selected) {
     tracePath(selected.points)
     ctx.strokeStyle = COLORS.selection
@@ -121,24 +123,27 @@ export function drawScene(
     ctx.lineWidth = Math.max(4, 22 * scale)
     ctx.stroke()
   }
-  // central last, so the shared stretches near origin and destination show its colour
-  const byLayer = [...network.routes].sort((a, b) => Number(a.id === 'central') - Number(b.id === 'central'))
-  for (const route of byLayer) {
-    tracePath(route.points)
-    ctx.strokeStyle = STATUS_COLORS[overlay.routeStatus?.[route.id] ?? 'sem dados']
+  for (const segment of state.segments) {
+    tracePath(segment.points)
+    ctx.strokeStyle = STATUS_COLORS[overlay.segmentStatus?.[segment.id] ?? 'sem dados']
     ctx.lineWidth = Math.max(2, 5 * scale)
     ctx.stroke()
   }
 
-  // Drones: vision area under everything else that moves.
-  for (const drone of state.drones) {
-    const c = map(drone.position)
+  // Fixed cameras: the cone each one sees, under everything else.
+  for (const camera of state.cameras) {
+    const ring = cameraPolygon(camera).geometry.coordinates[0]
     ctx.beginPath()
-    ctx.arc(c.x, c.y, drone.radius * scale, 0, Math.PI * 2)
-    ctx.fillStyle = COLORS.droneArea
+    ring.forEach((c, i) => {
+      const q = map(fromLngLat(c))
+      if (i === 0) ctx.moveTo(q.x, q.y)
+      else ctx.lineTo(q.x, q.y)
+    })
+    ctx.closePath()
+    ctx.fillStyle = COLORS.cameraArea
     ctx.fill()
     ctx.lineWidth = Math.max(1, 1.5 * scale)
-    ctx.strokeStyle = COLORS.droneEdge
+    ctx.strokeStyle = COLORS.cameraEdge
     ctx.setLineDash([6 * scale, 6 * scale])
     ctx.stroke()
     ctx.setLineDash([])
@@ -200,16 +205,16 @@ export function drawScene(
     ctx.fillText('✕', c.x, c.y)
   }
 
-  // Drone bodies and labels on top, so they stay grabbable.
+  // Camera bodies and labels on top, so they stay grabbable.
   const body = Math.max(8, 16 * scale)
   ctx.font = `700 ${Math.max(10, Math.round(13 * scale))}px system-ui, sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'bottom'
-  for (const drone of state.drones) {
-    const c = map(drone.position)
-    ctx.fillStyle = COLORS.droneBody
+  for (const camera of state.cameras) {
+    const c = map(camera.position)
+    ctx.fillStyle = COLORS.cameraBody
     ctx.fillRect(c.x - body / 2, c.y - body / 2, body, body)
     ctx.fillStyle = COLORS.label
-    ctx.fillText(drone.id, c.x, c.y - body / 2 - 2)
+    ctx.fillText(camera.id, c.x, c.y - body / 2 - 2)
   }
 }

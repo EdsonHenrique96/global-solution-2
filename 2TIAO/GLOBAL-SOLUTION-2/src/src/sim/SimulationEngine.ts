@@ -1,30 +1,24 @@
-import { DroneSensor, type Observation, type Reading } from '../telemetry/DroneSensor'
+import { DEFAULT_CAMERAS, type FixedCamera } from '../sensors/camera'
+import { CoverageIndex } from '../sensors/coverage'
+import { SensorReader, type CarSample, type Reading } from '../sensors/reader'
+import { buildSegments, segmentAt, SHARED_M, type Segment } from '../sensors/segments'
 import { distanceAlongRoute, positionOnRoute, routeLength } from './car'
 import { CarGenerator, DEFAULT_CAR_SPEED } from './carGenerator'
 import { mulberry32 } from './random'
 import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_DECEL, MAX_STOP_DECEL, step, yieldDeceleration } from './idm'
 import { buildRoadNetwork } from './roadNetwork'
 import { SignalController, type LightState } from './trafficLight'
-import type { Car, Drone, Point, RoadNetwork } from './types'
+import type { Car, Point, RoadNetwork } from './types'
 
 export const TICK_MS = 100
 export const DEFAULT_RATE_PER_MINUTE = 30
 /** Stop line, metres before the intersection centre. */
 export const STOP_LINE_M = 12
-/** Length of the entrance lanes (origin -> fork) and of the shared arrival stretch (junction -> destination). */
-export const SHARED_M = 120
+export { SHARED_M }
 /** Distance before the arrival junction where cars of different routes start to zip. */
 export const MERGE_ZONE_M = 150
 const ORIGIN_EDGE = 'origem'
 const ARRIVAL_EDGE = 'chegada'
-export const DRONE_RADIUS_M = 110
-
-export const DEFAULT_DRONES: readonly Drone[] = [
-  { id: 'D1', position: { x: 500, y: 120 }, radius: DRONE_RADIUS_M },
-  { id: 'D2', position: { x: 500, y: 300 }, radius: DRONE_RADIUS_M },
-  { id: 'D3', position: { x: 500, y: 480 }, radius: DRONE_RADIUS_M },
-]
-
 /** A car plus its instantaneous speed (m/s, 0 when stopped). */
 export interface CarState extends Car {
   velocity: number
@@ -71,7 +65,8 @@ export interface SimulationState {
   arrivedTotal: number
   timeMs: number
   lights: readonly LightState[]
-  drones: readonly Drone[]
+  cameras: readonly FixedCamera[]
+  segments: readonly Segment[]
   noisePct: number
   blockages: readonly Blockage[]
   diversion: Diversion | null
@@ -87,7 +82,8 @@ export interface SimulationOptions {
   speed?: number
   /** 'fixed' runs the fixed-time cycle; 'always-green' never stops a car. */
   trafficLights?: 'fixed' | 'always-green'
-  drones?: readonly Drone[]
+  /** Fixed cameras; [] for a map without sensors. */
+  cameras?: readonly FixedCamera[]
   noisePct?: number
   seed?: number
 }
@@ -116,11 +112,13 @@ export class SimulationEngine {
   private readonly lengths: Map<string, number>
   private readonly stopLines: Map<string, StopLine[]>
   private readonly lightMode: 'fixed' | 'always-green'
-  private readonly sensor: DroneSensor
+  private readonly sensor: SensorReader
+  private readonly segments: Segment[]
+  readonly coverage: CoverageIndex
   private readonly speed: number
   private readonly readingListeners = new Set<(r: Reading) => void>()
   private cars: CarState[] = []
-  private drones: Drone[]
+  private cameras: FixedCamera[]
   private spawnedTotal = 0
   private arrivedTotal = 0
   private waiting: Car[] = []
@@ -161,12 +159,11 @@ export class SimulationEngine {
     this.lightMode = options.trafficLights ?? 'fixed'
     this.signals = new SignalController(this.network.intersections.map((i) => i.id))
     this.routeTotals = Object.fromEntries(this.network.routes.map((r) => [r.id, 0]))
-    this.drones = (options.drones ?? DEFAULT_DRONES).map((d) => ({ ...d, position: { ...d.position } }))
-    this.sensor = new DroneSensor({
-      noisePct: options.noisePct,
-      rng: mulberry32(options.seed ?? 42),
-      routes: this.network.routes,
-    })
+    this.segments = buildSegments(this.network)
+    this.cameras = (options.cameras ?? DEFAULT_CAMERAS).map((c) => ({ ...c, position: { ...c.position } }))
+    this.coverage = new CoverageIndex(this.segments)
+    this.coverage.setCameras(this.cameras)
+    this.sensor = new SensorReader({ noisePct: options.noisePct, rng: mulberry32(options.seed ?? 42) })
   }
 
   setRate(ratePerMinute: number): void {
@@ -185,14 +182,22 @@ export class SimulationEngine {
     return this.sensor.getNoise()
   }
 
-  /** Moves a drone, clamped to the map area. */
-  moveDrone(id: string, to: Point): void {
-    const drone = this.drones.find((d) => d.id === id)
-    if (!drone) return
-    drone.position = {
-      x: Math.min(this.network.width, Math.max(0, to.x)),
-      y: Math.min(this.network.height, Math.max(0, to.y)),
-    }
+  /** Moves a camera, clamped to the map area; the coverage index follows. */
+  moveCamera(id: string, to: Point): void {
+    this.updateCamera(id, {
+      position: {
+        x: Math.min(this.network.width, Math.max(0, to.x)),
+        y: Math.min(this.network.height, Math.max(0, to.y)),
+      },
+    })
+  }
+
+  /** Changes a camera's position, heading, FOV or range; the coverage index is rebuilt only then. */
+  updateCamera(id: string, change: Partial<Omit<FixedCamera, 'id'>>): void {
+    const i = this.cameras.findIndex((c) => c.id === id)
+    if (i === -1) return
+    this.cameras[i] = { ...this.cameras[i], ...change, position: { ...(change.position ?? this.cameras[i].position) } }
+    this.coverage.updateCamera(this.cameras[i])
   }
 
   /** Places a car on a route (scenario setup; the generator places cars at the origin). */
@@ -281,7 +286,7 @@ export class SimulationEngine {
   /**
    * One step: lights as they stand at the start of the tick decide who stops; each car keeps
    * QUEUE_GAP_M behind where the car ahead was at the start of the tick, so a queue releases
-   * one car per tick, leader first. Then arrivals leave, new cars spawn and the drones sample.
+   * one car per tick, leader first. Then arrivals leave, new cars spawn and the sensors sample.
    */
   /**
    * Physical stretch a car is on and its position along it: each route's own entrance lane
@@ -304,7 +309,7 @@ export class SimulationEngine {
    * One step. Everything a car reacts to is read from the start of the tick (synchronous update):
    * the car ahead on its physical stretch or the next one on its route, the stop line of a red
    * light it can still stop for, and near the arrival junction a car of another route that is
-   * closer to it. Then arrivals leave, waiting cars enter at the origin and the drones sample.
+   * closer to it. Then arrivals leave, waiting cars enter at the origin and the sensors sample.
    */
   tick(dtMs: number): void {
     const dt = dtMs / 1000
@@ -458,7 +463,7 @@ export class SimulationEngine {
     this.blockages = this.blockages.filter((b) => b.endsAtMs > this.timeMs)
     this.signals.advance(this.timeMs, (id) => this.queueAt(id))
 
-    const readings = this.sensor.observe(dtMs, this.timeMs, this.drones, this.observations())
+    const readings = this.sensor.observe(dtMs, this.timeMs, this.cameras, this.coverage, this.observations())
     for (const r of readings) for (const l of this.readingListeners) l(r)
   }
 
@@ -521,11 +526,12 @@ export class SimulationEngine {
   }
 
 
-  private observations(): Observation[] {
+  private observations(): CarSample[] {
     const routes = new Map(this.network.routes.map((r) => [r.id, r]))
     return this.cars.map((car) => {
       const p = positionOnRoute(routes.get(car.routeId)!, car.distance)
-      return { x: p.x, y: p.y, speedKmh: car.velocity * 3.6, via: car.routeId }
+      const segment = segmentAt(this.segments, car.routeId, car.distance)
+      return { x: p.x, y: p.y, speedKmh: car.velocity * 3.6, segmentId: segment?.id ?? '' }
     })
   }
 
@@ -542,7 +548,8 @@ export class SimulationEngine {
       arrivedTotal: this.arrivedTotal,
       timeMs: this.timeMs,
       lights: this.lights(this.timeMs),
-      drones: this.drones,
+      cameras: this.cameras,
+      segments: this.segments,
       noisePct: this.sensor.getNoise(),
       blockages: this.blockages,
       diversion: this.diversion,

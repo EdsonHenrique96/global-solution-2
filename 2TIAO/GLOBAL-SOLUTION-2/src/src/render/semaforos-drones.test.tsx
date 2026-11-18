@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { buildRoadNetwork } from '../sim/roadNetwork'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
-import type { Reading } from '../telemetry/DroneSensor'
+import type { Reading } from '../sensors/reader'
 import { FakeTransport } from '../telemetry/testing'
 import { SimulationCanvas } from './SimulationCanvas'
 
@@ -94,7 +94,7 @@ function advance(engine: SimulationEngine, ms: number) {
 describe('render', () => {
   describe('SimulationCanvas', () => {
     it('draws each traffic light in its phase colour with seconds remaining', () => {
-      const engine = new SimulationEngine({ ratePerMinute: 0, drones: [] })
+      const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
       // at 12 s: I1 verde 8 s, I2 amarelo 1 s, I3 verde 3 s, I4 vermelho 16 s
       advance(engine, 12_000)
       render(<SimulationCanvas engine={engine} />)
@@ -152,91 +152,6 @@ describe('render', () => {
       expect(hueOf(fillAt(700, 300))).toBe('vermelho')
     })
 
-    it('draws 3 drones with 110 m vision circles at their initial positions', () => {
-      render(<SimulationCanvas engine={new SimulationEngine({ ratePerMinute: 0 })} />)
-      const frame = lastFrame()
-      const { map, scale } = mapperFrom(frame)
-      for (const [id, x, y] of [
-        ['D1', 500, 120],
-        ['D2', 500, 300],
-        ['D3', 500, 480],
-      ] as const) {
-        const c = map(x, y)
-        const vision = frame.find(
-          (k) =>
-            k.op === 'arc' &&
-            near(k.args[0] as number, c.x) &&
-            near(k.args[1] as number, c.y) &&
-            near(k.args[2] as number, 110 * scale),
-        )
-        expect(vision, `${id} vision circle`).toBeDefined()
-        const label = frame.find(
-          (k) =>
-            k.op === 'fillText' &&
-            k.args[0] === id &&
-            Math.hypot((k.args[1] as number) - c.x, (k.args[2] as number) - c.y) < 40,
-        )
-        expect(label, `${id} label`).toBeDefined()
-      }
-    })
-
-    it('dragging a drone moves it and the next reading counts around the new position', () => {
-      const engine = new SimulationEngine({ ratePerMinute: 0, noisePct: 0, trafficLights: 'always-green' })
-      const readings: Reading[] = []
-      engine.onReading((r) => readings.push(r))
-      const { container } = render(<SimulationCanvas engine={engine} />)
-      const canvas = container.querySelector('canvas')!
-      const { map } = mapperFrom(lastFrame())
-
-      // drag D2 from (500,300) onto the north road at (400,120)
-      const from = map(500, 300)
-      const to = map(400, 120)
-      fireEvent.mouseDown(canvas, { clientX: from.x, clientY: from.y, button: 0 })
-      fireEvent.mouseMove(window, { clientX: (from.x + to.x) / 2, clientY: (from.y + to.y) / 2 })
-      fireEvent.mouseMove(window, { clientX: to.x, clientY: to.y })
-      fireEvent.mouseUp(window, { clientX: to.x, clientY: to.y })
-
-      const d2 = engine.getState().drones.find((d) => d.id === 'D2')!
-      expect(d2.position.x).toBeCloseTo(400, 6)
-      expect(d2.position.y).toBeCloseTo(120, 6)
-
-      // the circle is redrawn at the new position
-      calls.length = 0
-      act(() => {
-        window.dispatchEvent(new Event('resize'))
-      })
-      const moved = map(400, 120)
-      expect(
-        lastFrame().some(
-          (k) => k.op === 'arc' && near(k.args[0] as number, moved.x) && near(k.args[1] as number, moved.y),
-        ),
-      ).toBe(true)
-
-      // a car on the north road ends the window ~70 m from the new position; the central road is empty
-      engine.addCar('norte', 366)
-      advance(engine, 10_000)
-      const reading = readings.find((r) => r.droneId === 'D2')!
-      expect(reading.contagem).toBe(1)
-      expect(reading.velocidadeMediaKmh).toBeCloseTo(50, 1)
-    })
-
-    it('clamps a drone dropped outside the map to the nearest edge', () => {
-      const engine = new SimulationEngine({ ratePerMinute: 0 })
-      const { container } = render(<SimulationCanvas engine={engine} />)
-      const canvas = container.querySelector('canvas')!
-      const { map } = mapperFrom(lastFrame())
-
-      const from = map(500, 300)
-      const outside = map(1200, -100)
-      fireEvent.mouseDown(canvas, { clientX: from.x, clientY: from.y, button: 0 })
-      fireEvent.mouseMove(window, { clientX: outside.x, clientY: outside.y })
-      fireEvent.mouseUp(window, { clientX: outside.x, clientY: outside.y })
-
-      const d2 = engine.getState().drones.find((d) => d.id === 'D2')!
-      expect(d2.position).toEqual({ x: 1000, y: 0 })
-      // the others did not move
-      expect(engine.getState().drones.find((d) => d.id === 'D1')!.position).toEqual({ x: 500, y: 120 })
-    })
   })
 
   describe('NoiseControl', () => {
@@ -251,7 +166,7 @@ describe('render', () => {
       expect(slider).toHaveAttribute('min', '0')
       expect(slider).toHaveAttribute('max', '30')
 
-      // 40 s in, cars are already under the drones
+      // 40 s in, cars are already in front of the cameras
       act(() => {
         vi.advanceTimersByTime(40_000)
       })
@@ -287,35 +202,35 @@ describe('render', () => {
   })
 
   describe('TelemetryPanel', () => {
-    it('shows the latest reading per drone and the last 20 messages newest first', () => {
+    it('shows the latest reading per sensor and the last 20 messages newest first', () => {
       const transport = new FakeTransport(true)
       render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={transport} />)
       const panel = screen.getByRole('complementary', { name: /telemetria/i })
       expect(within(panel).getByText('MQTT conectado')).toBeInTheDocument()
 
-      const send = (droneId: string, ts: number, contagem: number, velocidadeMediaKmh: number | null) =>
+      const send = (sensorId: string, ts: number, contagem: number, velocidadeMediaKmh: number | null) =>
         act(() => {
           transport.deliver(
-            `transito/drones/${droneId}/telemetria`,
-            JSON.stringify({ droneId, ts, janelaS: 10, contagem, velocidadeMediaKmh, ruidoPct: 10 }),
+            `transito/sensores/${sensorId}/telemetria`,
+            JSON.stringify({ sensorId, tipo: 'fixo', ts, janelaS: 10, contagem, velocidadeMediaKmh, ruidoPct: 10, porTrecho: [] }),
           )
         })
 
-      send('D1', 10_000, 3, 41.2)
-      send('D2', 10_000, 0, null)
-      send('D1', 20_000, 5, 22.5)
-      expect(within(panel).getByTestId('drone-D1-contagem')).toHaveTextContent('5')
-      expect(within(panel).getByTestId('drone-D1-velocidade')).toHaveTextContent('22.5')
-      expect(within(panel).getByTestId('drone-D2-contagem')).toHaveTextContent('0')
-      expect(within(panel).getByTestId('drone-D2-velocidade')).toHaveTextContent('—')
+      send('C1', 10_000, 3, 41.2)
+      send('C2', 10_000, 0, null)
+      send('C1', 20_000, 5, 22.5)
+      expect(within(panel).getByTestId('sensor-C1-contagem')).toHaveTextContent('5')
+      expect(within(panel).getByTestId('sensor-C1-velocidade')).toHaveTextContent('22.5')
+      expect(within(panel).getByTestId('sensor-C2-contagem')).toHaveTextContent('0')
+      expect(within(panel).getByTestId('sensor-C2-velocidade')).toHaveTextContent('—')
 
-      for (let i = 0; i < 25; i++) send('D3', 30_000 + i, i, 50)
+      for (let i = 0; i < 25; i++) send('C3', 30_000 + i, i, 50)
       const log = within(panel).getAllByTestId('telemetry-log-entry')
       expect(log).toHaveLength(20)
-      expect(log[0]).toHaveTextContent('transito/drones/D3/telemetria')
+      expect(log[0]).toHaveTextContent('transito/sensores/C3/telemetria')
       expect(log[0]).toHaveTextContent('"contagem":24')
       expect(log[19]).toHaveTextContent('"contagem":5')
-      expect(within(panel).getByTestId('drone-D3-contagem')).toHaveTextContent('24')
+      expect(within(panel).getByTestId('sensor-C3-contagem')).toHaveTextContent('24')
     })
 
     it('shows MQTT desconectado and no new readings while disconnected and the simulation keeps running', () => {
@@ -331,7 +246,7 @@ describe('render', () => {
       act(() => {
         vi.advanceTimersByTime(25_000)
       })
-      // simulation, lights and drones keep going
+      // simulation, lights and sensors keep going
       const state = engine.getState()
       expect(state.timeMs).toBe(25_000)
       expect(state.spawnedTotal).toBeGreaterThan(0)
@@ -339,7 +254,7 @@ describe('render', () => {
       expect(produced.length).toBe(6)
       // but nothing reaches the panel
       expect(within(panel).queryAllByTestId('telemetry-log-entry')).toHaveLength(0)
-      expect(within(panel).getByTestId('drone-D1-contagem')).toHaveTextContent('—')
+      expect(within(panel).getByTestId('sensor-C1-contagem')).toHaveTextContent('—')
 
       // a connection that drops mid-run shows the warning again
       act(() => transport.setConnected(true))
@@ -368,7 +283,7 @@ describe('render', () => {
       })
       const log = within(panel).getAllByTestId('telemetry-log-entry')
       expect(log).toHaveLength(3)
-      expect(within(panel).getByTestId('drone-D1-contagem')).not.toHaveTextContent('—')
+      expect(within(panel).getByTestId('sensor-C1-contagem')).not.toHaveTextContent('—')
     })
   })
 })

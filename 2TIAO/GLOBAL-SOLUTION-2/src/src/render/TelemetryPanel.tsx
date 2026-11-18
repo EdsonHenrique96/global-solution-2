@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Reading } from '../telemetry/DroneSensor'
+import type { Reading } from '../sensors/reader'
 import { TELEMETRY_FILTER } from '../telemetry/TelemetryPublisher'
 import type { ConnectionStatus, TelemetryTransport } from '../telemetry/transport'
 
@@ -7,7 +7,7 @@ const LOG_SIZE = 20
 
 interface Props {
   transport: TelemetryTransport
-  droneIds: readonly string[]
+  sensorIds: readonly string[]
 }
 
 interface LogEntry {
@@ -17,7 +17,7 @@ interface LogEntry {
 }
 
 /** Shows only what comes back through the broker subscription (AD-002). */
-export function TelemetryPanel({ transport, droneIds }: Props) {
+export function TelemetryPanel({ transport, sensorIds }: Props) {
   const [status, setStatus] = useState<ConnectionStatus>(() => transport.status())
   const [latest, setLatest] = useState<Record<string, Reading>>({})
   const [log, setLog] = useState<LogEntry[]>([])
@@ -29,11 +29,11 @@ export function TelemetryPanel({ transport, droneIds }: Props) {
       setLog((prev) => [{ key: seq++, topic, payload }, ...prev].slice(0, LOG_SIZE))
       try {
         const reading = JSON.parse(payload) as Reading
-        if (typeof reading.droneId === 'string') {
-          setLatest((prev) => ({ ...prev, [reading.droneId]: reading }))
+        if (typeof reading.sensorId === 'string') {
+          setLatest((prev) => ({ ...prev, [reading.sensorId]: reading }))
         }
       } catch {
-        // a malformed payload still shows in the log, it just updates no drone
+        // a malformed payload still shows in the log, it just updates no sensor
       }
     })
     return () => {
@@ -42,10 +42,10 @@ export function TelemetryPanel({ transport, droneIds }: Props) {
     }
   }, [transport])
 
-  const ids = [...new Set([...droneIds, ...Object.keys(latest)])].sort()
+  const ids = [...new Set([...sensorIds, ...Object.keys(latest)])].sort()
 
   return (
-    <aside className="telemetry" aria-label="Telemetria dos drones">
+    <aside className="telemetry" aria-label="Telemetria dos sensores">
       <h2>Telemetria</h2>
       <p className={`mqtt-status ${status}`} role="status">
         {status === 'connected' ? 'MQTT conectado' : 'MQTT desconectado — tentando reconectar'}
@@ -53,7 +53,7 @@ export function TelemetryPanel({ transport, droneIds }: Props) {
       <table className="readings">
         <thead>
           <tr>
-            <th scope="col">Drone</th>
+            <th scope="col">Sensor</th>
             <th scope="col">Carros</th>
             <th scope="col">Vel. média (km/h)</th>
           </tr>
@@ -64,8 +64,8 @@ export function TelemetryPanel({ transport, droneIds }: Props) {
             return (
               <tr key={id}>
                 <th scope="row">{id}</th>
-                <td data-testid={`drone-${id}-contagem`}>{r ? r.contagem : '—'}</td>
-                <td data-testid={`drone-${id}-velocidade`}>
+                <td data-testid={`sensor-${id}-contagem`}>{r ? r.contagem : '—'}</td>
+                <td data-testid={`sensor-${id}-velocidade`}>
                   {r && r.velocidadeMediaKmh !== null ? r.velocidadeMediaKmh : '—'}
                 </td>
               </tr>

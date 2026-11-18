@@ -1,25 +1,24 @@
 import type { Estimate } from '../capacity/CapacityModel'
-
-const ROUTE_NAMES: Record<string, string> = { central: 'Central', norte: 'Norte', sul: 'Sul' }
+import { segmentName } from '../sensors/segments'
 
 const W = 300
 const H = 180
 const PAD = { left: 40, right: 10, top: 10, bottom: 30 }
 
 interface Props {
-  routeId: string
+  segmentId: string
   estimate: Estimate
 }
 
 const fmt = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
 
-/** Capacity of the selected route and its flow x density curve forming live. */
-export function CapacityPanel({ routeId, estimate }: Props) {
+/** Capacity of the selected road segment and its flow x density curve forming live. */
+export function CapacityPanel({ segmentId, estimate }: Props) {
   const { estado, capacidade, fluxo, folga, vf, kj, amostras } = estimate
   return (
-    <section className="capacity" aria-label="Capacidade da via">
+    <section className="capacity" aria-label="Capacidade do trecho">
       <h2>
-        Via <span data-testid="capacity-via">{ROUTE_NAMES[routeId] ?? routeId}</span>
+        Trecho <span data-testid="capacity-via">{segmentName(segmentId)}</span>
       </h2>
       <dl className="capacity-facts">
         <dt>Estado</dt>

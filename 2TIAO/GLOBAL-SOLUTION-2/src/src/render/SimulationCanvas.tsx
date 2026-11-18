@@ -2,14 +2,14 @@ import { useEffect, useRef } from 'react'
 import type { RouteStatus } from '../capacity/CapacityModel'
 import { distanceAlongRoute, positionOnRoute } from '../sim/car'
 import type { SimulationEngine } from '../sim/SimulationEngine'
-import { BLOCKAGE_PICK_PX, distanceToSegment, droneGrabRadius, drawScene, fitTransform, ROUTE_PICK_PX } from './draw'
+import { BLOCKAGE_PICK_PX, cameraGrabRadius, distanceToSegment, drawScene, fitTransform, ROUTE_PICK_PX } from './draw'
 
 interface Props {
   engine: SimulationEngine
-  /** Read on every frame: the state of each route. */
-  routeStatus?: () => Record<string, RouteStatus>
-  selectedRoute?: string
-  onSelectRoute?: (routeId: string) => void
+  /** Read on every frame: the state of each road segment. */
+  segmentStatus?: () => Record<string, RouteStatus>
+  selectedSegment?: string
+  onSelectSegment?: (segmentId: string) => void
   /** In accident mode a click on a road blocks it, and a click on a marker removes it. */
   accidentMode?: boolean
   onAccident?: (routeId: string, distance: number) => void
@@ -18,13 +18,13 @@ interface Props {
 
 /**
  * Fills its container with a canvas and redraws the simulation on every animation frame.
- * A drone can be dragged with the mouse; it is dropped where the button is released.
+ * A camera can be dragged with the mouse; it is dropped where the button is released.
  */
 export function SimulationCanvas({
   engine,
-  routeStatus,
-  selectedRoute,
-  onSelectRoute,
+  segmentStatus,
+  selectedSegment,
+  onSelectSegment,
   accidentMode,
   onAccident,
   onRemoveBlockage,
@@ -32,9 +32,9 @@ export function SimulationCanvas({
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Latest props for the long-lived listeners and frame loop below.
-  const overlayRef = useRef({ routeStatus, selectedRoute, onSelectRoute, accidentMode, onAccident, onRemoveBlockage })
+  const overlayRef = useRef({ segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage })
   useEffect(() => {
-    overlayRef.current = { routeStatus, selectedRoute, onSelectRoute, accidentMode, onAccident, onRemoveBlockage }
+    overlayRef.current = { segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage }
   })
 
   useEffect(() => {
@@ -48,10 +48,10 @@ export function SimulationCanvas({
     let dpr = 1
 
     const draw = () => {
-      const { routeStatus: status, selectedRoute: selected } = overlayRef.current
+      const { segmentStatus: status, selectedSegment: selected } = overlayRef.current
       drawScene(ctx, engine.getState(), width, height, dpr, {
-        routeStatus: status?.(),
-        selectedRoute: selected,
+        segmentStatus: status?.(),
+        selectedSegment: selected,
       })
     }
 
@@ -75,7 +75,7 @@ export function SimulationCanvas({
     let dragging: string | null = null
     const onMove = (e: MouseEvent) => {
       if (!dragging) return
-      engine.moveDrone(dragging, toNetwork(e).point)
+      engine.moveCamera(dragging, toNetwork(e).point)
       draw()
     }
     const onUp = (e: MouseEvent) => {
@@ -85,26 +85,26 @@ export function SimulationCanvas({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-    const nearestRoute = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
+    const nearestSegment = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
       const screen = fit.map(point)
       return engine
         .getState()
-        .network.routes.map((route) => {
+        .segments.map((segment) => {
           let best = Infinity
-          for (let i = 1; i < route.points.length; i++) {
-            best = Math.min(best, distanceToSegment(screen, fit.map(route.points[i - 1]), fit.map(route.points[i])))
+          for (let i = 1; i < segment.points.length; i++) {
+            best = Math.min(best, distanceToSegment(screen, fit.map(segment.points[i - 1]), fit.map(segment.points[i])))
           }
-          return { route, dist: best }
+          return { segment, dist: best }
         })
         .filter(({ dist }) => dist <= ROUTE_PICK_PX)
-        .sort((a, b) => a.dist - b.dist)[0]?.route
+        .sort((a, b) => a.dist - b.dist)[0]?.segment
     }
 
-    const pickRoute = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
-      const onSelect = overlayRef.current.onSelectRoute
-      const route = nearestRoute(fit, point)
-      if (onSelect && route) {
-        onSelect(route.id)
+    const pickSegment = (fit: ReturnType<typeof fitTransform>, point: { x: number; y: number }) => {
+      const onSelect = overlayRef.current.onSelectSegment
+      const segment = nearestSegment(fit, point)
+      if (onSelect && segment) {
+        onSelect(segment.id)
         draw()
       }
     }
@@ -121,7 +121,8 @@ export function SimulationCanvas({
       })
       if (hit) remove?.(hit.id)
       else {
-        const route = nearestRoute(fit, point)
+        const segment = nearestSegment(fit, point)
+        const route = segment && state.network.routes.find((r) => r.id === segment.routeIds[0])
         if (route) add?.(route.id, distanceAlongRoute(route, point))
       }
       draw()
@@ -130,15 +131,15 @@ export function SimulationCanvas({
     const onDown = (e: MouseEvent) => {
       if (e.button !== 0) return
       const { fit, point } = toNetwork(e)
-      const grab = droneGrabRadius(fit.scale) / (fit.scale || 1)
+      const grab = cameraGrabRadius(fit.scale) / (fit.scale || 1)
       const hit = engine
         .getState()
-        .drones.map((d) => ({ d, dist: Math.hypot(d.position.x - point.x, d.position.y - point.y) }))
+        .cameras.map((d) => ({ d, dist: Math.hypot(d.position.x - point.x, d.position.y - point.y) }))
         .filter(({ dist }) => dist <= grab)
         .sort((a, b) => a.dist - b.dist)[0]
       if (!hit) {
         if (overlayRef.current.accidentMode) accident(fit, point)
-        else pickRoute(fit, point)
+        else pickSegment(fit, point)
         return
       }
       e.preventDefault()
