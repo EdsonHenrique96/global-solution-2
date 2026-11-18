@@ -2,7 +2,7 @@ import { DroneSensor, type Observation, type Reading } from '../telemetry/DroneS
 import { positionOnRoute, routeLength } from './car'
 import { CarGenerator, DEFAULT_CAR_SPEED } from './carGenerator'
 import { mulberry32 } from './random'
-import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_STOP_DECEL, step } from './idm'
+import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_DECEL, MAX_STOP_DECEL, step, yieldDeceleration } from './idm'
 import { buildRoadNetwork } from './roadNetwork'
 import { lightAt, type LightState } from './trafficLight'
 import type { Car, Drone, Point, RoadNetwork, Route } from './types'
@@ -14,7 +14,7 @@ export const STOP_LINE_M = 12
 /** Length of the entrance lanes (origin -> fork) and of the shared arrival stretch (junction -> destination). */
 export const SHARED_M = 120
 /** Distance before the arrival junction where cars of different routes start to zip. */
-export const MERGE_ZONE_M = 80
+export const MERGE_ZONE_M = 150
 const ORIGIN_EDGE = 'origem'
 const ARRIVAL_EDGE = 'chegada'
 export const DRONE_RADIUS_M = 110
@@ -38,6 +38,7 @@ export interface SimulationState {
   ratePerMinute: number
   /** Generated cars still waiting for room at the origin. */
   waitingAtOrigin: number
+  waitingByRoute: Record<string, number>
   /** Cars that reached the destination. */
   arrivedTotal: number
   timeMs: number
@@ -95,8 +96,10 @@ export class SimulationEngine {
   private spawnedTotal = 0
   private arrivedTotal = 0
   private waiting: Car[] = []
-  /** Cars that met a red too close to stop, by the intersection they are going through. */
-  private readonly committed = new Map<number, string>()
+  /** At the arrival junction, the cars of other routes each car has agreed to go after. */
+  private readonly yieldsTo = new Map<number, Set<number>>()
+  /** Each car's stop-or-go decision for the red light ahead of it. */
+  private readonly redDecision = new Map<number, { intersectionId: string; go: boolean }>()
   private timeMs = 0
   private manualId = 1_000_000
 
@@ -217,7 +220,7 @@ export class SimulationEngine {
     // cars close to the arrival junction on a middle stretch, for the zipper
     const zipping = placed
       .filter((p) => !p.edge.startsWith(ORIGIN_EDGE) && p.edge !== ARRIVAL_EDGE && p.length - p.x <= MERGE_ZONE_M)
-      .map((p) => ({ edge: p.edge, routeId: p.car.routeId, d: p.length - p.x, v: p.car.velocity }))
+      .map((p) => ({ id: p.car.id, edge: p.edge, routeId: p.car.routeId, d: p.length - p.x, v: p.car.velocity }))
 
     const moved: CarState[] = []
     for (const me of placed) {
@@ -242,36 +245,54 @@ export class SimulationEngine {
         if (first) consider(me.length - me.x + first.x - IDM.length, first.car.velocity)
       }
 
-      // zipper at the arrival junction: yield to a closer car of another route
+      // zipper at the arrival junction: who goes first is decided once per pair of cars, by who is
+      // closer to the junction when both are in the zone; the one behind brakes just enough to
+      // reach the junction 7 m after every car it yields to (planned, not a sudden stop)
+      let accMerge = Infinity
       const mine = me.length - me.x
       if (!me.edge.startsWith(ORIGIN_EDGE) && me.edge !== ARRIVAL_EDGE && mine <= MERGE_ZONE_M) {
-        let best: { d: number; v: number } | null = null
+        const ahead = this.yieldsTo.get(car.id) ?? new Set<number>()
+        let binding: { d: number; v: number } | null = null
         for (const other of zipping) {
           if (other.edge === me.edge) continue
-          const before = other.d < mine || (other.d === mine && other.routeId < car.routeId)
-          if (before && (best === null || other.d > best.d)) best = other
+          const pairKnown = ahead.has(other.id) || (this.yieldsTo.get(other.id)?.has(car.id) ?? false)
+          if (!pairKnown) {
+            const otherFirst = other.d < mine || (other.d === mine && other.routeId < car.routeId)
+            if (otherFirst) ahead.add(other.id)
+            else this.yieldsTo.set(other.id, (this.yieldsTo.get(other.id) ?? new Set()).add(car.id))
+          }
+          if (ahead.has(other.id) && (binding === null || other.d > binding.d)) binding = other
         }
-        if (best) consider(mine - best.d - IDM.length, best.v)
+        this.yieldsTo.set(car.id, ahead)
+        if (binding) accMerge = -yieldDeceleration(car.velocity, mine, binding.d, binding.v)
+      } else {
+        this.yieldsTo.delete(car.id)
       }
 
-      // red light: stop if it can with a firm brake, otherwise commit and go through
+      // red light: decided once per light - stop if it can with at most 4.5 m/s², otherwise go
+      // through; a car that stops brakes at the constant deceleration that ends exactly at the line
+      // once that deceleration reaches the comfortable b
       let lineRoom = Infinity
+      let accLine = Infinity
       const stop = (this.stopLines.get(car.routeId) ?? []).find((sl) => sl.at >= car.distance - 1e-9)
       if (stop && phase.get(stop.intersectionId) === 'vermelho') {
         const toLine = stop.at - car.distance
-        const committed = this.committed.get(car.id) === stop.intersectionId
         const needed = (car.velocity * car.velocity) / (2 * Math.max(toLine, 0.01))
-        if (!committed && needed > MAX_STOP_DECEL) {
-          this.committed.set(car.id, stop.intersectionId)
-        } else if (!committed) {
-          lineRoom = toLine
-          consider(toLine + IDM.s0, 0)
+        let decision = this.redDecision.get(car.id)
+        if (decision?.intersectionId !== stop.intersectionId) {
+          decision = { intersectionId: stop.intersectionId, go: needed > MAX_STOP_DECEL }
+          this.redDecision.set(car.id, decision)
         }
-      } else if (stop) {
-        this.committed.delete(car.id)
+        if (!decision.go) {
+          lineRoom = toLine
+          if (needed >= IDM.b || toLine <= 0.5) accLine = -needed
+        }
+      } else {
+        this.redDecision.delete(car.id)
       }
 
-      const acc = idmAcceleration(car.velocity, car.speed, gap, car.velocity - leadV)
+      const accLeader = idmAcceleration(car.velocity, car.speed, gap, car.velocity - leadV)
+      const acc = Math.max(-MAX_DECEL, Math.min(accLeader, accLine, accMerge))
       const room = Math.min(Number.isFinite(gap) ? gap - IDM.s0 : Infinity, lineRoom)
       const next = step(car.distance, car.velocity, acc, car.speed, dt, room)
       moved.push({ ...car, distance: next.x, velocity: next.v })
@@ -282,7 +303,8 @@ export class SimulationEngine {
       if (car.distance < (this.lengths.get(car.routeId) ?? 0) - 1e-9) stillIn.push(car)
       else {
         this.arrivedTotal += 1
-        this.committed.delete(car.id)
+        this.redDecision.delete(car.id)
+        this.yieldsTo.delete(car.id)
       }
     }
     this.cars = stillIn
@@ -323,10 +345,12 @@ export class SimulationEngine {
         remaining.push(car)
         continue
       }
-      // enter at the highest speed whose IDM response to the car ahead is no harder than -b
+      // enter at the highest speed whose IDM response to the car ahead is no harder than -b and
+      // that the room ahead can absorb within one headway
       let v = car.speed
       if (Number.isFinite(last)) {
         const gap = last - IDM.length
+        v = Math.min(v, Math.max(0, gap - IDM.s0) / IDM.T)
         while (v > 0 && idmAcceleration(v, car.speed, gap, v - lastV) < -IDM.b) v = Math.max(0, v - 0.25)
       }
       this.cars.push({ ...car, velocity: v })
@@ -350,6 +374,9 @@ export class SimulationEngine {
       spawnedTotal: this.spawnedTotal,
       ratePerMinute: this.generator.getRate(),
       waitingAtOrigin: this.waiting.length,
+      waitingByRoute: Object.fromEntries(
+        this.network.routes.map((r) => [r.id, this.waiting.filter((c) => c.routeId === r.id).length]),
+      ),
       arrivedTotal: this.arrivedTotal,
       timeMs: this.timeMs,
       lights: this.lights(this.timeMs),

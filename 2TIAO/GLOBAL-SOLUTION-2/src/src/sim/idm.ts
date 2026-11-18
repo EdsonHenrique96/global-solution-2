@@ -20,6 +20,8 @@ export const IDM = {
 
 /** Above this deceleration a car facing a fresh red cannot stop and goes through (dilemma zone). */
 export const MAX_STOP_DECEL = 4.5
+/** Physical limit: no car brakes harder than this (emergency braking). */
+export const MAX_DECEL = 9
 /** Obstacles farther than this do not affect a car. */
 export const LOOKAHEAD_M = 250
 
@@ -62,4 +64,23 @@ export function step(
     vNext = Math.min(vNext, room / dt)
   }
   return { x: x + Math.max(0, advance), v: vNext }
+}
+
+/**
+ * Constant deceleration that lets a car `mine` metres from a junction arrive there the IDM
+ * following distance (length + s0 + T v) behind a car `theirs` metres from it going at `vTheirs`.
+ * 0 when no braking is needed.
+ */
+export function yieldDeceleration(v: number, mine: number, theirs: number, vTheirs: number): number {
+  if (v <= 0) return 0
+  // the spacing IDM wants behind them at their speed: length + s0 + T v
+  const spacing = IDM.length + IDM.s0 + IDM.T * vTheirs
+  const budget = mine - spacing // how far I may travel before they reach the junction
+  if (budget <= 0) return MAX_DECEL
+  // a car (nearly) standing before the junction never gets there: stop within the budget
+  const t = vTheirs > 0.1 ? theirs / vTheirs : Infinity
+  if (Number.isFinite(t) && v * t <= budget) return 0
+  // stopping inside the window: v^2 / 2b <= budget; otherwise v t - b t^2 / 2 = budget
+  const stopping = (v * v) / (2 * budget)
+  return !Number.isFinite(t) || v / stopping <= t ? stopping : (2 * (v * t - budget)) / (t * t)
 }

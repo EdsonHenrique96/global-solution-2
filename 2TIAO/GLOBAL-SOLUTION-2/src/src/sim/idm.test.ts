@@ -93,6 +93,22 @@ describe('sim', () => {
       expect(engine.getState().spawnedTotal).toBe(1200)
     })
 
+    it('never brakes harder than 9 m/s2 over 10 minutes at 120 cars per minute', { timeout: 60_000 }, () => {
+      const engine = new SimulationEngine({ ratePerMinute: 120 })
+      let prev = new Map<number, number>()
+      let worst = 0
+      runFor(engine, 600_000, () => {
+        const now = new Map<number, number>()
+        for (const c of engine.getState().cars) {
+          const before = prev.get(c.id)
+          if (before !== undefined) worst = Math.max(worst, (before - c.velocity) / (TICK_MS / 1000))
+          now.set(c.id, c.velocity)
+        }
+        prev = now
+      })
+      expect(worst).toBeLessThanOrEqual(9)
+    })
+
     it('stops a car that can brake within 2 m before the red line and lets one that cannot go through', () => {
       const STOP = 228
       // 60 m before the line at 50 km/h when I1 turns red (23 s)
@@ -181,10 +197,18 @@ describe('sim', () => {
         const far = engine.addCar(farRoute, lengths[farRoute] - SHARED_M - farGap).id
         const near = engine.addCar(nearRoute, lengths[nearRoute] - SHARED_M - nearGap).id
         let order: number[] | null = null
+        let farWhenNearMerged: number | null = null
         runFor(engine, 12_000, () => {
           const f = car(engine, far)
           const n = car(engine, near)
           if (!f || !n) return
+          // the yielding is done before the junction: when the nearer car crosses it, the farther
+          // one is still at least 7 m away from it
+          const [snNow] = stretch(n.routeId, n.distance)
+          if (snNow === 'chegada' && farWhenNearMerged === null) {
+            const [sfNow, xfNow] = stretch(f.routeId, f.distance)
+            farWhenNearMerged = sfNow === 'chegada' ? -xfNow : lengths[f.routeId] - SHARED_M - f.distance
+          }
           const [sf, xf] = stretch(f.routeId, f.distance)
           const [sn, xn] = stretch(n.routeId, n.distance)
           if (sf === 'chegada' && sn === 'chegada') {
@@ -192,6 +216,8 @@ describe('sim', () => {
             order ??= xn > xf ? [near, far] : [far, near]
           }
         })
+        expect(farWhenNearMerged).not.toBeNull()
+        expect(farWhenNearMerged!).toBeGreaterThanOrEqual(7 - 1e-9 - (13.9 * TICK_MS) / 1000)
         return { order, near, far }
       }
       // central is 30 m from the junction, norte 25 m: central yields
@@ -207,9 +233,17 @@ describe('sim', () => {
       let worst = Infinity
       runFor(engine, 60_000, () => {
         worst = Math.min(worst, minGap(engine))
+        // entry as soon as there is room: a lane with cars waiting always has a car in its first 7 m
+        const st = engine.getState()
+        for (const [route, waiting] of Object.entries(st.waitingByRoute)) {
+          if (waiting === 0) continue
+          const first = Math.min(...st.cars.filter((c) => c.routeId === route).map((c) => c.distance))
+          expect(first, `${route} lane`).toBeLessThan(7)
+        }
       })
       const s = engine.getState()
       expect(s.spawnedTotal).toBe(600)
+      expect(s.cars.length + s.arrivedTotal).toBeGreaterThan(50)
       expect(s.waitingAtOrigin).toBeGreaterThan(0)
       expect(s.cars.length + s.arrivedTotal + s.waitingAtOrigin).toBe(600)
       expect(worst).toBeGreaterThanOrEqual(7 - 1e-9)
