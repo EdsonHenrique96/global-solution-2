@@ -128,6 +128,18 @@ describe('decision', () => {
       // 4 jammed windows: holds; the 5th, 40 s after activation... and also within 30 s of it below
       expect(feed(c2, bJammed, 60_000, 4).status).toBe('ativo')
       expect(c2.evaluate(100_000, bJammed, demand).status).not.toBe('ativo')
+      // B jams 10 s after activation: the diversion stops in that window, without the 30 s wait
+      const soon = new DiversionController()
+      const rs = (t: number) => ({
+        central: view('congestionado', 5, { fluxo: 300 }),
+        // norte congested from 20 s on: 4 windows at 50 s (still a valid B), 5 at 60 s (jammed)
+        norte: view(t >= 20_000 ? 'congestionado' : 'fluindo', 20, { capacidade: 1000, folga: 600 }),
+        sul: view('fluindo', 48, { capacidade: 1000, folga: 100 }),
+      })
+      for (let t = 10_000; t <= 40_000; t += 10_000) soon.evaluate(t, rs(t), demand)
+      expect(soon.evaluate(50_000, rs(50_000), demand)).toMatchObject({ status: 'ativo', to: 'norte' })
+      expect(soon.evaluate(60_000, rs(60_000), demand).status).toBe('inativo')
+
       const quick = new DiversionController()
       feed(quick, { ...base, norte: view('congestionado', 10, { capacidade: 1000, folga: 800 }) }, 10_000, 4)
       // norte was jammed 4 windows before activation, so it is not B: sul is
