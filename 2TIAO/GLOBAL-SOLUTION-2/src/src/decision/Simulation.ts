@@ -32,6 +32,11 @@ export function routeDemand(
   )
 }
 
+/** The warning shown when the alternative route is not fully trusted (confidence below 0.8). */
+export function coverageWarning(confianca: number): string | null {
+  return confianca < FULL_COVERAGE ? 'rota alternativa com trechos sem cobertura' : null
+}
+
 /** Confidence in a route: its least trusted segment; a segment without data counts as 0. */
 export function routeConfidence(routeId: string, fused: Record<string, FusedSegment>, segments: readonly Segment[]): number {
   return Math.min(...segments.filter((s) => s.routeIds.includes(routeId)).map((s) => fused[s.id]?.confianca ?? 0))
@@ -116,7 +121,7 @@ export class Simulation {
       this.diversion = {
         ...this.diversion,
         confianca,
-        ...(confianca < FULL_COVERAGE ? { aviso: 'rota alternativa com trechos sem cobertura' } : {}),
+        ...(coverageWarning(confianca) ? { aviso: coverageWarning(confianca)! } : {}),
       }
     }
     const d = this.diversion

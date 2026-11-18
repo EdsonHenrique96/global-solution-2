@@ -127,10 +127,10 @@ describe('capacity', () => {
         )
       }
       expect(service.snapshot()['central-I1-I2'].estado).toBe('congestionado')
+      now = 220_000 // the last (200 s) window has closed: all 20 samples in
+      expect(service.snapshot()['central-I1-I2'].estado).toBe('congestionado')
       const capacity = service.snapshot()['central-I1-I2'].capacidade
       expect(capacity).not.toBeNull()
-      now = 220_000
-      expect(service.snapshot()['central-I1-I2'].estado).toBe('congestionado')
       now = 220_100
       const stale = service.snapshot()['central-I1-I2']
       expect(stale.estado).toBe('sem dados')
@@ -141,24 +141,30 @@ describe('capacity', () => {
       now = 230_000
       transport.deliver(topic('C2'), message('C2', 230_000, [{ trecho: 'central-I1-I2', contagem: 10, velocidadeMediaKmh: 45, comprimentoCobertoM: 1000, cobertura: 1 }]))
       transport.deliver(topic('C9'), message('C9', 5_000, [{ trecho: 'central-I1-I2', contagem: 80, velocidadeMediaKmh: 10, comprimentoCobertoM: 1000, cobertura: 1 }]))
+      now = 240_000 // the 230 s window closes and reaches the model
       expect(service.snapshot()['central-I1-I2'].estado).toBe('fluindo')
       expect(service.snapshot()['central-I1-I2'].velocidade).toBe(45)
     })
 
     it('learns nothing while disconnected and resumes after reconnecting', () => {
       const transport = new FakeTransport(false)
-      const service = new CapacityService(transport, () => 10_000)
+      let now = 10_000
+      const service = new CapacityService(transport, () => now)
       service.start()
       const send = () =>
         transport.deliver(topic('C2'), message('C2', 10_000, [{ trecho: 'central-I1-I2', contagem: 2, velocidadeMediaKmh: 40, comprimentoCobertoM: 220, cobertura: 0.55 }]))
       send()
       expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(0)
+      now = 20_000
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(0)
       transport.setConnected(true)
-      send()
+      send() // the 10 s window, received now that the broker is back
+      // received at 20 s, the 10 s window is already closed and reaches the model
       expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(1)
       expect(service.snapshot()['central-I1-I2'].estado).toBe('fluindo')
       transport.setConnected(false)
       send()
+      now = 40_000
       expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(1)
     })
   })
@@ -168,7 +174,8 @@ describe('capacity', () => {
 
     it('learns per segment from porTrecho entries', () => {
       const transport = new FakeTransport(true)
-      const service = new CapacityService(transport, () => 10_000)
+      let now = 10_000
+      const service = new CapacityService(transport, () => now)
       service.start()
       transport.deliver(
         topic('C2'),
@@ -178,6 +185,7 @@ describe('capacity', () => {
           { trecho: 'central-I2-M', contagem: 0, velocidadeMediaKmh: null, comprimentoCobertoM: 50, cobertura: 0.42 },
         ]),
       )
+      now = 20_000 // the window closes and reaches the models
       const s = service.snapshot()
       expect(Object.keys(s)).toHaveLength(11)
       expect(s['central-I1-I2'].densidade).toBeCloseTo(9.09, 2)

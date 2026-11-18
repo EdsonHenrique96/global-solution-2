@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { RouteStatus } from '../capacity/CapacityModel'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
 import { DiversionController, diversionSize, type DiversionState, type RouteView } from './DiversionController'
-import { routeConfidence, routeDemand, Simulation } from './Simulation'
+import { coverageWarning, routeConfidence, routeDemand, Simulation } from './Simulation'
 
 const view = (estado: RouteStatus, velocidade: number | null, extra: Partial<RouteView> = {}): RouteView => ({
   estado,
@@ -237,6 +237,40 @@ describe('decision', () => {
       expect(routeDemand(['central', 'norte'], fused, segs)).toEqual({ central: 0, norte: 123 })
       // with demand 0 the controller sizes N 0
       expect(diversionSize(0, 0, 900)).toEqual({ n: 0, p: 0 })
+
+      // decide() hands the controller the OD demand, not the generator's share: the generator runs
+      // at 15 cars/min (300 veh/h per route) while the OD matrix says 60 trips/min (1200 per route)
+      const seenDemand: Record<string, number>[] = []
+      const spy = vi.spyOn(DiversionController.prototype, 'evaluate').mockImplementation(function (this: DiversionController, _t, _r, d) {
+        seenDemand.push({ ...d })
+        return { status: 'inativo' }
+      })
+      const transport = new FakeTransport(true)
+      const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 15, noisePct: 0 }), transport })
+      sim.start()
+      for (let t = 0; t < 70_000; t += TICK_MS) {
+        sim.tick()
+        if (sim.engine.getState().timeMs === 60_000) {
+          // the operator's feed for this window (a stand-in for a different real demand)
+          transport.deliver('transito/demanda/od', JSON.stringify({ ts: 60_000, janelaS: 60, celulas: [{ origem: 'oeste', destino: 'leste', viagens: 60 }] }))
+        }
+      }
+      sim.stop()
+      spy.mockRestore()
+      expect(seenDemand[0]).toEqual({ central: 0, norte: 0, sul: 0 }) // 10 s: no OD window yet
+      const last = seenDemand[seenDemand.length - 1]
+      for (const id of ['central', 'norte', 'sul']) expect(last[id]).toBeCloseTo(1200, 6)
+
+      // no valid OD cell: the controller, given that demand, sizes the active diversion with N 0
+      const c = new DiversionController()
+      const routes = {
+        central: { estado: 'congestionado' as const, velocidade: 5, fluxo: 100, capacidade: null, folga: null },
+        norte: { estado: 'fluindo' as const, velocidade: 48, fluxo: 100, capacidade: 1000, folga: 800 },
+        sul: { estado: 'fluindo' as const, velocidade: 48, fluxo: 100, capacidade: 1000, folga: 200 },
+      }
+      let st = c.evaluate(10_000, routes, { central: 0, norte: 0, sul: 0 })
+      for (let t = 20_000; t <= 50_000; t += 10_000) st = c.evaluate(t, routes, { central: 0, norte: 0, sul: 0 })
+      expect(st).toMatchObject({ status: 'ativo', from: 'central', to: 'norte', n: 0, p: 0 })
     })
 
     it('reports the confidence of the alternative route and warns below 0.8', () => {
@@ -248,6 +282,11 @@ describe('decision', () => {
       expect(routeConfidence('central', partial, segs)).toBe(1)
       const missing = Object.fromEntries(Object.entries(fusedWith(1)).filter(([id]) => id !== 'norte-F-I3'))
       expect(routeConfidence('norte', missing, segs)).toBe(0)
+      // the warning threshold is 0.8: 0.79 warns, 0.8 does not
+      expect(coverageWarning(0.79)).toBe('rota alternativa com trechos sem cobertura')
+      expect(coverageWarning(0.8)).toBeNull()
+      expect(coverageWarning(1)).toBeNull()
+      expect(coverageWarning(0)).toBe('rota alternativa com trechos sem cobertura')
 
       // in the accident scenario B has uncovered segments: confidence 0 and the warning
       const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 15, noisePct: 0 }), transport: new FakeTransport(true) })

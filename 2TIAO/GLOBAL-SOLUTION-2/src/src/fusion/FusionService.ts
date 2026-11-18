@@ -16,6 +16,8 @@ export interface FusedAlert {
   x: number
   y: number
   ts: number
+  /** Every report merged into this alert. */
+  membros: { id: number; x: number; y: number; ts: number }[]
 }
 
 /** The fused view of one road segment (spec item 4). */
@@ -143,7 +145,10 @@ export class FusionService {
     const { id, x, y, ts, tipo } = msg as { id: number; x: number; y: number; ts: number; tipo: string }
     if (msg.ativo === false) {
       for (const [segmentId, list] of this.alerts) {
-        for (const a of list) a.ids = a.ids.filter((i) => i !== id)
+        for (const a of list) {
+          a.ids = a.ids.filter((i) => i !== id)
+          a.membros = a.membros.filter((m) => m.id !== id)
+        }
         this.alerts.set(segmentId, list.filter((a) => a.ids.length > 0))
       }
       return
@@ -154,13 +159,19 @@ export class FusionService {
       .sort((a, b) => a.d - b.d)[0]?.s
     if (!home) return
     const list = this.alerts.get(home.id) ?? []
+    // the same incident: same type and within 50 m and 60 s of any report already merged
     const twin = list.find(
-      (a) => a.tipo === tipo && Math.hypot(a.x - x, a.y - y) <= ALERT_MERGE_M && Math.abs(a.ts - ts) <= ALERT_MERGE_MS,
+      (a) =>
+        a.tipo === tipo &&
+        a.membros.some((m) => Math.hypot(m.x - x, m.y - y) <= ALERT_MERGE_M && Math.abs(m.ts - ts) <= ALERT_MERGE_MS),
     )
     if (twin) {
-      if (!twin.ids.includes(id)) twin.ids.push(id)
+      if (!twin.ids.includes(id)) {
+        twin.ids.push(id)
+        twin.membros.push({ id, x, y, ts })
+      }
     } else {
-      list.push({ ids: [id], tipo, x, y, ts })
+      list.push({ ids: [id], tipo, x, y, ts, membros: [{ id, x, y, ts }] })
     }
     this.alerts.set(home.id, list)
   }
@@ -180,12 +191,17 @@ export class FusionService {
     }
   }
 
-  /** Measurements not yet handed to the capacity model: one per segment and window. */
+  /**
+   * Measurements not yet handed to the capacity model: one per segment and window, and only for
+   * closed windows - a newer window arrived, or a whole window (10 s) has passed - so a better
+   * reading of the same window that arrives later is never lost.
+   */
   flush(): ChosenMeasurement[] {
     const out: ChosenMeasurement[] = this.pending
     this.pending = []
+    const now = this.now()
     for (const [segmentId, w] of this.windows) {
-      if (w.delivered) continue
+      if (w.delivered || now < w.ts + FRESH_MS) continue
       w.delivered = true
       out.push({ segmentId, ts: w.ts, ...w.best })
     }
@@ -203,7 +219,7 @@ export class FusionService {
           {
             densidade: w ? w.best.contagem / ((w.best.comprimentoCobertoM / 1000) * s.lanes) : null,
             velocidadeMedia: w ? w.best.velocidadeMediaKmh : null,
-            alertas: (this.alerts.get(s.id) ?? []).map((a) => ({ ...a, ids: [...a.ids] })),
+            alertas: (this.alerts.get(s.id) ?? []).map((a) => ({ ...a, ids: [...a.ids], membros: a.membros.map((m) => ({ ...m })) })),
             demandaOD: this.demand.get(s.id) ?? null,
             fontes: fresh ? [...w.sources].sort() : [],
             confianca: w ? agedConfidence(baseConfidence(w.best.cobertura), now - w.ts) : 0,

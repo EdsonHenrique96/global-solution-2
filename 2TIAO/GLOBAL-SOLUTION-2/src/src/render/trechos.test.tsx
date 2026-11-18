@@ -37,6 +37,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 function lastFrame(): Call[] {
@@ -104,8 +105,10 @@ const message = (sensorId: string, porTrecho: unknown[]) => {
 describe('render', () => {
   describe('segments', () => {
     it('paints each segment by state and selects it on click', () => {
+      vi.useFakeTimers()
       const transport = new FakeTransport(true)
-      render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={transport} />)
+      // no cameras of its own: only the readings this test sends reach the fusion
+      render(<App engine={new SimulationEngine({ ratePerMinute: 0, cameras: [] })} transport={transport} />)
       const canvas = document.querySelector('canvas')!
       const panel = screen.getByRole('region', { name: /capacidade do trecho/i })
       const map = mapper(lastFrame())
@@ -126,6 +129,8 @@ describe('render', () => {
           const k = 5 * i
           transport.deliver('transito/sensores/C1/telemetria', message('C1', [{ trecho: 'norte-I3-M', contagem: k, velocidadeMediaKmh: 50 * (1 - k / 100), comprimentoCobertoM: 1000, cobertura: 0.5 }]))
         }
+        // the fusion hands a window to the capacity model once it closes (10 s)
+        vi.advanceTimersByTime(11_000)
       })
       frame = redraw()
       expect(huesOf(frame, map, [300, 300], [700, 300])).toContain('vermelho')
@@ -218,8 +223,9 @@ describe('render', () => {
 
   describe('CapacityPanel', () => {
     it('plots the last 200 samples and the fitted curve with the capacity point', () => {
+      vi.useFakeTimers()
       const transport = new FakeTransport(true)
-      render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={transport} />)
+      render(<App engine={new SimulationEngine({ ratePerMinute: 0, cameras: [] })} transport={transport} />)
       const panel = screen.getByRole('region', { name: /capacidade do trecho/i })
       const send = (k: number) =>
         transport.deliver(
@@ -228,11 +234,15 @@ describe('render', () => {
         )
       expect(within(panel).queryAllByTestId('sample-point')).toHaveLength(0)
       // three early samples at densities that never come back
-      act(() => [12, 22, 33].forEach(send))
+      act(() => {
+        ;[12, 22, 33].forEach(send)
+        vi.advanceTimersByTime(11_000) // windows close and reach the model
+      })
       expect(within(panel).getAllByTestId('sample-point')).toHaveLength(3)
       expect(within(panel).queryByTestId('fitted-curve')).toBeNull()
       act(() => {
         for (let i = 0; i < 200; i++) send(5 + (i % 19) * 5)
+        vi.advanceTimersByTime(11_000)
       })
       const points = within(panel).getAllByTestId('sample-point')
       expect(points).toHaveLength(200)

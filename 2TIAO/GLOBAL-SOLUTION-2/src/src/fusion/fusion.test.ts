@@ -92,6 +92,7 @@ describe('fusion', () => {
       expect(agedConfidence(1, 0)).toBe(1)
       expect(agedConfidence(1, 10_000)).toBe(1)
       expect(agedConfidence(1, 70_000)).toBeCloseTo(0.5, 9)
+      expect(agedConfidence(1, 100_000)).toBeCloseTo(0.25, 9)
       expect(agedConfidence(1, 130_000)).toBeCloseTo(0.2, 9)
       expect(agedConfidence(1, 300_000)).toBe(0.2)
       // and in the fused state
@@ -130,22 +131,29 @@ describe('fusion', () => {
       const now = { t: 0 }
       const { transport, fusion } = setup(now)
       const send = (id: number, x: number, ts: number, ativo = true) => transport.deliver(ALERTS_TOPIC, alertMsg(id, x, 300, ts, ativo))
+      const count = () => fusion.state()['central-I1-I2'].alertas.length
       send(1, 500, 1_000)
-      send(2, 530, 21_000) // 30 m and 20 s later -> merged
-      expect(fusion.state()['central-I1-I2'].alertas).toHaveLength(1)
-      send(3, 580, 22_000) // 80 m from the first -> a second alert
-      expect(fusion.state()['central-I1-I2'].alertas).toHaveLength(2)
-      send(4, 500, 301_000) // same point 5 min later -> another one
-      expect(fusion.state()['central-I1-I2'].alertas).toHaveLength(3)
+      send(2, 530, 21_000) // 30 m and 20 s later -> the same incident
+      expect(count()).toBe(1)
+      // within 50 m and 60 s of ANY report already merged (here #2, 50 m and 1 s away) -> still one
+      send(3, 580, 22_000)
+      expect(count()).toBe(1)
+      expect(fusion.state()['central-I1-I2'].alertas[0].ids.sort()).toEqual([1, 2, 3])
+      send(4, 661, 23_000) // 81 m from the nearest member -> a second alert
+      expect(count()).toBe(2)
+      send(5, 500, 301_000) // same point as #1, 5 min later -> another one
+      expect(count()).toBe(3)
       // only on the segment that contains the point
       expect(fusion.state()['central-F-I1'].alertas).toHaveLength(0)
       // a point 15+ m away from every road attaches nowhere
       transport.deliver(ALERTS_TOPIC, alertMsg(9, 500, 340, 1_000))
       expect(Object.values(fusion.state()).reduce((n, s) => n + s.alertas.length, 0)).toBe(3)
-      // ending alerts removes them (both ids of the merged one)
+      // ending alerts: a merged alert goes away only when all its reports ended
       send(1, 500, 400_000, false)
       send(2, 530, 400_000, false)
-      expect(fusion.state()['central-I1-I2'].alertas).toHaveLength(2)
+      expect(count()).toBe(3)
+      send(3, 580, 400_000, false)
+      expect(count()).toBe(2)
     })
   })
 
@@ -237,9 +245,12 @@ describe('fusion', () => {
       const transport = new FakeTransport(true)
       const service = new CapacityService(transport, () => now.t, segments)
       service.start()
-      // two cameras on the same segment in the same window: one sample, from the 0.9 one
+      // two cameras on the same segment in the same window, with a snapshot in between (the page
+      // refreshes on every message): one sample, from the 0.9 one
       transport.deliver('transito/sensores/A/telemetria', sensorMsg('A', 10_000, [seg('central-I1-I2', 10, 20, 200, 0.5)]))
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(0) // window still open
       transport.deliver('transito/sensores/B/telemetria', sensorMsg('B', 10_000, [seg('central-I1-I2', 4, 40, 360, 0.9)]))
+      now.t = 20_000 // the window closes
       let s = service.snapshot()['central-I1-I2']
       expect(s.amostras).toHaveLength(1)
       expect(s.velocidade).toBe(40)
@@ -247,11 +258,16 @@ describe('fusion', () => {
       // asking again does not add the same window twice
       service.snapshot()
       expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(1)
-      // a quiet segment: estimated, no new sample, last state kept
-      now.t = 25_000
+      // a newer window closes the previous one even before 10 s pass
+      transport.deliver('transito/sensores/B/telemetria', sensorMsg('B', 20_000, [seg('central-I1-I2', 6, 30, 360, 0.9)]))
+      transport.deliver('transito/sensores/B/telemetria', sensorMsg('B', 30_000, [seg('central-I1-I2', 8, 25, 360, 0.9)]))
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(2)
+      // a quiet segment: estimated, no new sample beyond the closed windows, last state kept
+      now.t = 45_000
       s = service.snapshot()['central-I1-I2']
-      expect(s.amostras).toHaveLength(1)
-      expect(s.estado).toBe('fluindo')
+      expect(s.amostras).toHaveLength(3)
+      now.t = 47_000
+      expect(service.snapshot()['central-I1-I2'].amostras).toHaveLength(3)
       expect(service.fusion.state()['central-I1-I2'].estimado).toBe(true)
     })
   })
