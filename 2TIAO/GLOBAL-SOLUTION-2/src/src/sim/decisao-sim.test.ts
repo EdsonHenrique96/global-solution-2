@@ -56,6 +56,19 @@ describe('sim', () => {
     })
   })
 
+  describe('SimulationEngine', () => {
+    it('throughput does not collapse above saturation at the arrival junction', { timeout: 120_000 }, () => {
+      const arrivedIn10Min = (rate: number) => {
+        const e = new SimulationEngine({ ratePerMinute: rate, trafficLights: 'always-green' })
+        runFor(e, 600_000)
+        return e.getState().arrivedTotal
+      }
+      const at20 = arrivedIn10Min(20)
+      expect(at20).toBeGreaterThanOrEqual(150)
+      for (const rate of [30, 60]) expect(arrivedIn10Min(rate), `${rate} cars/min`).toBeGreaterThanOrEqual(150)
+    })
+  })
+
   describe('diversion', () => {
     it('sends exactly a fraction p of the cars bound for A to B and leaves cars on the road alone', () => {
       // 300 cars/min round-robin: 100 bound for central per minute

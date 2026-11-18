@@ -97,6 +97,19 @@ interface StopLine {
   at: number
 }
 
+interface MergeTicket {
+  atMs: number
+  d: number
+  routeId: string
+}
+
+/** Earlier entry first; same tick: closer to the junction first; then route name. */
+function ticketBefore(a: MergeTicket, b: MergeTicket): boolean {
+  if (a.atMs !== b.atMs) return a.atMs < b.atMs
+  if (a.d !== b.d) return a.d < b.d
+  return a.routeId < b.routeId
+}
+
 export class SimulationEngine {
   private readonly network: RoadNetwork
   private readonly generator: CarGenerator
@@ -111,8 +124,8 @@ export class SimulationEngine {
   private spawnedTotal = 0
   private arrivedTotal = 0
   private waiting: Car[] = []
-  /** At the arrival junction, the cars of other routes each car has agreed to go after. */
-  private readonly yieldsTo = new Map<number, Set<number>>()
+  /** Junction order: each car's ticket from the moment it entered the merge zone. */
+  private readonly mergeTickets = new Map<number, MergeTicket>()
   /** Each car's stop-or-go decision for the red light ahead of it. */
   private readonly redDecision = new Map<number, { intersectionId: string; go: boolean }>()
   private timeMs = 0
@@ -122,6 +135,7 @@ export class SimulationEngine {
   private blockageId = 1
   private diversion: Diversion | null = null
   private diversionBudget = 0
+  private lastPair: { from: string; to: string } | null = null
   /** Waiting cars already decided by the current diversion. */
   private readonly diversionDecided = new Set<number>()
   private divertedTotal = 0
@@ -231,14 +245,14 @@ export class SimulationEngine {
   }
 
   setDiversion(diversion: Diversion | null): void {
-    const changed =
-      (diversion === null) !== (this.diversion === null) ||
-      (diversion !== null && this.diversion !== null && (diversion.from !== this.diversion.from || diversion.to !== this.diversion.to))
-    this.diversion = diversion ? { ...diversion, fraction: Math.min(1, Math.max(0, diversion.fraction)) } : null
-    if (changed) {
+    // the fractional budget belongs to the pair A -> B: a window with p = 0 (null) keeps it, a
+    // different pair starts over
+    if (diversion && (diversion.from !== this.lastPair?.from || diversion.to !== this.lastPair?.to)) {
       this.diversionBudget = 0
       this.diversionDecided.clear()
+      this.lastPair = { from: diversion.from, to: diversion.to }
     }
+    this.diversion = diversion ? { ...diversion, fraction: Math.min(1, Math.max(0, diversion.fraction)) } : null
   }
 
   onArrival(listener: (a: Arrival) => void): () => void {
@@ -314,6 +328,13 @@ export class SimulationEngine {
       .filter((p) => !p.edge.startsWith(ORIGIN_EDGE) && p.edge !== ARRIVAL_EDGE && p.length - p.x <= MERGE_ZONE_M)
       .map((p) => ({ id: p.car.id, edge: p.edge, routeId: p.car.routeId, d: p.length - p.x, v: p.car.velocity }))
 
+    // hand out junction tickets to cars entering the zone this tick, and drop the ones that left
+    const inZone = new Set(zipping.map((z) => z.id))
+    for (const id of [...this.mergeTickets.keys()]) if (!inZone.has(id)) this.mergeTickets.delete(id)
+    for (const z of zipping) {
+      if (!this.mergeTickets.has(z.id)) this.mergeTickets.set(z.id, { atMs: this.timeMs, d: z.d, routeId: z.routeId })
+    }
+
     const moved: CarState[] = []
     for (const me of placed) {
       const { car } = me
@@ -337,28 +358,35 @@ export class SimulationEngine {
         if (first) consider(me.length - me.x + first.x - IDM.length, first.car.velocity)
       }
 
-      // zipper at the arrival junction: who goes first is decided once per pair of cars, by who is
-      // closer to the junction when both are in the zone; the one behind brakes just enough to
-      // reach the junction 7 m after every car it yields to (planned, not a sudden stop)
+      // zipper at the arrival junction: cars take a ticket when they enter the zone (entry time,
+      // then distance to the junction, then route name) - one total order, so no cycle of cars
+      // waiting for each other. A car brakes just enough to reach the junction one following
+      // distance behind the car of another route with the closest earlier ticket.
       let accMerge = Infinity
       const mine = me.length - me.x
-      if (!me.edge.startsWith(ORIGIN_EDGE) && me.edge !== ARRIVAL_EDGE && mine <= MERGE_ZONE_M) {
-        const ahead = this.yieldsTo.get(car.id) ?? new Set<number>()
+      const myTicket = this.mergeTickets.get(car.id)
+      if (myTicket) {
         let binding: { d: number; v: number } | null = null
+        let bindingTicket: MergeTicket | null = null
         for (const other of zipping) {
           if (other.edge === me.edge) continue
-          const pairKnown = ahead.has(other.id) || (this.yieldsTo.get(other.id)?.has(car.id) ?? false)
-          if (!pairKnown) {
-            const otherFirst = other.d < mine || (other.d === mine && other.routeId < car.routeId)
-            if (otherFirst) ahead.add(other.id)
-            else this.yieldsTo.set(other.id, (this.yieldsTo.get(other.id) ?? new Set()).add(car.id))
+          const t = this.mergeTickets.get(other.id)
+          if (!t || !ticketBefore(t, myTicket)) continue
+          if (bindingTicket === null || ticketBefore(bindingTicket, t)) {
+            bindingTicket = t
+            binding = other
           }
-          if (ahead.has(other.id) && (binding === null || other.d > binding.d)) binding = other
         }
-        this.yieldsTo.set(car.id, ahead)
-        if (binding) accMerge = -yieldDeceleration(car.velocity, mine, binding.d, binding.v)
-      } else {
-        this.yieldsTo.delete(car.id)
+        if (binding) {
+          const needed = yieldDeceleration(car.velocity, mine, binding.d, binding.v)
+          if (needed >= IDM.b) accMerge = -needed
+          else if (needed > 0) {
+            // approach the waiting point (one following distance before the junction) like IDM
+            // approaches a standing obstacle, instead of creeping with a tiny constant brake
+            const waitAt = mine - (IDM.length + IDM.s0 + IDM.T * binding.v)
+            accMerge = idmAcceleration(car.velocity, car.speed, Math.max(waitAt, 0) + IDM.s0, car.velocity)
+          }
+        }
       }
 
       // accidents: a standing obstacle ahead on this car's path
@@ -416,7 +444,6 @@ export class SimulationEngine {
         while (this.arrivals.length && this.arrivals[0].atMs <= arrival.atMs - 60_000) this.arrivals.shift()
         for (const l of this.arrivalListeners) l(arrival)
         this.redDecision.delete(car.id)
-        this.yieldsTo.delete(car.id)
       }
     }
     this.cars = stillIn

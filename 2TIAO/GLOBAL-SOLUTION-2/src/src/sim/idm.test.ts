@@ -106,7 +106,7 @@ describe('sim', () => {
         }
         prev = now
       })
-      expect(worst).toBeLessThanOrEqual(9)
+      expect(worst).toBeLessThanOrEqual(9 + 1e-9) // the emergency cap itself, up to float rounding
     })
 
     it('stops a car that can brake within 2 m before the red line and lets one that cannot go through', () => {

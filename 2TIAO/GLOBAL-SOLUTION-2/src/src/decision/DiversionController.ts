@@ -2,7 +2,7 @@ import type { RouteStatus } from '../capacity/CapacityModel'
 
 export const SAFETY_FACTOR = 0.8
 export const MAX_DIVERSION = 0.5
-export const START_WINDOWS = 2
+export const START_WINDOWS = 5
 export const STOP_WINDOWS = 2
 export const STOP_SPEED_KMH = 35
 export const MIN_CHANGE_INTERVAL_MS = 30_000
@@ -33,7 +33,8 @@ export function diversionSize(demandA: number, flowA: number, slackB: number): {
 
 /**
  * Partial diversion with hysteresis, evaluated once per 10 s window: starts when a route is
- * congested for 2 windows (and some other route has capacity and slack), stops when it is back
+ * congested for 5 windows - longer than a light cycle, AD-018 - (and some other route has capacity
+ * and slack), stops when it is back
  * at 35 km/h or more for 2 windows, never changing within 30 s of the last change.
  */
 export class DiversionController {
@@ -42,6 +43,11 @@ export class DiversionController {
   private active: { from: string; to: string } | null = null
   private lastChangeMs = -Infinity
   private enabled = true
+
+  /** Congested for the decision: congested for START_WINDOWS windows in a row (AD-018). */
+  private jammed(routeId: string): boolean {
+    return (this.congested.get(routeId) ?? 0) >= START_WINDOWS
+  }
 
   setEnabled(on: boolean): void {
     this.enabled = on
@@ -59,6 +65,14 @@ export class DiversionController {
     const canChange = nowMs - this.lastChangeMs >= MIN_CHANGE_INTERVAL_MS
 
     if (this.active) {
+      // never keep sending cars to a route that jammed (or went blind): stop at once
+      const bNow = routes[this.active.to]
+      if (!bNow || this.jammed(this.active.to) || bNow.estado === 'sem dados') {
+        this.active = null
+        this.recovered = 0
+        this.lastChangeMs = nowMs
+        return { status: 'inativo' }
+      }
       const a = routes[this.active.from]
       const v = a?.velocidade
       this.recovered = a && (v === null || v >= STOP_SPEED_KMH) && a.estado !== 'sem dados' ? this.recovered + 1 : 0
@@ -74,11 +88,20 @@ export class DiversionController {
     }
 
     // the most congested candidate: longest run of congested windows
-    const candidates = [...this.congested].filter(([, c]) => c >= START_WINDOWS).sort((x, y) => y[1] - x[1])
+    const candidates = [...this.congested].filter(([id]) => this.jammed(id)).sort((x, y) => y[1] - x[1])
     if (candidates.length === 0) return { status: 'inativo' }
     const from = candidates[0][0]
     const alternatives = Object.entries(routes)
-      .filter(([id, r]) => id !== from && r.capacidade !== null && r.folga !== null && r.folga > 0)
+      .filter(
+        ([id, r]) =>
+          id !== from &&
+          // slack on a congested road is missing flow, not room
+          !this.jammed(id) &&
+          r.estado !== 'sem dados' &&
+          r.capacidade !== null &&
+          r.folga !== null &&
+          r.folga > 0,
+      )
       .sort((x, y) => y[1].folga! - x[1].folga!)
     if (alternatives.length === 0) return { status: 'sem-alternativa', from }
     if (!canChange) return { status: 'inativo' }
