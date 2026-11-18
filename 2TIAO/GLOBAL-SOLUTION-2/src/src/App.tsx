@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Simulation } from './decision/Simulation'
+import { CameraPanel } from './render/CameraPanel'
 import { CapacityPanel } from './render/CapacityPanel'
+import { SegmentTooltip } from './render/SegmentTooltip'
+import { segmentTooltip } from './render/tooltip'
 import { MetricsPanel } from './render/MetricsPanel'
 import { NoiseControl } from './render/NoiseControl'
 import { SimulationCanvas } from './render/SimulationCanvas'
@@ -32,6 +35,10 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
   const [accidentMode, setAccidentMode] = useState(false)
   const [diversionOn, setDiversionOn] = useState(() => sim.isDiversionEnabled())
   const [signalsOn, setSignalsOn] = useState(() => engine.getState().adaptiveSignals)
+  const [layer, setLayer] = useState<'estado' | 'cobertura'>('estado')
+  const [hover, setHover] = useState<{ segmentId: string; x: number; y: number } | null>(null)
+  const [cameras, setCameras] = useState(() => engine.getState().cameras.map((c) => ({ ...c })))
+  const refreshCameras = () => setCameras(engine.getState().cameras.map((c) => ({ ...c })))
 
   useEffect(() => {
     sim.start()
@@ -79,9 +86,17 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
   return (
     <main className="app">
       <header className="toolbar">
-        <h1>Trânsito inteligente — simulação</h1>
+        <h1>Central de trânsito — gestão de tráfego</h1>
         <VolumeControl value={rate} onChange={changeRate} />
         <NoiseControl value={noise} onChange={changeNoise} />
+        <div className="toggles" role="group" aria-label="Camada do mapa">
+          <button type="button" aria-pressed={layer === 'estado'} onClick={() => setLayer('estado')}>
+            Estado
+          </button>
+          <button type="button" aria-pressed={layer === 'cobertura'} onClick={() => setLayer('cobertura')}>
+            Cobertura
+          </button>
+        </div>
         <div className="toggles">
           <button type="button" aria-pressed={accidentMode} onClick={() => setAccidentMode((on) => !on)}>
             Acidente
@@ -99,19 +114,50 @@ function App({ engine: injectedEngine, transport: injectedTransport }: Props) {
         </p>
       </header>
       <div className="workspace">
-        <SimulationCanvas
-          engine={engine}
-          segmentStatus={() => Object.fromEntries(Object.entries(capacity.snapshot()).map(([id, e]) => [id, e.estado]))}
-          selectedSegment={selectedSegment}
-          onSelectSegment={setSelectedSegment}
-          accidentMode={accidentMode}
-          onAccident={(routeId, distance) => engine.addBlockage(routeId, distance)}
-          onRemoveBlockage={(id) => engine.removeBlockage(id)}
-        />
+        <div className="map-area">
+          <SimulationCanvas
+            engine={engine}
+            segmentStatus={() => Object.fromEntries(Object.entries(capacity.snapshot()).map(([id, e]) => [id, e.estado]))}
+            selectedSegment={selectedSegment}
+            onSelectSegment={setSelectedSegment}
+            accidentMode={accidentMode}
+            onAccident={(routeId, distance) => engine.addBlockage(routeId, distance)}
+            onRemoveBlockage={(id) => engine.removeBlockage(id)}
+            layer={layer}
+            onHoverSegment={setHover}
+          />
+          {hover && (
+            <SegmentTooltip
+              content={segmentTooltip(
+                hover.segmentId,
+                engine.coverage.entries(hover.segmentId),
+                capacity.fusion.state()[hover.segmentId],
+                engine.getState().timeMs,
+              )}
+              x={hover.x}
+              y={hover.y}
+            />
+          )}
+        </div>
         <div className="side">
           <MetricsPanel metrics={metrics} diversion={diversion} />
           <CapacityPanel segmentId={selectedSegment} estimate={estimates[selectedSegment]} />
-          <TelemetryPanel transport={transport} sensorIds={engine.getState().cameras.map((c) => c.id)} />
+          <CameraPanel
+            cameras={cameras}
+            onChange={(id, change) => {
+              engine.updateCamera(id, change)
+              refreshCameras()
+            }}
+            onAdd={() => {
+              engine.addCamera()
+              refreshCameras()
+            }}
+            onRemove={(id) => {
+              engine.removeCamera(id)
+              refreshCameras()
+            }}
+          />
+          <TelemetryPanel transport={transport} sensorIds={cameras.map((c) => c.id)} />
         </div>
       </div>
     </main>

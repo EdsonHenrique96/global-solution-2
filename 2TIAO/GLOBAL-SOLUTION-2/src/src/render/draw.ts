@@ -35,6 +35,27 @@ const STATUS_COLORS: Record<RouteStatus, string> = {
 export interface SceneOverlay {
   segmentStatus?: Record<string, RouteStatus>
   selectedSegment?: string
+  /** Which colours the segments take: their state (default) or their camera coverage. */
+  layer?: 'estado' | 'cobertura'
+  /** Best camera coverage of each segment, 0..1. */
+  segmentCoverage?: Record<string, number>
+}
+
+export type CoverageBand = 'sem cobertura' | 'baixa' | 'parcial' | 'total'
+
+/** 0 -> none; below 0.3 (the reading cut-off) -> low; below 0.8 -> partial; else full. */
+export function coverageBand(cobertura: number): CoverageBand {
+  if (cobertura <= 0) return 'sem cobertura'
+  if (cobertura < 0.3) return 'baixa'
+  if (cobertura < 0.8) return 'parcial'
+  return 'total'
+}
+
+const BAND_COLORS: Record<CoverageBand, string> = {
+  'sem cobertura': '#ef4444',
+  baixa: '#f97316',
+  parcial: '#facc15',
+  total: '#22c55e',
 }
 
 const PHASE_COLORS: Record<Phase, string> = {
@@ -125,9 +146,17 @@ export function drawScene(
   }
   for (const segment of state.segments) {
     tracePath(segment.points)
-    ctx.strokeStyle = STATUS_COLORS[overlay.segmentStatus?.[segment.id] ?? 'sem dados']
+    if (overlay.layer === 'cobertura') {
+      const band = coverageBand(overlay.segmentCoverage?.[segment.id] ?? 0)
+      ctx.strokeStyle = BAND_COLORS[band]
+      // uncovered segments stand out with a dashed line
+      ctx.setLineDash(band === 'sem cobertura' ? [10 * scale, 8 * scale] : [])
+    } else {
+      ctx.strokeStyle = STATUS_COLORS[overlay.segmentStatus?.[segment.id] ?? 'sem dados']
+    }
     ctx.lineWidth = Math.max(2, 5 * scale)
     ctx.stroke()
+    ctx.setLineDash([])
   }
 
   // Fixed cameras: the cone each one sees, under everything else.

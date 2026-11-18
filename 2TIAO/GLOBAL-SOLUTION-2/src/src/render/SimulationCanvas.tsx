@@ -14,6 +14,9 @@ interface Props {
   accidentMode?: boolean
   onAccident?: (routeId: string, distance: number) => void
   onRemoveBlockage?: (id: number) => void
+  layer?: 'estado' | 'cobertura'
+  /** The segment under the mouse (null when none), with the mouse position in the canvas, px. */
+  onHoverSegment?: (hover: { segmentId: string; x: number; y: number } | null) => void
 }
 
 /**
@@ -28,13 +31,15 @@ export function SimulationCanvas({
   accidentMode,
   onAccident,
   onRemoveBlockage,
+  layer,
+  onHoverSegment,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Latest props for the long-lived listeners and frame loop below.
-  const overlayRef = useRef({ segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage })
+  const overlayRef = useRef({ segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage, layer, onHoverSegment })
   useEffect(() => {
-    overlayRef.current = { segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage }
+    overlayRef.current = { segmentStatus, selectedSegment, onSelectSegment, accidentMode, onAccident, onRemoveBlockage, layer, onHoverSegment }
   })
 
   useEffect(() => {
@@ -48,10 +53,18 @@ export function SimulationCanvas({
     let dpr = 1
 
     const draw = () => {
-      const { segmentStatus: status, selectedSegment: selected } = overlayRef.current
-      drawScene(ctx, engine.getState(), width, height, dpr, {
+      const { segmentStatus: status, selectedSegment: selected, layer: shown } = overlayRef.current
+      const state = engine.getState()
+      drawScene(ctx, state, width, height, dpr, {
         segmentStatus: status?.(),
         selectedSegment: selected,
+        layer: shown,
+        segmentCoverage:
+          shown === 'cobertura'
+            ? Object.fromEntries(
+                state.segments.map((seg) => [seg.id, Math.max(0, ...engine.coverage.entries(seg.id).map((e) => e.cobertura))]),
+              )
+            : undefined,
       })
     }
 
@@ -155,15 +168,29 @@ export function SimulationCanvas({
       frame = requestAnimationFrame(loop)
     }
 
+    const onHover = (e: MouseEvent) => {
+      const report = overlayRef.current.onHoverSegment
+      if (!report || dragging) return
+      const { fit, point } = toNetwork(e)
+      const segment = nearestSegment(fit, point)
+      const rect = canvas.getBoundingClientRect()
+      report(segment ? { segmentId: segment.id, x: e.clientX - rect.left, y: e.clientY - rect.top } : null)
+    }
+    const onLeave = () => overlayRef.current.onHoverSegment?.(null)
+
     resize()
     window.addEventListener('resize', resize)
     canvas.addEventListener('mousedown', onDown)
+    canvas.addEventListener('mousemove', onHover)
+    canvas.addEventListener('mouseleave', onLeave)
     frame = requestAnimationFrame(loop)
     return () => {
       window.removeEventListener('resize', resize)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       canvas.removeEventListener('mousedown', onDown)
+      canvas.removeEventListener('mousemove', onHover)
+      canvas.removeEventListener('mouseleave', onLeave)
       cancelAnimationFrame(frame)
     }
   }, [engine])

@@ -93,6 +93,20 @@ interface StopLine {
   at: number
 }
 
+export const CAMERA_LIMITS = { fovMin: 10, fovMax: 170, rangeMin: 20, rangeMax: 500 } as const
+const NEW_CAMERA: Omit<FixedCamera, 'id'> = { position: { x: 500, y: 300 }, heading: 90, fov: 60, range: 200 }
+
+function clampCamera(c: FixedCamera, previous: FixedCamera): FixedCamera {
+  const num = (v: number, old: number) => (Number.isFinite(v) ? v : old)
+  const heading = num(c.heading, previous.heading)
+  return {
+    ...c,
+    heading: ((Math.round(heading) % 360) + 360) % 360,
+    fov: Math.min(CAMERA_LIMITS.fovMax, Math.max(CAMERA_LIMITS.fovMin, num(c.fov, previous.fov))),
+    range: Math.min(CAMERA_LIMITS.rangeMax, Math.max(CAMERA_LIMITS.rangeMin, num(c.range, previous.range))),
+  }
+}
+
 interface MergeTicket {
   atMs: number
   d: number
@@ -119,6 +133,7 @@ export class SimulationEngine {
   private readonly readingListeners = new Set<(r: Reading) => void>()
   private cars: CarState[] = []
   private cameras: FixedCamera[]
+  private nextCamera = 1
   private spawnedTotal = 0
   private arrivedTotal = 0
   private waiting: Car[] = []
@@ -164,6 +179,7 @@ export class SimulationEngine {
     this.cameras = (options.cameras ?? DEFAULT_CAMERAS).map((c) => ({ ...c, position: { ...c.position } }))
     this.coverage = new CoverageIndex(this.segments)
     this.coverage.setCameras(this.cameras)
+    this.nextCamera = 1 + Math.max(0, ...this.cameras.map((c) => Number(c.id.replace(/\D/g, '')) || 0))
     this.sensor = new SensorReader({ noisePct: options.noisePct, rng: mulberry32(options.seed ?? 42) })
   }
 
@@ -193,12 +209,29 @@ export class SimulationEngine {
     })
   }
 
-  /** Changes a camera's position, heading, FOV or range; the coverage index is rebuilt only then. */
+  /**
+   * Changes a camera's position, heading, FOV or range, clamped to their limits (heading wraps to
+   * 0-359, FOV 10-170, range 20-500, anything not a number keeps the old value); the coverage
+   * index is rebuilt only when something changed.
+   */
   updateCamera(id: string, change: Partial<Omit<FixedCamera, 'id'>>): void {
     const i = this.cameras.findIndex((c) => c.id === id)
     if (i === -1) return
-    this.cameras[i] = { ...this.cameras[i], ...change, position: { ...(change.position ?? this.cameras[i].position) } }
+    this.cameras[i] = clampCamera({ ...this.cameras[i], ...change, position: { ...(change.position ?? this.cameras[i].position) } }, this.cameras[i])
     this.coverage.updateCamera(this.cameras[i])
+  }
+
+  /** Adds the next camera (C4, C5, ... - ids are never reused) at the map centre. */
+  addCamera(): FixedCamera {
+    const camera: FixedCamera = { id: `C${this.nextCamera++}`, ...NEW_CAMERA, position: { ...NEW_CAMERA.position } }
+    this.cameras.push(camera)
+    this.coverage.setCameras(this.cameras)
+    return camera
+  }
+
+  removeCamera(id: string): void {
+    this.cameras = this.cameras.filter((c) => c.id !== id)
+    this.coverage.setCameras(this.cameras)
   }
 
   /** Places a car on a route (scenario setup; the generator places cars at the origin). */

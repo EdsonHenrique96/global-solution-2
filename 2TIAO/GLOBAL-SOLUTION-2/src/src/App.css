@@ -56,6 +56,98 @@
   min-width: 0;
 }
 
+.map-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.map-area .sim-canvas {
+  flex: 1;
+}
+
+.segment-tooltip {
+  position: absolute;
+  z-index: 2;
+  min-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 0.8rem;
+  text-align: left;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+}
+
+.segment-tooltip dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 6px 0 0;
+}
+
+.segment-tooltip dt {
+  color: var(--text);
+}
+
+.segment-tooltip dd {
+  margin: 0;
+}
+
+.segment-tooltip .tag {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.2);
+  font-size: 0.7rem;
+}
+
+.cameras {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cameras h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.cameras ul {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.cameras li {
+  display: grid;
+  grid-template-columns: 2.5em repeat(3, 1fr) auto;
+  gap: 6px;
+  align-items: end;
+  padding: 4px 0;
+}
+
+.cameras label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.7rem;
+  color: var(--text);
+}
+
+.cameras input {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.cameras button {
+  font: inherit;
+  font-size: 0.75rem;
+}
+
 .side {
   width: 340px;
   flex: none;
