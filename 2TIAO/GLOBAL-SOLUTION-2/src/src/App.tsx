@@ -6,6 +6,7 @@ import { httpMl, type MlClient } from './forecast/mlClient'
 import { formatClock } from './sim/clock'
 import type { Incident } from './decision/IncidentLog'
 import { Simulation } from './decision/Simulation'
+import { workerRunner } from './decision/fractionRunner'
 import { AgentPanel } from './render/AgentPanel'
 import { AppPanel } from './render/AppPanel'
 import { CameraEventsPanel } from './render/CameraEventsPanel'
@@ -101,7 +102,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   // the K-means of the ML service classifies every segment once it loads; the V1 rule until then (AD-074)
   const [classifier] = useState(() => new StateClassifier())
   const [classificacao, setClassificacao] = useState<Classificacao>('carregando')
-  const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport, agentControl: true, classifier, prever: ml.prever }))
+  const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport, agentControl: true, classifier, prever: ml.prever, fractionRunner: workerRunner() }))
   const [agent] = useState(() => new AgentRunner({ sim, llm: llm ?? proxyLlm() }))
   const [agentView, setAgentView] = useState(() => agentSnapshot(agent))
   const { engine, capacity } = sim
@@ -434,6 +435,10 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
                 unitFor={unitFor}
                 onSelect={(i) => setSelectedSegment(i.segmentId ?? intoCorner(i.intersectionId!))}
                 onEnd={endIncident}
+                isConfirmed={(i) => i.segmentId !== null && sim.isConfirmed(i.segmentId)}
+                onConfirm={(i) => {
+                  if (i.segmentId && sim.confirmIncident(i.segmentId)) refresh()
+                }}
                 onCamera={(unitId) => {
                   setSelectedUnit(unitId)
                   go('cameras')

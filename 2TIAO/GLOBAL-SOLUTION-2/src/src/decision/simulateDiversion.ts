@@ -1,6 +1,7 @@
 import { CONFIGURED_CAPACITY_VEH_H } from '../capacity/CapacityModel'
-import type { SimulationEngine } from '../sim/SimulationEngine'
-import { TICK_MS } from '../sim/SimulationEngine'
+import type { FusedSegment } from '../fusion/FusionService'
+import { SimulationEngine, TICK_MS, type EngineState } from '../sim/SimulationEngine'
+import { VERIFICATION_KMH } from './DriverRerouter'
 import { candidatesFor, evaluate, selectNotified } from './DriverRerouter'
 import type { Simulation } from './Simulation'
 
@@ -9,6 +10,9 @@ export const FRACOES = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1] as const
 export const HORIZONTE_MIN = 10
 /** Below this predicted occupancy (%) a segment is relieved (UC01). */
 export const OCUPACAO_LIMITE_PCT = 90
+/** Cars a segment holds standing: one every 7 m (AD-105). */
+export const STOPPED_SPACING_M = 7
+export const storageOf = (lengthM: number) => Math.max(1, lengthM / STOPPED_SPACING_M)
 /** Occupancy is the 5 min moving average of flow over capacity (AD-102), not the 1 min peak. */
 export const OCCUPANCY_WINDOW_MS = 300_000
 const DECIDE_EVERY_MS = 10_000
@@ -16,9 +20,9 @@ const DECIDE_EVERY_MS = 10_000
 /** One fraction, simulated 10 min ahead (door 6). Occupancies in % of capacity. */
 export interface FractionResult {
   fracao: number
-  /** Highest 5 min moving average of flow over capacity on the segment, % (AD-102). */
+  /** Highest storage occupancy of the incident segment in the 10 min: cars on it ÷ (length ÷ 7 m), % (AD-105); while blocked, cars before the block ÷ (its distance ÷ 7 m) (AD-107). */
   ocupacaoMaxTrecho: number
-  /** The same on the segment of the alternatives that reaches the highest, %. */
+  /** Highest 5 min moving average of flow over capacity on any segment of the alternatives, % (AD-102). */
   ocupacaoMaxAlternativa: number
   /** Mean travel time of the cars that arrived in the 10 min, s; null when none did. */
   tempoMedioS: number | null
@@ -63,6 +67,8 @@ interface Branch {
   alternative: Set<string>
   travel: number[]
   where: Map<number, string>
+  /** Highest storage occupancy of the incident segment, % (AD-105). */
+  storagePct: number
 }
 
 function watch(b: Branch): Branch {
@@ -80,6 +86,7 @@ function fork(b: Branch, fracoes: number[]): Branch {
     alternative: new Set(b.alternative),
     travel: [...b.travel],
     where: new Map(b.where),
+    storagePct: b.storagePct,
   })
 }
 
@@ -91,19 +98,21 @@ function fork(b: Branch, fracoes: number[]): Branch {
  * tell different drivers, so each fraction's result is that of its own independent run.
  */
 function runFractions(live: SimulationEngine, frozen: Frozen): FractionResult[] {
+  // the live engine itself (restored from a job) is the first branch: nobody else holds it
   const start = live.getState()
   const end = start.timeMs + HORIZONTE_MIN * 60_000
   const segments = start.segments
   const segById = new Map(segments.map((s) => [s.id, s]))
   let branches: Branch[] = [
     watch({
-      engine: live.clone({ cameras: false }),
+      engine: live,
       fracoes: [...FRACOES],
       exits: new Map(),
       maxPct: new Map(),
       alternative: new Set(),
       travel: [],
       where: new Map(start.cars.map((c) => [c.id, c.path[c.seg]])),
+      storagePct: 0,
     }),
   ]
   for (let t = start.timeMs; t < end; t += TICK_MS) {
@@ -144,6 +153,12 @@ function runFractions(live: SimulationEngine, frozen: Frozen): FractionResult[] 
       }
       b.where = now
       if (s.timeMs % DECIDE_EVERY_MS === 0) {
+        // the incident segment: how full it is - cars on it over the cars it holds (AD-105); with the
+        // incident on it, only the stretch before it fills: cars before it over what it holds (AD-107)
+        const block = s.blockages.find((x) => x.segmentId === frozen.trecho)
+        const onIt = s.cars.reduce((n, c) => n + (c.path[c.seg] === frozen.trecho && (!block || c.distance <= block.distance) ? 1 : 0), 0)
+        const holds = storageOf(block ? block.distance : segById.get(frozen.trecho)!.length)
+        b.storagePct = Math.max(b.storagePct, (onIt / holds) * 100)
         for (const [seg, list] of b.exits) {
           while (list.length && list[0] <= s.timeMs - OCCUPANCY_WINDOW_MS) list.shift()
           // only full windows: the first one ends 5 min into the horizon and covers it from the start
@@ -162,7 +177,7 @@ function runFractions(live: SimulationEngine, frozen: Frozen): FractionResult[] 
     for (const fracao of b.fracoes) {
       results.set(fracao, {
         fracao,
-        ocupacaoMaxTrecho: round1(b.maxPct.get(frozen.trecho) ?? 0),
+        ocupacaoMaxTrecho: round1(b.storagePct),
         ocupacaoMaxAlternativa: round1(Math.max(0, ...[...b.alternative].map((id) => b.maxPct.get(id) ?? 0))),
         tempoMedioS: b.travel.length ? round1(b.travel.reduce((a, x) => a + x, 0) / b.travel.length) : null,
         co2Kg: Math.round((b.engine.getState().co2TotalG - start.co2TotalG) / 10) / 100,
@@ -173,21 +188,56 @@ function runFractions(live: SimulationEngine, frozen: Frozen): FractionResult[] 
 }
 
 /**
- * RF18: for each fraction in FRACOES, a clone of the live engine runs 10 min ahead; the result is
- * door 6 with the smallest fraction that relieves the segment without jamming the alternative. The
- * live simulation is never touched (AC 14).
+ * What a fraction simulation needs, as plain data: the engine now (without cameras), the speeds the
+ * panel knows and each segment's capacity. It crosses a worker boundary (AD-103).
  */
-export function simulateDiversion(sim: Simulation, trecho: string): DiversionSimulation {
+export interface FractionJob {
+  trecho: string
+  engine: EngineState
+  /** km/h per segment; null without a measured speed (the rerouter takes 40 km/h). */
+  speeds: Record<string, number | null>
+  capacities: Record<string, number>
+}
+
+/**
+ * The speed the rerouter reads for a segment: a segment in verification ("Possível incidente",
+ * AD-100) crawls at 2 km/h (AD-104) instead of the 40 km/h of an unmeasured one.
+ */
+export function rerouterSpeed(fused: FusedSegment | undefined): number | null {
+  if (fused?.possivelIncidente) return VERIFICATION_KMH
+  return fused?.velocidadeMedia ?? null
+}
+
+/** The job for `trecho` from the live simulation now. */
+export function fractionJob(sim: Simulation, trecho: string): FractionJob {
   const estimates = sim.capacity.snapshot()
   const fused = sim.capacity.fusion.state()
-  const frozen: Frozen = {
-    trecho,
-    speedOf: (id) => fused[id]?.velocidadeMedia ?? null,
-    capacityOf: (id) => {
-      const c = estimates[id]?.capacidade
-      return c && c > 0 ? c : CONFIGURED_CAPACITY_VEH_H
-    },
+  const speeds: Record<string, number | null> = {}
+  const capacities: Record<string, number> = {}
+  for (const s of sim.capacity.segments) {
+    speeds[s.id] = rerouterSpeed(fused[s.id])
+    const c = estimates[s.id]?.capacidade
+    capacities[s.id] = c && c > 0 ? c : CONFIGURED_CAPACITY_VEH_H
   }
-  const fracoes = runFractions(sim.engine, frozen)
-  return { trecho, horizonteMin: HORIZONTE_MIN, fracoes, ...chooseFraction(fracoes) }
+  return { trecho, engine: sim.engine.exportState({ cameras: false }), speeds, capacities }
+}
+
+/** Runs a job wherever it is (this thread or a worker): door 6. */
+export function runFractionJob(job: FractionJob): DiversionSimulation {
+  const frozen: Frozen = {
+    trecho: job.trecho,
+    speedOf: (id) => job.speeds[id] ?? null,
+    capacityOf: (id) => job.capacities[id] ?? CONFIGURED_CAPACITY_VEH_H,
+  }
+  const fracoes = runFractions(SimulationEngine.restore(job.engine), frozen)
+  return { trecho: job.trecho, horizonteMin: HORIZONTE_MIN, fracoes, ...chooseFraction(fracoes) }
+}
+
+/**
+ * RF18: for each fraction in FRACOES, a copy of the live engine runs 10 min ahead; the result is
+ * door 6 with the smallest fraction that relieves the segment without jamming the alternative. The
+ * live simulation is never touched (AC 14). In the page it runs in a Web Worker (FractionRunner).
+ */
+export function simulateDiversion(sim: Simulation, trecho: string): DiversionSimulation {
+  return runFractionJob(fractionJob(sim, trecho))
 }

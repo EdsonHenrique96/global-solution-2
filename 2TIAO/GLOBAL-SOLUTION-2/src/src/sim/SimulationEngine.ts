@@ -1,14 +1,14 @@
 import { DEFAULT_APP_SHARE, drawApp } from '../apps/apps'
-import { defaultPlateCameras, PlateCameraSet, type CameraStatus, type PlateCamera, type PlateEvent, type PlateSample } from '../sensors/PlateCamera'
+import { defaultPlateCameras, PlateCameraSet, type CameraSetState, type CameraStatus, type PlateCamera, type PlateEvent, type PlateSample } from '../sensors/PlateCamera'
 import { PlateGenerator } from '../sensors/plates'
 import { buildSegments, type Segment } from '../sensors/segments'
 import { stepEmission } from '../experiments/emission'
-import { CarGenerator, DEFAULT_CAR_SPEED } from './carGenerator'
+import { CarGenerator, DEFAULT_CAR_SPEED, type CarGeneratorState } from './carGenerator'
 import { borderIds, buildCityNetwork } from './cityNetwork'
 import { shortestPath } from './graph'
 import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_DECEL, MAX_STOP_DECEL, step } from './idm'
-import { mulberry32, type Rng } from './random'
-import { phaseFor, SignalController, type LightState } from './trafficLight'
+import { mulberry32, rngFromState, type Rng } from './random'
+import { phaseFor, SignalController, type LightState, type SignalState } from './trafficLight'
 import type { AppName, Axis, Car, RoadNetwork } from './types'
 
 export const TICK_MS = 100
@@ -107,6 +107,42 @@ export interface SimulationState {
   distanceTotalM: number
 }
 
+/** An engine as plain data (SimulationEngine.exportState / restore): crosses a worker boundary. */
+export interface EngineState {
+  network: RoadNetwork
+  segments: Segment[]
+  lightMode: 'fixed' | 'always-green'
+  speed: number
+  borders: string[]
+  appShare: number
+  generator: CarGeneratorState
+  cameraSet: CameraSetState
+  plates: { rng: number; used: Set<string> }
+  tripRng: number
+  appRng: number
+  paths: Map<string, string[]>
+  cars: CarState[]
+  waiting: CarState[]
+  cameras: readonly PlateCamera[]
+  nextCarId: number
+  spawnedTotal: number
+  arrivedTotal: number
+  reroutedTotal: number
+  redDecision: Map<number, { segmentId: string; go: boolean }>
+  cornerTickets: Map<number, { target: string; atMs: number; r: number }>
+  timeMs: number
+  signals: SignalState
+  blockages: Blockage[]
+  blockageId: number
+  workZones: WorkZone[]
+  flashing: FlashingLight[]
+  incidentId: number
+  arrivals: Arrival[]
+  travelSumS: number
+  co2TotalG: number
+  distanceTotalM: number
+}
+
 export interface SimulationOptions {
   ratePerMinute?: number
   speed?: number
@@ -190,31 +226,26 @@ export class SimulationEngine {
   }
 
   /**
-   * An independent copy of the whole state now - cars, queues, lights, incidents, counters and the
-   * random sequences - with no listeners: ticking the copy never touches this engine, and the copy
-   * evolves as this engine would. `cameras: false` gives a copy whose cameras see nothing (faster;
-   * cameras only observe).
+   * The whole state now as plain, structured-cloneable data - cars, queues, lights, incidents,
+   * counters and the random sequences' states - so it can be rebuilt here or in a Web Worker.
+   * `cameras: false` leaves the cameras out (they only observe). Nothing in it is shared with this
+   * engine's mutable state.
    */
-  clone({ cameras = true }: { cameras?: boolean } = {}): SimulationEngine {
-    const c = Object.create(SimulationEngine.prototype) as SimulationEngine
+  exportState({ cameras = true }: { cameras?: boolean } = {}): EngineState {
     const car = (x: CarState): CarState => ({ ...x, path: [...x.path] })
-    Object.assign(c, {
+    return {
       network: this.network,
-      generator: this.generator.clone(),
       segments: this.segments,
-      segById: this.segById,
       lightMode: this.lightMode,
-      cameraSet: this.cameraSet.clone(cameras),
-      plates: this.plates.clone(),
       speed: this.speed,
       borders: this.borders,
-      tripRng: this.tripRng.clone(),
-      appRng: this.appRng.clone(),
       appShare: this.appShare,
-      paths: new Map(this.paths),
-      plateListeners: new Set(),
-      statusListeners: new Set(),
-      entryListeners: new Set(),
+      generator: this.generator.exportState(),
+      cameraSet: this.cameraSet.exportState(cameras),
+      plates: this.plates.exportState(),
+      tripRng: this.tripRng.state(),
+      appRng: this.appRng.state(),
+      paths: new Map([...this.paths].map(([k, v]) => [k, [...v]])),
       cars: this.cars.map(car),
       waiting: this.waiting.map(car),
       cameras: this.cameras,
@@ -225,20 +256,48 @@ export class SimulationEngine {
       redDecision: new Map([...this.redDecision].map(([k, v]) => [k, { ...v }])),
       cornerTickets: new Map([...this.cornerTickets].map(([k, v]) => [k, { ...v }])),
       timeMs: this.timeMs,
-      signals: this.signals.clone(),
+      signals: this.signals.exportState(),
       blockages: this.blockages.map((b) => ({ ...b })),
       blockageId: this.blockageId,
       workZones: this.workZones.map((z) => ({ ...z })),
       flashing: this.flashing.map((f) => ({ ...f })),
       incidentId: this.incidentId,
-      arrivalListeners: new Set(),
-      blockageListeners: new Set(),
       arrivals: this.arrivals.map((a) => ({ ...a })),
       travelSumS: this.travelSumS,
       co2TotalG: this.co2TotalG,
       distanceTotalM: this.distanceTotalM,
+    }
+  }
+
+  /** An engine that continues from `s` (from exportState, here or after crossing a worker boundary), with no listeners. */
+  static restore(s: EngineState): SimulationEngine {
+    const c = Object.create(SimulationEngine.prototype) as SimulationEngine
+    Object.assign(c, {
+      ...s,
+      generator: CarGenerator.restore(s.generator),
+      cameraSet: PlateCameraSet.restore(s.cameraSet),
+      plates: PlateGenerator.restore(s.plates),
+      tripRng: rngFromState(s.tripRng),
+      appRng: rngFromState(s.appRng),
+      signals: SignalController.restore(s.signals),
+      segById: new Map(s.segments.map((x) => [x.id, x])),
+      plateListeners: new Set(),
+      statusListeners: new Set(),
+      entryListeners: new Set(),
+      arrivalListeners: new Set(),
+      blockageListeners: new Set(),
     })
     return c
+  }
+
+  /**
+   * An independent copy of the whole state now - cars, queues, lights, incidents, counters and the
+   * random sequences - with no listeners: ticking the copy never touches this engine, and the copy
+   * evolves as this engine would. `cameras: false` gives a copy whose cameras see nothing (faster;
+   * cameras only observe).
+   */
+  clone({ cameras = true }: { cameras?: boolean } = {}): SimulationEngine {
+    return SimulationEngine.restore(this.exportState({ cameras }))
   }
 
   setRate(ratePerMinute: number): void {

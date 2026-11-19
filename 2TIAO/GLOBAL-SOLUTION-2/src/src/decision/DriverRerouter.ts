@@ -4,6 +4,8 @@ import type { AppName } from '../sim/types'
 
 /** A segment with no measured speed is crossed at this speed (AC 23). */
 export const FALLBACK_KMH = 40
+/** A segment in verification (a possible blockage) is crossed at this speed (AD-104). */
+export const VERIFICATION_KMH = 2
 /** A standing segment still takes a finite time. */
 export const MIN_KMH = 2
 /** The alternative must take at most this share of the current path's time (AC 23). */

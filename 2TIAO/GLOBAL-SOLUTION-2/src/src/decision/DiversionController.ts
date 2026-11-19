@@ -33,6 +33,8 @@ export type DiversionState =
       semAlcance: number | null
       /** The fractions simulated for this diversion (door 6); null when everyone is told ("notificar todos"). */
       simulacao?: DiversionSimulation | null
+      /** The fraction simulation has not answered yet (AD-103). */
+      calculando?: boolean
     }
 
 /**

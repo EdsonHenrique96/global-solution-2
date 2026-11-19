@@ -55,15 +55,24 @@ describe('simulateDiversion', () => {
     advance(150_000)
     const t = engine.getState().timeMs
     // every copy made: the first from the live engine now, the others split from it on the way
-    const clones: { engine: SimulationEngine; fromLive: boolean; at: number }[] = []
-    const original = SimulationEngine.prototype.clone
-    const spy = vi.spyOn(SimulationEngine.prototype, 'clone').mockImplementation(function (this: SimulationEngine, opts) {
-      const c = original.call(this, opts)
-      clones.push({ engine: c, fromLive: this === engine, at: this.getState().timeMs })
+    // (a copy is exportState -> restore: the job crosses a worker boundary as plain data, AD-103)
+    const exports: { fromLive: boolean; at: number }[] = []
+    const copies: SimulationEngine[] = []
+    const originalExport = SimulationEngine.prototype.exportState
+    const originalRestore = SimulationEngine.restore
+    const exportSpy = vi.spyOn(SimulationEngine.prototype, 'exportState').mockImplementation(function (this: SimulationEngine, opts) {
+      exports.push({ fromLive: this === engine, at: this.getState().timeMs })
+      return originalExport.call(this, opts)
+    })
+    const restoreSpy = vi.spyOn(SimulationEngine, 'restore').mockImplementation((s) => {
+      const c = originalRestore(s)
+      copies.push(c)
       return c
     })
     const r = simulateDiversion(sim, JAMMED)
-    spy.mockRestore()
+    exportSpy.mockRestore()
+    restoreSpy.mockRestore()
+    const clones = exports.map((e, i) => ({ ...e, engine: copies[i] }))
     expect(Object.keys(r).sort()).toEqual(['eficaz', 'escolhida', 'fracoes', 'horizonteMin', 'trecho'])
     expect(r.trecho).toBe(JAMMED)
     expect(r.horizonteMin).toBe(10)

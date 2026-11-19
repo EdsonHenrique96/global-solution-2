@@ -334,10 +334,14 @@ interface IncidentsProps {
   onEnd: (incident: Incident) => void
   onCamera: (unitId: string) => void
   onHistory: () => void
+  /** Whether a "Possível incidente" was confirmed (AD-104); without it the confirm button is not shown. */
+  isConfirmed?: (incident: Incident) => boolean
+  /** "Confirmar incidente": the operator confirms the warning until V4's drone does (AD-104). */
+  onConfirm?: (incident: Incident) => void
 }
 
 /** What needs the operator now, critical first then the newest. */
-export function IncidentsPanel({ incidents, nowMs, unitFor, onSelect, onEnd, onCamera, onHistory }: IncidentsProps) {
+export function IncidentsPanel({ incidents, nowMs, unitFor, onSelect, onEnd, onCamera, onHistory, isConfirmed, onConfirm }: IncidentsProps) {
   return (
     <section className="incidents card" aria-label="Incidentes">
       <div className="card-head">
@@ -376,6 +380,11 @@ export function IncidentsPanel({ incidents, nowMs, unitFor, onSelect, onEnd, onC
               {(i.kind === 'colisao' || i.kind === 'obra') && (
                 <button type="button" className="btn sm" onClick={() => onEnd(i)}>
                   Liberar via
+                </button>
+              )}
+              {i.kind === 'possivel-incidente' && onConfirm && (
+                <button type="button" className="btn sm" disabled={isConfirmed?.(i) ?? false} onClick={() => onConfirm(i)}>
+                  {isConfirmed?.(i) ? 'Incidente confirmado' : 'Confirmar incidente'}
                 </button>
               )}
               {i.kind === 'semaforo' && (

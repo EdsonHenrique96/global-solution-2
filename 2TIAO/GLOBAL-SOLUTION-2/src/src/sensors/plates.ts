@@ -1,7 +1,7 @@
 import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
-import { mulberry32, type Rng } from '../sim/random'
+import { mulberry32, rngFromState, type Rng } from '../sim/random'
 
 /** A Mercosul plate: three letters, a digit, a letter, two digits (door 4). */
 export const PLACA_RE = /^[A-Z]{3}[0-9][A-Z][0-9]{2}$/
@@ -18,6 +18,17 @@ export class PlateGenerator {
 
   constructor(seed: number) {
     this.rng = mulberry32(seed * 31_337 + 11)
+  }
+
+  exportState(): { rng: number; used: Set<string> } {
+    return { rng: this.rng.state(), used: new Set(this.used) }
+  }
+
+  static restore(s: { rng: number; used: Set<string> }): PlateGenerator {
+    const c = new PlateGenerator(0)
+    c.rng = rngFromState(s.rng)
+    c.used = new Set(s.used)
+    return c
   }
 
   /** A copy that draws the plates this one would draw next. */

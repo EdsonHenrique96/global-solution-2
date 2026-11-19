@@ -10,7 +10,8 @@ import { averageSpeed, readSegment, type SegmentReading } from '../render/levels
 import type { TelemetryTransport } from '../telemetry/transport'
 import { DiversionController, type DiversionState } from './DiversionController'
 import { candidatesFor, evaluate, outOfReach, selectNotified, type Evaluation } from './DriverRerouter'
-import { simulateDiversion, type DiversionSimulation } from './simulateDiversion'
+import { inThreadRunner, type FractionRunner } from './fractionRunner'
+import { rerouterSpeed, simulateDiversion, type DiversionSimulation } from './simulateDiversion'
 import { ForecastClient, type Prever, type PrevisaoEvento } from '../forecast/ForecastClient'
 import { IncidentLog } from './IncidentLog'
 import { MetricsRecorder, SAMPLE_EVERY_MS } from './MetricsRecorder'
@@ -34,6 +35,8 @@ interface Options {
   simulateDiversion?: (sim: Simulation, trecho: string) => DiversionSimulation
   /** The ML service's forecast (door 2); without it there is no forecast (experiments, tests). */
   prever?: Prever
+  /** Where the fraction simulation runs (AD-103): a Web Worker in the page; by default here, synchronously. */
+  fractionRunner?: FractionRunner
 }
 
 /** A simulated diversion is reused for the same segment for this long when no diversion holds it. */
@@ -104,15 +107,19 @@ export class Simulation {
   readonly simulations: { t: number; result: DiversionSimulation }[] = []
   /** Every 10 s window a diversion was applied in, oldest first (the last 200). */
   readonly windows: DiversionWindow[] = []
-  private readonly simulate: (sim: Simulation, trecho: string) => DiversionSimulation
-  private simulated: { trecho: string; t: number; result: DiversionSimulation } | null = null
+  private readonly runner: FractionRunner
+  /** Fraction simulations by segment: asked for, then answered (`result`). */
+  private readonly fractions = new Map<string, { t: number; result: DiversionSimulation | null }>()
+  /** Segments with an open "Possível incidente" warning, and those the operator confirmed (AD-104). */
+  private warned = new Set<string>()
+  private readonly confirmed = new Set<string>()
   /** Forecasts of the paired segments every 60 s (RF16); null without the ML service. */
   readonly forecast: ForecastClient | null
   private readonly forecastListeners = new Set<(e: PrevisaoEvento) => void>()
 
-  constructor({ engine, transport, agentControl = false, diversionMode = 'parcial', classifier = ruleClassifier, simulateDiversion: simulate = simulateDiversion, prever }: Options) {
+  constructor({ engine, transport, agentControl = false, diversionMode = 'parcial', classifier = ruleClassifier, simulateDiversion: simulate = simulateDiversion, prever, fractionRunner }: Options) {
     this.classifier = classifier
-    this.simulate = simulate
+    this.runner = fractionRunner ?? inThreadRunner(simulate)
     this.agentControl = agentControl
     this.diversionMode = diversionMode
     this.engine = engine ?? new SimulationEngine()
@@ -201,6 +208,7 @@ export class Simulation {
     this.fleet.tick()
     this.metrics.record()
     const t = this.engine.getState().timeMs
+    this.trackWarnings()
     if (t % SAMPLE_EVERY_MS === 0) this.decide()
     if (t % HISTORY_EVERY_MS === 0) this.recordHistory(t)
     this.forecast?.tick(t)
@@ -212,7 +220,57 @@ export class Simulation {
     const t = this.engine.getState().timeMs
     const estimates = this.capacity.snapshot()
     const fused = this.capacity.fusion.state()
-    return Object.fromEntries(this.capacity.segments.map((s) => [s.id, readSegment(s.id, estimates[s.id], fused[s.id], t, this.classifier)]))
+    return Object.fromEntries(
+      this.capacity.segments.map((s) => {
+        const r = readSegment(s.id, estimates[s.id], fused[s.id], t, this.classifier)
+        // a confirmed incident is a blocked segment: Crítico for the map and the decision (AD-104)
+        return [s.id, this.confirmed.has(s.id) && r.exibido === 'verificacao' ? { ...r, exibido: 'critico' as const } : r]
+      }),
+    )
+  }
+
+  /** Whether the operator (or, in V4, the drone) confirmed the incident on `trecho`. */
+  isConfirmed(trecho: string): boolean {
+    return this.confirmed.has(trecho)
+  }
+
+  /**
+   * Confirms the "Possível incidente" of `trecho` (AD-104): from now on it counts as Crítico, and the
+   * decision runs at once with the fractions computed when the warning opened. The operator's
+   * button calls it now; V4's drone will. False when the segment has no open warning.
+   */
+  confirmIncident(trecho: string): boolean {
+    if (!this.warned.has(trecho)) return false
+    this.confirmed.add(trecho)
+    this.decide()
+    return true
+  }
+
+  /**
+   * A warning that opens starts its fraction simulation and applies nothing (AD-104); one that closes
+   * ends its confirmation and, unless a diversion holds the segment, discards the computation.
+   */
+  private trackWarnings(): void {
+    const fused = this.capacity.fusion.state()
+    const now = new Set(Object.keys(fused).filter((id) => fused[id].possivelIncidente))
+    for (const id of now) {
+      if (this.warned.has(id)) continue
+      if (this.diversionEnabled && this.diversionMode === 'parcial') {
+        this.warned.add(id)
+        this.fractionsFor(id)
+      }
+    }
+    for (const id of this.warned) {
+      if (now.has(id)) continue
+      this.confirmed.delete(id)
+      if (!this.holds(id)) this.fractions.delete(id)
+    }
+    this.warned = now
+  }
+
+  /** A diversion (suggested or applied) is on `trecho`. */
+  private holds(trecho: string): boolean {
+    return (this.diversion.status === 'ativo' && this.diversion.trecho === trecho) || this.active?.trecho === trecho
   }
 
   /** Brings the incident log up to date now (after the operator ends one by hand). */
@@ -233,19 +291,32 @@ export class Simulation {
   }
 
   /**
-   * The fractions simulated ahead for `trecho` (door 6): run once when a diversion of it starts and
-   * reused while it lasts, or for a minute otherwise (the agent may ask several times).
+   * The fractions simulated ahead for `trecho` (door 6), or null while they are being computed. Asked
+   * when a warning opens or a diversion starts, and kept while the warning or the diversion lasts (a
+   * minute otherwise, for the agent's repeated questions).
    */
-  diversionSimulation(trecho: string): DiversionSimulation {
+  fractionsFor(trecho: string): DiversionSimulation | null {
     const t = this.engine.getState().timeMs
-    const held = this.diversion.status === 'ativo' && this.diversion.trecho === trecho
-    const c = this.simulated
-    if (c && c.trecho === trecho && (held || this.active?.trecho === trecho || t - c.t < SIMULATION_REUSE_MS)) return c.result
-    const result = this.simulate(this, trecho)
-    this.simulated = { trecho, t, result }
-    this.simulations.push({ t, result })
-    if (this.simulations.length > KEEP_LOG) this.simulations.shift()
-    return result
+    const known = this.fractions.get(trecho)
+    if (known && (known.result === null || this.holds(trecho) || this.warned.has(trecho) || t - known.t < SIMULATION_REUSE_MS)) return known.result
+    const entry: { t: number; result: DiversionSimulation | null } = { t, result: null }
+    this.fractions.set(trecho, entry)
+    const done = (result: DiversionSimulation) => {
+      // discarded meanwhile (the warning closed unconfirmed): nothing to keep
+      if (this.fractions.get(trecho) !== entry) return
+      entry.result = result
+      this.simulations.push({ t, result })
+      if (this.simulations.length > KEEP_LOG) this.simulations.shift()
+    }
+    const answer = this.runner.run(this, trecho)
+    if (answer instanceof Promise) answer.then(done, () => this.fractions.get(trecho) === entry && this.fractions.delete(trecho))
+    else done(answer)
+    return entry.result
+  }
+
+  /** Same as fractionsFor (kept for callers that read it as the diversion's simulation). */
+  diversionSimulation(trecho: string): DiversionSimulation | null {
+    return this.fractionsFor(trecho)
   }
 
   /** The drivers with an app heading into `trecho`, each with the fastest alternative to their exit. */
@@ -253,7 +324,8 @@ export class Simulation {
     const fused = this.capacity.fusion.state()
     const segById = new Map(this.capacity.segments.map((s) => [s.id, s]))
     const drivers = [...this.engine.getState().cars, ...this.engine.waitingCars()]
-    const speedOf = (id: string) => fused[id]?.velocidadeMedia ?? null
+    // a segment in verification crawls at 2 km/h for the routes (AD-104)
+    const speedOf = (id: string) => rerouterSpeed(fused[id])
     return candidatesFor(drivers, trecho, segById).map((c) => evaluate(c, this.capacity.segments, speedOf, trecho))
   }
 
@@ -261,8 +333,9 @@ export class Simulation {
    * Who a diversion of `trecho` would reach and its size: p is the smallest effective fraction
    * simulated ahead (RF18, replacing N/p by the slack), N = p x the segment's demand from the apps.
    */
-  sizing(trecho: string): Sizing {
-    const simulacao = this.diversionSimulation(trecho)
+  sizing(trecho: string): Sizing | null {
+    const simulacao = this.fractionsFor(trecho)
+    if (!simulacao) return null
     const p = simulacao.escolhida
     const demand = this.capacity.fusion.state()[trecho]?.demandaOD ?? 0
     return { n: Math.round(p * demand * 10) / 10, p, evaluations: this.evaluations(trecho), simulacao }
@@ -286,11 +359,11 @@ export class Simulation {
     const estimates = this.capacity.snapshot()
     const levels = this.readings()
     // a segment "Em verificação" does not count as Crítico: it never starts a diversion, and one
-    // active on it ends by the normal rule (AD-100, AD-086)
+    // active on it ends by the normal rule (AD-100, AD-086) - unless the incident was confirmed,
+    // which readings() shows as Crítico (AD-104)
     const views = Object.fromEntries(Object.entries(estimates).map(([id, e]) => [id, { ...e, nivel: levels[id].exibido }]))
     const jammed = this.controller.evaluate(this.engine.getState().timeMs, views)
     const trecho = typeof jammed === 'string' && jammed !== 'desligado' ? jammed : null
-    if (!trecho && this.simulated && this.active?.trecho !== this.simulated.trecho) this.simulated = null
     // "notificar todos" tells everyone with a faster alternative: no fraction to simulate
     const todos = this.diversionMode === 'todos'
     const sizing = trecho && !todos ? this.sizing(trecho) : null
@@ -315,6 +388,8 @@ export class Simulation {
       notificados,
       semAlcance: outOfReach(this.capacity.fusion.state()[trecho]?.contagem ?? null, this.fleet.snapshot().porTrecho[trecho] ?? 0),
       simulacao: sizing?.simulacao ?? null,
+      // the fractions are still being computed (in the worker): nobody told yet
+      calculando: !todos && !sizing,
     }
   }
 }

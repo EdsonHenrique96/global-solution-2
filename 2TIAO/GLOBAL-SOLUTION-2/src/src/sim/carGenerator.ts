@@ -1,4 +1,13 @@
-import { cloneRng } from './random'
+import { cloneRng, rngFromState, rngState } from './random'
+
+/** A generator as plain data (it crosses a worker boundary). */
+export interface CarGeneratorState {
+  ratePerMinute: number
+  accumulator: number
+  untilNextMs: number | null
+  arrivals: 'deterministic' | 'poisson'
+  rng: number | null
+}
 
 /** Free-flow speed: 50 km/h, in metres per second (1 network unit = 1 m). */
 export const DEFAULT_CAR_SPEED = 50 / 3.6
@@ -51,6 +60,17 @@ export class CarGenerator {
     const c = new CarGenerator(this.ratePerMinute, { arrivals: this.arrivals, rng: cloneRng(this.rng) })
     c.accumulator = this.accumulator
     c.untilNextMs = this.untilNextMs
+    return c
+  }
+
+  exportState(): CarGeneratorState {
+    return { ratePerMinute: this.ratePerMinute, accumulator: this.accumulator, untilNextMs: this.untilNextMs, arrivals: this.arrivals, rng: rngState(this.rng) }
+  }
+
+  static restore(s: CarGeneratorState): CarGenerator {
+    const c = new CarGenerator(s.ratePerMinute, { arrivals: s.arrivals, rng: s.rng === null ? Math.random : rngFromState(s.rng) })
+    c.accumulator = s.accumulator
+    c.untilNextMs = s.untilNextMs
     return c
   }
 

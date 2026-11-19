@@ -72,7 +72,9 @@ export function executeTool(name: string, input: Record<string, unknown>, ctx: T
       if (typeof trecho !== 'string' || !ctx.sim.capacity.segments.some((s) => s.id === trecho)) {
         return err('trecho inválido: use um id como I12>I13')
       }
-      const { n, p, evaluations, simulacao } = ctx.sim.sizing(trecho)
+      const sizing = ctx.sim.sizing(trecho)
+      if (!sizing) return { content: JSON.stringify({ calculando: true, mensagem: 'frações em cálculo; consulte de novo na próxima janela' }) }
+      const { n, p, evaluations, simulacao } = sizing
       const resultado = ctx.propose({ tipo: 'desvio', trecho, n, p, justificativa: String(justificativa ?? '') })
       return { content: JSON.stringify({ n, p, candidatos: evaluations.length, simulacao, resultado }) }
     }

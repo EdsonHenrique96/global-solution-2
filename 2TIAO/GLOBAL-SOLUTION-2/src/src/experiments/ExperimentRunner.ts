@@ -1,4 +1,5 @@
 import { Simulation } from '../decision/Simulation'
+import type { DiversionSimulation } from '../decision/simulateDiversion'
 import { DEFAULT_RATE_PER_MINUTE, SimulationEngine, TICK_MS, type Arrival } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
 
@@ -11,6 +12,8 @@ export const RATE_PER_MINUTE = DEFAULT_RATE_PER_MINUTE
 /** Al. Santos, R. Bela Cintra → R. Haddock Lobo, in the middle of the block (AC 31). */
 export const ACCIDENT = { segmentId: 'I12>I13', startMs: 300_000 } as const
 export const ACCIDENT_MINUTES = [2, 5] as const
+/** The accident is confirmed this long after its "Possível incidente" warning opens, as V4's drone will (AD-104). */
+export const CONFIRM_AFTER_MS = 60_000
 /** From the default demand (AD-081) to its double, as in the V1 demonstration. */
 export const DEMAND_MIN = DEFAULT_RATE_PER_MINUTE
 export const DEMAND_MAX = 2 * DEFAULT_RATE_PER_MINUTE
@@ -67,10 +70,11 @@ export function* scenarioSteps(
   seed: number,
   params: ExperimentParams = DEFAULT_PARAMS,
   chunkTicks = 250,
+  simulate?: (sim: Simulation, trecho: string) => DiversionSimulation,
 ): Generator<number, RunMetrics & { trace: Record<string, unknown> }> {
   const demanda = clampDemand(params.demanda)
   const engine = new SimulationEngine({ ratePerMinute: demanda, seed, arrivals: 'poisson' })
-  const sim = new Simulation({ engine, transport: new FakeTransport(true), diversionMode: scenario === 'notificar-todos' ? 'todos' : 'parcial' })
+  const sim = new Simulation({ engine, transport: new FakeTransport(true), diversionMode: scenario === 'notificar-todos' ? 'todos' : 'parcial', simulateDiversion: simulate })
   sim.setDiversionEnabled(scenario !== 'sem-sistema')
   engine.setAdaptiveSignals(scenario === 'desvio-parcial')
   sim.start()
@@ -84,11 +88,18 @@ export function* scenarioSteps(
   // alternatives: every segment but the accident's, sampled every 10 s in every scenario (AD-030)
   const altFlowMax: Record<string, number> = {}
   const queueBySecond: number[] = []
+  // the accident's warning, and its confirmation 60 s later while it is still open
+  let avisoEm: number | null = null
+  let confirmadoEm: number | null = null
   const total = RUN_MS / TICK_MS
   for (let tick = 1; tick <= total; tick++) {
     if (engine.getState().timeMs === ACCIDENT.startMs) engine.addBlockage(ACCIDENT.segmentId, accidentAt, params.acidenteMin * 60_000)
     sim.tick()
     const { timeMs } = engine.getState()
+    const warned = sim.capacity.fusion.state()[ACCIDENT.segmentId]?.possivelIncidente ?? false
+    if (warned && avisoEm === null) avisoEm = timeMs
+    if (!warned && confirmadoEm === null) avisoEm = null
+    if (avisoEm !== null && confirmadoEm === null && timeMs - avisoEm >= CONFIRM_AFTER_MS && sim.confirmIncident(ACCIDENT.segmentId)) confirmadoEm = timeMs
     if (timeMs % 1000 === 0) queueBySecond.push(engine.queueTotal())
     if (timeMs % 10_000 === 0) {
       for (const [id, e] of Object.entries(sim.capacity.snapshot())) {
@@ -138,14 +149,21 @@ export function* scenarioSteps(
       altCapacity,
       // what the decision did: each fraction simulation and each 10 s window it was applied in
       simulacoes: sim.simulations.map((x) => ({ t: x.t, ...x.result })),
+      avisoEm,
+      confirmadoEm,
       janelas: [...sim.windows],
     },
   }
 }
 
 /** One scenario run to the end (tests and scripts). */
-export function runScenario(scenario: Scenario, seed: number, params: ExperimentParams = DEFAULT_PARAMS): RunMetrics & { trace: Record<string, unknown> } {
-  const steps = scenarioSteps(scenario, seed, params)
+export function runScenario(
+  scenario: Scenario,
+  seed: number,
+  params: ExperimentParams = DEFAULT_PARAMS,
+  simulate?: (sim: Simulation, trecho: string) => DiversionSimulation,
+): RunMetrics & { trace: Record<string, unknown> } {
+  const steps = scenarioSteps(scenario, seed, params, 250, simulate)
   for (;;) {
     const r = steps.next()
     if (r.done) return r.value

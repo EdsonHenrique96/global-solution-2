@@ -217,7 +217,7 @@ describe('pareamento dashboard', () => {
     expect(card()).toHaveTextContent('0 / 24')
   })
 
-  it('C43 the anomaly shows as Possível incidente in the panel and on the map', () => {
+  it('C43 the anomaly shows as Possível incidente in the panel and on the map, with Confirmar incidente', () => {
     const { transport } = setup()
     advance(15_000)
     const warn = (ativo: boolean, ts: number) =>
@@ -233,6 +233,11 @@ describe('pareamento dashboard', () => {
     expect(card).toHaveTextContent('Anomalia: carros que entraram não saíram no tempo esperado · aguarda confirmação')
     expect(screen.getByTestId('marker-possivel-incidente:I12>I13')).toHaveAttribute('aria-label', 'Possível incidente')
     expect(screen.getAllByRole('note').some((n) => /Possível incidente/.test(n.textContent ?? ''))).toBe(true)
+    // the operator confirms it (AD-104) until V4's drone does
+    const confirm = within(card).getByRole('button', { name: 'Confirmar incidente' })
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    expect(within(card).getByRole('button', { name: 'Incidente confirmado' })).toBeDisabled()
     warn(false, 15_100)
     advance(100)
     expect(within(incidents).queryByTestId('incident-possivel-incidente:I12>I13')).toBeNull()

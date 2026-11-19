@@ -109,6 +109,13 @@ export function crossed(camera: Pick<PlateCamera, 'trecho' | 'papel' | 'linhaM'>
   return before && after
 }
 
+export interface CameraSetState {
+  cameras: readonly PlateCamera[]
+  seed: number
+  last: Map<number, PlateSample>
+  nextStatus: number
+}
+
 /**
  * The cameras of a run: each tick they see where every car is, and report one event per car that
  * crossed a line, with the plate hashed with the salt of the simulated hour; every 10 s, the
@@ -125,6 +132,18 @@ export class PlateCameraSet {
     this.cameras = cameras
     this.seed = seed
     for (const c of cameras) this.bySegment.set(c.trecho, [...(this.bySegment.get(c.trecho) ?? []), c])
+  }
+
+  /** The set as plain data; `withCameras: false` gives one that sees nothing. */
+  exportState(withCameras = true): CameraSetState {
+    return { cameras: withCameras ? this.cameras : [], seed: this.seed, last: new Map(this.last), nextStatus: withCameras ? this.nextStatus : Infinity }
+  }
+
+  static restore(s: CameraSetState): PlateCameraSet {
+    const c = new PlateCameraSet(s.cameras, s.seed)
+    c.last = new Map(s.last)
+    c.nextStatus = s.nextStatus
+    return c
   }
 
   /** A copy that remembers where every car was; `withCameras: false` gives a set that sees nothing. */

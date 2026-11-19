@@ -60,6 +60,14 @@ export function adaptiveGreenS(queue: number, averageQueue: number): number {
   return Math.min(ADAPTIVE_MAX_GREEN_S, Math.max(ADAPTIVE_MIN_GREEN_S, raw))
 }
 
+/** The controller as plain data (it crosses a worker boundary). */
+export interface SignalState {
+  ids: string[]
+  adaptive: boolean
+  state: Map<string, { stage: Stage; endsAtMs: number }>
+  nextGreen: Map<string, number>
+}
+
 /**
  * The lights of every intersection: the fixed cycle, or, when adaptive, each intersection
  * alternates H and V with each green set when it starts from the queues of the two phases there
@@ -74,6 +82,23 @@ export class SignalController {
 
   constructor(intersectionIds: readonly string[]) {
     this.ids = intersectionIds
+  }
+
+  exportState(): SignalState {
+    return {
+      ids: [...this.ids],
+      adaptive: this.adaptive,
+      state: new Map([...this.state].map(([id, s]) => [id, { stage: { ...s.stage }, endsAtMs: s.endsAtMs }])),
+      nextGreen: new Map(this.nextGreen),
+    }
+  }
+
+  static restore(s: SignalState): SignalController {
+    const c = new SignalController(s.ids)
+    c.adaptive = s.adaptive
+    for (const [id, x] of s.state) c.state.set(id, { stage: { ...x.stage }, endsAtMs: x.endsAtMs })
+    for (const [k, v] of s.nextGreen) c.nextGreen.set(k, v)
+    return c
   }
 
   /** A copy with the same stages and pending greens. */
