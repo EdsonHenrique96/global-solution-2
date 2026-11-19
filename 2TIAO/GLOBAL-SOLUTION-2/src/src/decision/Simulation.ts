@@ -4,12 +4,12 @@ import { CapacityService } from '../capacity/CapacityService'
 import { wireAlerts } from '../fusion/AlertPublisher'
 import { monitoredSegments, PlateMatcher } from '../fusion/PlateMatcher'
 import { CAMERA_STATUS_FILTER, wirePlateCameras } from '../sensors/PlateCamera'
-import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
+import { SimulationEngine, TICK_MS, type Blockage } from '../sim/SimulationEngine'
 import { ruleClassifier, type SegmentClassifier } from '../capacity/SegmentClassifier'
 import { averageSpeed, readSegment, type SegmentReading } from '../render/levels'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { DiversionController, type DiversionState } from './DiversionController'
-import { candidatesFor, evaluate, outOfReach, selectNotified, type Evaluation } from './DriverRerouter'
+import { candidatesFor, evaluate, outOfReach, selectNotified, VERIFICATION_KMH, type Evaluation } from './DriverRerouter'
 import { inThreadRunner, type FractionRunner } from './fractionRunner'
 import { rerouterSpeed, simulateDiversion, type DiversionSimulation } from './simulateDiversion'
 import { ForecastClient, type Prever, type PrevisaoEvento } from '../forecast/ForecastClient'
@@ -113,6 +113,8 @@ export class Simulation {
   /** Segments with an open "Possível incidente" warning, and those the operator confirmed (AD-104). */
   private warned = new Set<string>()
   private readonly confirmed = new Set<string>()
+  /** Blockages the operator registered on the map (AD-110): known at once, not waiting for the cameras. */
+  private readonly reported = new Set<number>()
   /** Forecasts of the paired segments every 60 s (RF16); null without the ML service. */
   readonly forecast: ForecastClient | null
   private readonly forecastListeners = new Set<(e: PrevisaoEvento) => void>()
@@ -220,13 +222,52 @@ export class Simulation {
     const t = this.engine.getState().timeMs
     const estimates = this.capacity.snapshot()
     const fused = this.capacity.fusion.state()
+    const accidents = this.reportedAccidents()
     return Object.fromEntries(
       this.capacity.segments.map((s) => {
         const r = readSegment(s.id, estimates[s.id], fused[s.id], t, this.classifier)
+        // an accident the operator registered is Crítico from the click until it expires or is
+        // cleared, whatever the cameras measure (AD-110)
+        if (accidents.has(s.id)) return [s.id, { ...r, exibido: 'critico' as const }]
         // a confirmed incident is a blocked segment: Crítico for the map and the decision (AD-104)
         return [s.id, this.confirmed.has(s.id) && r.exibido === 'verificacao' ? { ...r, exibido: 'critico' as const } : r]
       }),
     )
+  }
+
+  /**
+   * Registers an accident the operator created on the map (AD-110): the segment is blocked and counts
+   * as Crítico at once - on the map and for the diversion, decided now - until the block expires or is
+   * removed. Returns the blockage. An accident injected straight into the engine (the experiments) is
+   * not known: the system finds it through the cameras.
+   */
+  reportAccident(segmentId: string, distance: number, durationMs?: number): Blockage {
+    const b = this.engine.addBlockage(segmentId, distance, durationMs)
+    this.reported.add(b.id)
+    this.refreshIncidents()
+    this.decide()
+    return b
+  }
+
+  /**
+   * The speed the routes read for each segment: a segment in verification (AD-104) or with a
+   * registered accident (AD-110) crawls at 2 km/h; the others, the measured speed.
+   */
+  routeSpeeds(fused = this.capacity.fusion.state()): (segmentId: string) => number | null {
+    const accidents = this.reportedAccidents()
+    return (id) => (accidents.has(id) ? VERIFICATION_KMH : rerouterSpeed(fused[id]))
+  }
+
+  /** The segments with a registered accident still active; forgets the ones that ended. */
+  private reportedAccidents(): Set<string> {
+    const active = new Map(this.engine.getState().blockages.map((b) => [b.id, b.segmentId]))
+    const segments = new Set<string>()
+    for (const id of this.reported) {
+      const seg = active.get(id)
+      if (seg === undefined) this.reported.delete(id)
+      else segments.add(seg)
+    }
+    return segments
   }
 
   /** Whether the operator (or, in V4, the drone) confirmed the incident on `trecho`. */
@@ -324,8 +365,7 @@ export class Simulation {
     const fused = this.capacity.fusion.state()
     const segById = new Map(this.capacity.segments.map((s) => [s.id, s]))
     const drivers = [...this.engine.getState().cars, ...this.engine.waitingCars()]
-    // a segment in verification crawls at 2 km/h for the routes (AD-104)
-    const speedOf = (id: string) => rerouterSpeed(fused[id])
+    const speedOf = this.routeSpeeds(fused)
     return candidatesFor(drivers, trecho, segById).map((c) => evaluate(c, this.capacity.segments, speedOf, trecho))
   }
 

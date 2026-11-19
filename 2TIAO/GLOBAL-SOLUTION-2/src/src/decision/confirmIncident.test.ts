@@ -7,6 +7,7 @@ import { topicMatches } from '../telemetry/transport'
 import { answerJob, workerRunner, type FractionRunner, type WorkerLike, type WorkerReply, type WorkerRequest } from './fractionRunner'
 import { FRACOES, fractionJob, rerouterSpeed, runFractionJob, type DiversionSimulation } from './simulateDiversion'
 import { Simulation } from './Simulation'
+import { readSegment } from '../render/levels'
 
 const JAMMED = 'I12>I13'
 
@@ -146,5 +147,41 @@ describe('fractions off the tick (AD-103)', () => {
     const runner = workerRunner()
     const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }), transport: new FakeTransport(true) })
     expect(runner.run(sim, JAMMED)).not.toBeInstanceOf(Promise)
+  })
+})
+
+/** What the cameras alone say about JAMMED now. */
+const measured = (sim: Simulation) =>
+  readSegment(JAMMED, sim.capacity.snapshot()[JAMMED], sim.capacity.fusion.state()[JAMMED], sim.engine.getState().timeMs)
+
+describe('registered accident (AD-110)', () => {
+  it('C43 is Crítico and diverts at once; one injected into the engine is not known', () => {
+    const run = vi.fn((_sim: Simulation, trecho: string) => table(trecho, 0.2))
+    const { sim, advance, notices } = setup({ run })
+    advance(5_000)
+    // injected straight into the engine (the experiments): the system does not know it
+    const hidden = sim.engine.addBlockage(JAMMED, 60, 120_000)
+    expect(sim.readings()[JAMMED].exibido).not.toBe('critico')
+    expect(sim.diversion.status).toBe('inativo')
+    sim.engine.removeBlockage(hidden.id)
+    // registered by the operator: Crítico and the diversion decided in the same call
+    const b = sim.reportAccident(JAMMED, 60)
+    expect(sim.readings()[JAMMED].exibido).toBe('critico')
+    // the routes treat it as blocked: 2 km/h, as a segment in verification
+    expect(sim.routeSpeeds()(JAMMED)).toBe(2)
+    expect(sim.diversion).toMatchObject({ status: 'ativo', trecho: JAMMED, p: 0.2 })
+    expect(notices().length).toBeGreaterThan(0)
+    // cleared: back to what the cameras measure
+    sim.engine.removeBlockage(b.id)
+    expect(sim.readings()[JAMMED]).toEqual(measured(sim))
+    // expired: the same
+    sim.reportAccident(JAMMED, 60, 20_000)
+    advance(10_000)
+    expect(sim.readings()[JAMMED].exibido).toBe('critico')
+    advance(10_100)
+    expect(sim.engine.getState().blockages).toHaveLength(0)
+    expect(sim.readings()[JAMMED]).toEqual(measured(sim))
+    // and the routes read the measured speed again, not the 2 km/h of a block
+    expect(sim.routeSpeeds()(JAMMED)).toBe(rerouterSpeed(sim.capacity.fusion.state()[JAMMED]))
   })
 })

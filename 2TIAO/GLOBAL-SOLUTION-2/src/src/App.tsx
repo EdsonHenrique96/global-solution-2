@@ -36,7 +36,6 @@ import {
   networkOccupancy,
   NIVEIS,
   rankStreets,
-  readSegment,
   signalsCard,
   streetRows,
   totalFlowPerMin,
@@ -168,9 +167,10 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   const segById = new Map(state.segments.map((s) => [s.id, s]))
   const corners: Record<string, Point> = Object.fromEntries(state.network.intersections.map((i) => [i.id, i.position]))
   const cornerName = (id: string) => state.network.intersections.find((i) => i.id === id)?.nome ?? id
-  // one level per segment, by the simulation's classifier, for the map, the ranking, the tooltip
-  // and the selected road alike (AD-082)
-  const readings = Object.fromEntries(state.segments.map((s) => [s.id, readSegment(s.id, estimates[s.id], fused[s.id], now, sim.classifier)]))
+  // one level per segment, the simulation's own, for the map, the ranking, the tooltip, the selected
+  // road and the decision alike (AD-082) - a confirmed incident (AD-104) or a registered accident
+  // (AD-110) shows as Crítico here too
+  const readings = sim.readings()
   const readingList = Object.values(readings)
   const streets = streetRows(state.segments, readings)
   // the map shows "Em verificação" while a warning is open (AD-100); the decision reads the level
@@ -238,7 +238,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   const addIncident = (m: IncidentMode, target: IncidentTarget) => {
     if ('intersectionId' in target) {
       if (m === 'semaforo') engine.addFlashing(target.intersectionId)
-    } else if (m === 'acidente') engine.addBlockage(target.segmentId, target.distance)
+    } else if (m === 'acidente') sim.reportAccident(target.segmentId, target.distance)
     else if (m === 'obra') engine.addWorkZone(target.segmentId)
     sim.refreshIncidents()
     refresh()

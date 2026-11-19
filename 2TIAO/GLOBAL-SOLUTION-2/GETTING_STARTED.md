@@ -152,7 +152,7 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
   de ML (velocidade, fluxo e densidade). Sem o serviço, vale a regra fluxo ÷ capacidade, e a legenda
   mostra "classificação por regra" com o botão "Tentar de novo". Trechos sem capacidade ainda
   aparecem como "aprendendo"; sem leitura há 20 s, "sem dado"; com um "Possível incidente" aberto,
-  "Em verificação" (tracejado).
+  "Em verificação" (magenta tracejado).
 - Relógio simulado no cabeçalho, começando em "Seg 07:00".
 - Um rótulo por rua com o pior trecho dela, em carros/min.
 - Ícones das 24 câmeras nas pontas dos seus trechos (online ou offline; fixas, não se arrastam) e
@@ -165,7 +165,9 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
 - Os carros são simulados, mas não aparecem no mapa: o foco são as métricas.
 
 ### Incidentes (criados no mapa)
-- **Acidente:** clicar numa via bloqueia o trecho (2 min por padrão); clicar no bloqueio libera.
+- **Acidente:** clicar numa via bloqueia o trecho (2 min por padrão). O trecho fica crítico (vermelho) na
+  hora, sem esperar as câmeras, e o desvio é decidido no mesmo instante; volta ao que as câmeras
+  medem quando o bloqueio expira ou quando o operador clica em "Liberar via".
 - **Obra:** limita o trecho a 20 km/h por 10 min.
 - **Semáforo intermitente:** a esquina fica em amarelo piscante por 10 min, e os carros passam
   em revezamento.

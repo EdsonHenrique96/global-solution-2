@@ -229,8 +229,9 @@ export function fractionJob(sim: Simulation, trecho: string): FractionJob {
   const fused = sim.capacity.fusion.state()
   const speeds: Record<string, number | null> = {}
   const capacities: Record<string, number> = {}
+  const speedOf = sim.routeSpeeds(fused)
   for (const s of sim.capacity.segments) {
-    speeds[s.id] = rerouterSpeed(fused[s.id])
+    speeds[s.id] = speedOf(s.id)
     const c = estimates[s.id]?.capacidade
     capacities[s.id] = c && c > 0 ? c : CONFIGURED_CAPACITY_VEH_H
   }

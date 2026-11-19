@@ -9,6 +9,7 @@ import type { Point } from '../sim/types'
 import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { DashboardHeader } from './Dashboard'
 import { clampView, fitTransform, gridCenter, gridOf, type MapView } from './draw'
+import { NIVEIS } from './levels'
 
 interface Call {
   op: string
@@ -331,6 +332,35 @@ describe('operations dashboard', () => {
     const card = within(panel()).getByTestId(`incident-colisao:${b.id}`)
     expect(card).toHaveTextContent('Colisão')
     expect(card).toHaveTextContent('Crítico')
+  })
+
+  it('C42 a registered accident turns its lane Crítico at once, until it is cleared or expires (AD-110)', () => {
+    const { engine } = setup()
+    advance(5_000)
+    const red = NIVEIS.critico.color
+    // no camera reading: the lane is "sem dado" before the accident
+    expect(laneOf(engine, lastFrame(), 'I12>I13').style).toBe(NIVEIS['sem dado'].color)
+    mode('Acidente')
+    click(onLane(engine, 'I12>I13', 70))
+    const [b] = engine.getState().blockages
+    // red on the click, solid, with no measurement behind it
+    expect(laneOf(engine, lastFrame(), 'I12>I13')).toEqual({ style: red, dashed: false })
+    expect(within(selected()).getByTestId('selected-level')).toHaveTextContent('Crítico')
+    advance(60_000)
+    expect(laneOf(engine, lastFrame(), 'I12>I13').style).toBe(red)
+    // "Liberar via": back to what the cameras say
+    fireEvent.click(within(within(panel()).getByTestId(`incident-colisao:${b.id}`)).getByRole('button', { name: 'Liberar via' }))
+    expect(engine.getState().blockages).toHaveLength(0)
+    expect(laneOf(engine, lastFrame(), 'I12>I13').style).toBe(NIVEIS['sem dado'].color)
+    // a second one (the mode stays on) expires after its 2 min
+    click(onLane(engine, 'I12>I13', 70))
+    expect(engine.getState().blockages).toHaveLength(1)
+    expect(laneOf(engine, lastFrame(), 'I12>I13').style).toBe(red)
+    advance(119_000)
+    expect(laneOf(engine, lastFrame(), 'I12>I13').style).toBe(red)
+    advance(2_000)
+    expect(engine.getState().blockages).toHaveLength(0)
+    expect(laneOf(engine, lastFrame(), 'I12>I13').style).toBe(NIVEIS['sem dado'].color)
   })
 
   it('C23 work mode click creates an Obra na pista', () => {
