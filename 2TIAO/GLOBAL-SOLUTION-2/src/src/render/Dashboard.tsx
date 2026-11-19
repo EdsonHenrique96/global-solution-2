@@ -2,6 +2,8 @@ import type { CSSProperties, ReactNode } from 'react'
 import { SPEED_LIMIT_KMH } from '../capacity/CapacityModel'
 import { INCIDENT_TITLES, type Incident } from '../decision/IncidentLog'
 import type { HistoryPoint } from '../decision/SegmentHistory'
+import type { ForecastStatus, Previsao } from '../forecast/ForecastClient'
+import { formatClock } from '../sim/clock'
 import { segmentName } from '../sensors/segments'
 import type { Point } from '../sim/types'
 import type { ConnectionStatus } from '../telemetry/transport'
@@ -78,7 +80,7 @@ export function DashboardHeader({ connection, simTimeMs, pending, active, onNavi
           <span className="live-dot" />
           <span className="live-label">{live ? 'AO VIVO' : 'OFFLINE'}</span>
           <span className="live-clock" data-testid="sim-clock">
-            {clock(simTimeMs)}
+            {formatClock(simTimeMs)}
           </span>
         </div>
         <button
@@ -124,12 +126,22 @@ export function StatCard({ label, value, unit, note, tone, alarm, size = 'md', t
   )
 }
 
-/** Below the map: the density levels and the camera icons. */
-export function MapLegend() {
+/** Who gives each segment its level: the K-means of the ML service, or the V1 rule (AD-074). */
+export type Classificacao = 'carregando' | 'kmeans' | 'regra'
+
+interface LegendProps {
+  classificacao?: Classificacao
+  /** "Tentar de novo": loads the K-means again. */
+  onRetry?: () => void
+}
+
+/** Below the map: the levels, who classifies them, and the camera icons. */
+export function MapLegend({ classificacao = 'regra', onRetry }: LegendProps = {}) {
+  const kmeans = classificacao === 'kmeans'
   return (
     <div className="map-foot">
       <div className="legend" aria-label="Legenda da densidade">
-        <span className="muted">Densidade (fluxo ÷ capacidade)</span>
+        <span className="muted">{kmeans ? 'Estado do trecho (K-means)' : 'Densidade (fluxo ÷ capacidade)'}</span>
         {(['livre', 'moderado', 'intenso', 'critico', 'aprendendo', 'sem dado', 'verificacao'] as const).map((k) => (
           <span key={k} className="legend-item">
             <span
@@ -137,9 +149,17 @@ export function MapLegend() {
               style={{ color: NIVEIS[k].color, background: k === 'sem dado' || k === 'verificacao' ? undefined : NIVEIS[k].color }}
             />
             {NIVEIS[k].label}
-            {NIVEIS[k].range && <span className="faint">{NIVEIS[k].range}</span>}
+            {!kmeans && NIVEIS[k].range && <span className="faint">{NIVEIS[k].range}</span>}
           </span>
         ))}
+        <span className="legend-item classificacao" data-testid="classificacao">
+          {kmeans ? 'classificação K-means' : classificacao === 'carregando' ? 'carregando K-means…' : 'classificação por regra'}
+          {classificacao === 'regra' && onRetry && (
+            <button type="button" className="btn sm" onClick={onRetry}>
+              Tentar de novo
+            </button>
+          )}
+        </span>
       </div>
       <div className="legend">
         <span className="legend-item">
@@ -196,6 +216,7 @@ const KIND_COLOR: Record<Incident['kind'], string> = {
   semaforo: NIVEIS.moderado.color,
   congestionamento: NIVEIS.intenso.color,
   'possivel-incidente': NIVEIS.moderado.color,
+  previsto: '#A78BFA',
 }
 
 /** Camera icon border: online, offline (AD-054). */
@@ -452,8 +473,16 @@ const FLOW_H = 150
 const SPEED_H = 80
 const WINDOW_MS = 2 * 3_600_000
 
+/** The selected segment's forecast (RF16): the service's state and its last answer for the segment. */
+export interface SelectedForecast {
+  status: ForecastStatus
+  previsao: Previsao | null
+}
+
 interface SelectedProps {
   reading: SegmentReading
+  /** Null without the ML service (experiments) or for a segment without a pair. */
+  forecast?: SelectedForecast | null
   /** The segment's camera pair; null when it has none (estimado). */
   pair: readonly [string, string] | null
   history: readonly HistoryPoint[]
@@ -463,7 +492,33 @@ interface SelectedProps {
 }
 
 /** The selected segment: level, occupancy, the pairing figures and its last 2 h (AC 35-40). */
-export function SelectedRoad({ reading: r, pair, history, nowMs, onCameras, onSignals }: SelectedProps) {
+function ForecastFacts({ forecast }: { forecast: SelectedForecast }) {
+  const { status, previsao: p } = forecast
+  const row = (label: string, v: number, f: number, testId: string) => (
+    <div>
+      <dt>{label}</dt>
+      <dd data-testid={testId}>
+        {Math.max(0, Math.round(v))} <small>km/h</small> · {Math.max(0, Math.round(f))} <small>carros/min</small>
+      </dd>
+    </div>
+  )
+  return (
+    <div className="forecast" data-testid="selected-previsao">
+      {status === 'indisponivel' ? (
+        <p className="empty">Previsão indisponível</p>
+      ) : !p ? (
+        <p className="empty">Previsão aguardando 10 min de histórico</p>
+      ) : (
+        <dl className="facts">
+          {row('Previsão 15 min', p.v15, p.f15, 'selected-previsao-15')}
+          {row('Previsão 30 min', p.v30, p.f30, 'selected-previsao-30')}
+        </dl>
+      )}
+    </div>
+  )
+}
+
+export function SelectedRoad({ reading: r, pair, history, nowMs, onCameras, onSignals, forecast = null }: SelectedProps) {
   const lv = NIVEIS[r.exibido]
   const speedPct = r.velocidade === null ? null : Math.round((r.velocidade / SPEED_LIMIT_KMH) * 100)
   const speedColor = speedPct === null ? undefined : speedPct < 40 ? NIVEIS.critico.color : speedPct < 70 ? NIVEIS.moderado.color : NIVEIS.livre.color
@@ -551,6 +606,8 @@ export function SelectedRoad({ reading: r, pair, history, nowMs, onCameras, onSi
           <dd data-testid="selected-par">{pair ? pair.join(' · ') : 'nenhuma (estimado)'}</dd>
         </div>
       </dl>
+
+      {pair && forecast && <ForecastFacts forecast={forecast} />}
 
       <div className="chart">
         <div className="chart-head">

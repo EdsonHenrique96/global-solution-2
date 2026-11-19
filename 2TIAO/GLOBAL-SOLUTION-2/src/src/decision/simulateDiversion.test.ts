@@ -3,6 +3,7 @@ import { NOTIFICATIONS_FILTER } from '../apps/AppNotifier'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { topicMatches } from '../telemetry/transport'
+import { candidatesFor, evaluate, selectNotified } from './DriverRerouter'
 import { chooseFraction, FRACOES, simulateDiversion, type DiversionSimulation } from './simulateDiversion'
 import { Simulation } from './Simulation'
 
@@ -53,15 +54,16 @@ describe('simulateDiversion', () => {
     const { engine, sim, advance } = liveRun()
     advance(150_000)
     const t = engine.getState().timeMs
-    const clones: SimulationEngine[] = []
-    const original = engine.clone.bind(engine)
-    vi.spyOn(engine, 'clone').mockImplementation((opts) => {
-      const c = original(opts)
-      expect(c.getState().timeMs).toBe(t)
-      clones.push(c)
+    // every copy made: the first from the live engine now, the others split from it on the way
+    const clones: { engine: SimulationEngine; fromLive: boolean; at: number }[] = []
+    const original = SimulationEngine.prototype.clone
+    const spy = vi.spyOn(SimulationEngine.prototype, 'clone').mockImplementation(function (this: SimulationEngine, opts) {
+      const c = original.call(this, opts)
+      clones.push({ engine: c, fromLive: this === engine, at: this.getState().timeMs })
       return c
     })
     const r = simulateDiversion(sim, JAMMED)
+    spy.mockRestore()
     expect(Object.keys(r).sort()).toEqual(['eficaz', 'escolhida', 'fracoes', 'horizonteMin', 'trecho'])
     expect(r.trecho).toBe(JAMMED)
     expect(r.horizonteMin).toBe(10)
@@ -70,11 +72,33 @@ describe('simulateDiversion', () => {
       expect(Object.keys(f).sort()).toEqual(['co2Kg', 'fracao', 'ocupacaoMaxAlternativa', 'ocupacaoMaxTrecho', 'tempoMedioS'])
       for (const k of ['co2Kg', 'ocupacaoMaxAlternativa', 'ocupacaoMaxTrecho', 'tempoMedioS'] as const) expect(Number.isFinite(f[k])).toBe(true)
     }
-    // one clone per fraction, each started now and ran 10 simulated minutes
-    expect(clones).toHaveLength(7)
-    for (const c of clones) expect(c.getState().timeMs).toBe(t + 600_000)
-    // the fraction is applied in its clone: more told, more rerouted; none at 0%
-    const rerouted = clones.map((c) => c.getState().reroutedTotal - engine.getState().reroutedTotal)
+    // one copy of the live engine, taken now; every copy ran to 10 simulated minutes from now
+    expect(clones.filter((c) => c.fromLive)).toHaveLength(1)
+    expect(clones[0]).toMatchObject({ fromLive: true, at: t })
+    for (const c of clones) expect(c.engine.getState().timeMs).toBe(t + 600_000)
+    // each row is what its own 10 min run from a copy of now gives: run every fraction on its own
+    const segById = new Map(engine.getState().segments.map((s) => [s.id, s]))
+    const fused = sim.capacity.fusion.state()
+    const speedOf = (id: string) => fused[id]?.velocidadeMedia ?? null
+    const rerouted: number[] = []
+    for (const [i, fracao] of FRACOES.entries()) {
+      const own = engine.clone({ cameras: false })
+      const travel: number[] = []
+      own.onArrival((a) => travel.push(a.travelS))
+      const co2 = own.getState().co2TotalG
+      while (own.getState().timeMs < t + 600_000) {
+        if (own.getState().timeMs % 10_000 === 0) {
+          const s = own.getState()
+          const evals = candidatesFor([...s.cars, ...own.waitingCars()], JAMMED, segById).map((c) => evaluate(c, s.segments, speedOf, JAMMED))
+          for (const e of selectNotified(evals, 'parcial', fracao)) if (e.alternative) own.reroute(e.carId, e.alternative)
+        }
+        own.tick(TICK_MS)
+      }
+      rerouted.push(own.getState().reroutedTotal - engine.getState().reroutedTotal)
+      expect(r.fracoes[i].tempoMedioS).toBe(Math.round((travel.reduce((a, b) => a + b, 0) / travel.length) * 10) / 10)
+      expect(r.fracoes[i].co2Kg).toBe(Math.round((own.getState().co2TotalG - co2) / 10) / 100)
+    }
+    // the fraction is applied: none rerouted at 0%, some at 10%, never fewer with a larger fraction
     expect(rerouted[0]).toBe(0)
     expect(rerouted[1]).toBeGreaterThan(0)
     for (let i = 1; i < rerouted.length; i++) expect(rerouted[i]).toBeGreaterThanOrEqual(rerouted[i - 1])

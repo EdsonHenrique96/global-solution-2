@@ -104,6 +104,7 @@ flowchart LR
         painel["<b>Painel</b><br/>[Container: React + Vite, navegador]<br/>Simulação (IDM, semáforos, incidentes),<br/>câmeras de placa, pareamento, apps de mapa, fusão,<br/>modelo de capacidade, desvio,<br/>agente e métricas"]
         broker[("<b>Broker MQTT</b><br/>[Container: Mosquitto 2, Docker]<br/>MQTT :1883 · WebSocket :9001")]
         proxy["<b>Proxy do agente LLM</b><br/>[Container: Node.js 24 + TypeScript, Docker]<br/>POST /api/agente/turno<br/>:8787 · guarda a chave da API"]
+        ml["<b>Serviço de ML</b><br/>[Container: Python 3.12 + FastAPI, Docker]<br/>LightGBM (previsão 15/30 min) e K-means (estados)<br/>POST /ml/prever · GET /ml/kmeans · :8788"]
     end
 
     llm["<b>API da Anthropic</b><br/>[Sistema externo]<br/>Modelo claude-opus-5-5"]
@@ -113,12 +114,13 @@ flowchart LR
     broker -- "Entrega as mensagens assinadas<br/>[MQTT sobre WebSocket]" --> painel
     painel -- "Pede um turno do agente<br/>[HTTP/JSON, /api via Vite]" --> proxy
     proxy -- "Chama o modelo com as tools<br/>[HTTPS, SDK]" --> llm
+    painel -- "Pede a previsão a cada 60 s e<br/>os centróides do K-means<br/>[HTTP/JSON, /ml via Vite]" --> ml
 
     classDef person fill:#08427b,stroke:#052e56,color:#fff
     classDef container fill:#1168bd,stroke:#0b4884,color:#fff
     classDef external fill:#999,stroke:#6b6b6b,color:#fff
     class operador person
-    class painel,broker,proxy container
+    class painel,broker,proxy,ml container
     class llm external
 ```
 
@@ -134,7 +136,7 @@ Tópicos MQTT:
 | `transito/apps/ativos` | apps de mapa (`AppFleet`), a cada 10 s | fusão (demanda por trecho), painel dos apps |
 | `transito/notificacoes/{app}` | `AppNotifier` (`waze`, `google-maps`, `outros`) | painel dos apps, `Simulation` |
 
-O broker e o proxy são opcionais: sem o broker, o transporte fica offline; sem o proxy ou sem a chave, o agente usa as regras locais ("modo sem LLM").
+O broker, o proxy e o serviço de ML são opcionais: sem o broker, o transporte fica offline; sem o proxy ou sem a chave, o agente usa as regras locais ("modo sem LLM"); sem o serviço de ML (`ml`, porta 8788), a previsão fica "indisponível" e o mapa é classificado pela regra. Como treinar o modelo: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Funcionalidades
 

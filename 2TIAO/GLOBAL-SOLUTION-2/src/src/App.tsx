@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { AgentRunner } from './agent/AgentRunner'
 import { proxyLlm, type LlmTurn } from './agent/llm'
+import { StateClassifier } from './capacity/StateClassifier'
+import { httpMl, type MlClient } from './forecast/mlClient'
+import { formatClock } from './sim/clock'
 import type { Incident } from './decision/IncidentLog'
 import { Simulation } from './decision/Simulation'
 import { AgentPanel } from './render/AgentPanel'
@@ -17,9 +20,11 @@ import {
   SelectedRoad,
   StatCard,
   StreetRanking,
+  type Classificacao,
   type MapIncident,
   type Tab,
 } from './render/Dashboard'
+import { StatesPanel } from './render/StatesPanel'
 import { clampView, fitTransform, gridCenter, ZOOM_STEPS, type MapView } from './render/draw'
 import { ExperimentsPanel } from './render/ExperimentsPanel'
 import {
@@ -57,6 +62,8 @@ interface Props {
   transport?: TelemetryTransport
   /** The model behind the agent; the page calls the local proxy by default. */
   llm?: LlmTurn
+  /** The ML service (forecast and K-means); the page calls it through the Vite proxy by default. */
+  ml?: MlClient
 }
 
 function agentSnapshot(agent: AgentRunner) {
@@ -88,9 +95,13 @@ const seconds = (ms: number) => {
   return s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`
 }
 
-function App({ engine: injectedEngine, transport: injectedTransport, llm }: Props) {
+function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: injectedMl }: Props) {
   const [transport] = useState(() => injectedTransport ?? createOfflineTransport())
-  const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport, agentControl: true }))
+  const [ml] = useState(() => injectedMl ?? httpMl())
+  // the K-means of the ML service classifies every segment once it loads; the V1 rule until then (AD-074)
+  const [classifier] = useState(() => new StateClassifier())
+  const [classificacao, setClassificacao] = useState<Classificacao>('carregando')
+  const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport, agentControl: true, classifier, prever: ml.prever }))
   const [agent] = useState(() => new AgentRunner({ sim, llm: llm ?? proxyLlm() }))
   const [agentView, setAgentView] = useState(() => agentSnapshot(agent))
   const { engine, capacity } = sim
@@ -113,6 +124,14 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   // re-reads what the simulation keeps (history, incidents, unit presence) on every tick
   const [, setFrame] = useState(0)
   const refresh = () => setFrame((f) => f + 1)
+
+  useEffect(() => {
+    void classifier.load(ml.kmeans).then((ok) => setClassificacao(ok ? 'kmeans' : 'regra'))
+  }, [classifier, ml])
+  const retryKMeans = () => {
+    setClassificacao('carregando')
+    void classifier.load(ml.kmeans).then((ok) => setClassificacao(ok ? 'kmeans' : 'regra'))
+  }
 
   useEffect(() => {
     sim.start()
@@ -190,6 +209,8 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
         return `Amarelo piscante · normaliza às ${hhmm(i.endsAtMs ?? now)}`
       case 'possivel-incidente':
         return 'Anomalia: carros que entraram não saíram no tempo esperado · aguarda confirmação'
+      case 'previsto':
+        return `Ocupação prevista ${Math.round(i.ocupacaoPrevista ?? 0)}% da capacidade · previsto para ${formatClock(i.previstoPara ?? now)}`
       default:
         return `Desvio ativo · ${diversion.status === 'ativo' ? diversion.notificados : 0} motoristas notificados`
     }
@@ -359,7 +380,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
                     />
                   )}
                 </div>
-                <MapLegend />
+                <MapLegend classificacao={classificacao} onRetry={retryKMeans} />
               </div>
 
               <div className="stat-grid auto">
@@ -400,6 +421,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
               <SelectedRoad
                 reading={readings[selectedSegment]}
                 pair={pairFor(selectedSegment)}
+                forecast={sim.forecast ? { status: sim.forecast.status, previsao: sim.forecast.previsoes[selectedSegment] ?? null } : null}
                 history={sim.history.of(selectedSegment)}
                 nowMs={now}
                 onCameras={() => go('cameras')}
@@ -476,6 +498,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
               fused={fused[selectedSegment]}
               pair={pairFor(selectedSegment)}
             />
+            <StatesPanel model={classificacao === 'kmeans' ? classifier.model : null} readings={readingList.filter((r) => pairFor(r.id) !== null)} />
             <IncidentHistory incidents={sim.incidents.history()} placeOf={placeOf} />
             <ExperimentsPanel />
           </div>

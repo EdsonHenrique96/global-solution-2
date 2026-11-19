@@ -1,7 +1,8 @@
 import type { SimulationState } from '../sim/SimulationEngine'
+import type { Previsto } from '../forecast/ForecastClient'
 import type { DiversionState } from './DiversionController'
 
-export type IncidentKind = 'colisao' | 'obra' | 'semaforo' | 'congestionamento' | 'possivel-incidente'
+export type IncidentKind = 'colisao' | 'obra' | 'semaforo' | 'congestionamento' | 'possivel-incidente' | 'previsto'
 
 export const INCIDENT_TITLES: Record<IncidentKind, string> = {
   colisao: 'Colisão',
@@ -9,6 +10,7 @@ export const INCIDENT_TITLES: Record<IncidentKind, string> = {
   semaforo: 'Semáforo intermitente',
   congestionamento: 'Congestionamento persistente',
   'possivel-incidente': 'Possível incidente',
+  previsto: 'Congestionamento previsto',
 }
 
 export interface Incident {
@@ -24,6 +26,9 @@ export interface Incident {
   startMs: number
   endsAtMs: number | null
   endMs: number | null
+  /** "Congestionamento previsto": when the jam is expected, and the forecast occupancy (%). */
+  previstoPara?: number
+  ocupacaoPrevista?: number
 }
 
 const KEEP_HISTORY = 100
@@ -36,8 +41,11 @@ export class IncidentLog {
   private readonly open = new Map<string, Incident>()
   private readonly closed: Incident[] = []
 
-  /** `anomalies`: the segments with a "Possível incidente" warning (AD-091). */
-  update(state: SimulationState, diversion: DiversionState, anomalies: readonly string[] = []): void {
+  /**
+   * `anomalies`: the segments with a "Possível incidente" warning (AD-091); `previstos`: the
+   * segments forecast to reach 90% of their capacity (RF16).
+   */
+  update(state: SimulationState, diversion: DiversionState, anomalies: readonly string[] = [], previstos: readonly Previsto[] = []): void {
     const now = state.timeMs
     const seen = new Map<string, Omit<Incident, 'startMs' | 'endMs'>>()
     for (const b of state.blockages) {
@@ -56,6 +64,10 @@ export class IncidentLog {
     for (const segmentId of anomalies) {
       const key = `possivel-incidente:${segmentId}`
       seen.set(key, { key, kind: 'possivel-incidente', nivel: 'moderado', refId: null, segmentId, intersectionId: null, distance: null, endsAtMs: null })
+    }
+    for (const p of previstos) {
+      const key = `previsto:${p.trecho}`
+      seen.set(key, { key, kind: 'previsto', nivel: 'moderado', refId: null, segmentId: p.trecho, intersectionId: null, distance: null, endsAtMs: null, previstoPara: p.previstoPara, ocupacaoPrevista: p.ocupacao15 })
     }
     for (const [key, inc] of this.open) {
       if (seen.has(key)) continue

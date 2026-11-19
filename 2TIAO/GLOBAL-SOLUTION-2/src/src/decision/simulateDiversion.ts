@@ -53,58 +53,119 @@ interface Frozen {
   capacityOf: (segmentId: string) => number
 }
 
+/** One trajectory of the future: the fractions whose drivers were told the same so far share it. */
+interface Branch {
+  engine: SimulationEngine
+  fracoes: number[]
+  exits: Map<string, number[]>
+  maxPct: Map<string, number>
+  alternative: Set<string>
+  travel: number[]
+  where: Map<number, string>
+}
+
+function watch(b: Branch): Branch {
+  b.engine.onArrival((a) => b.travel.push(a.travelS))
+  return b
+}
+
+/** A branch that continues from `b` for `fracoes`: a copy of its engine and of what it measured. */
+function fork(b: Branch, fracoes: number[]): Branch {
+  return watch({
+    engine: b.engine.clone({ cameras: false }),
+    fracoes,
+    exits: new Map([...b.exits].map(([k, v]) => [k, [...v]])),
+    maxPct: new Map(b.maxPct),
+    alternative: new Set(b.alternative),
+    travel: [...b.travel],
+    where: new Map(b.where),
+  })
+}
+
 /**
- * Runs a copy of the engine 10 min ahead with `fracao` of the drivers heading into `trecho` told to
- * avoid it, every 10 s as the live diversion does, with the speeds the panel knows now. Measures each
- * segment's 1 min flow (cars leaving it) every 10 s against its capacity.
+ * Runs the engine 10 min ahead once per fraction: every 10 s, as the live diversion does, `fracao`
+ * of the drivers heading into `trecho` are told to avoid it, with the speeds the panel knows now;
+ * every 10 s each segment's 1 min flow (cars leaving it) is measured against its capacity. The
+ * fractions run in lockstep from one copy and split into their own copy the first time they would
+ * tell different drivers, so each fraction's result is that of its own independent run.
  */
-function runFraction(clone: SimulationEngine, fracao: number, frozen: Frozen): FractionResult {
-  const start = clone.getState()
-  const startCo2 = start.co2TotalG
+function runFractions(live: SimulationEngine, frozen: Frozen): FractionResult[] {
+  const start = live.getState()
   const end = start.timeMs + HORIZONTE_MIN * 60_000
   const segments = start.segments
   const segById = new Map(segments.map((s) => [s.id, s]))
-  const exits = new Map<string, number[]>()
-  const maxPct = new Map<string, number>()
-  const alternative = new Set<string>()
-  const travel: number[] = []
-  clone.onArrival((a) => travel.push(a.travelS))
-  let where = new Map(start.cars.map((c) => [c.id, c.path[c.seg]]))
-  while (clone.getState().timeMs < end) {
-    const t0 = clone.getState().timeMs
-    if (t0 % DECIDE_EVERY_MS === 0) {
-      const s = clone.getState()
-      const evaluations = candidatesFor([...s.cars, ...clone.waitingCars()], frozen.trecho, segById).map((c) => evaluate(c, segments, frozen.speedOf, frozen.trecho))
-      for (const e of evaluations) if (e.ok && e.alternative) for (const id of e.alternative) if (!e.current.includes(id)) alternative.add(id)
-      for (const e of selectNotified(evaluations, 'parcial', fracao)) if (e.alternative) clone.reroute(e.carId, e.alternative)
+  let branches: Branch[] = [
+    watch({
+      engine: live.clone({ cameras: false }),
+      fracoes: [...FRACOES],
+      exits: new Map(),
+      maxPct: new Map(),
+      alternative: new Set(),
+      travel: [],
+      where: new Map(start.cars.map((c) => [c.id, c.path[c.seg]])),
+    }),
+  ]
+  for (let t = start.timeMs; t < end; t += TICK_MS) {
+    if (t % DECIDE_EVERY_MS === 0) {
+      const next: Branch[] = []
+      for (const b of branches) {
+        const s = b.engine.getState()
+        const evaluations = candidatesFor([...s.cars, ...b.engine.waitingCars()], frozen.trecho, segById).map((c) => evaluate(c, segments, frozen.speedOf, frozen.trecho))
+        for (const e of evaluations) if (e.ok && e.alternative) for (const id of e.alternative) if (!e.current.includes(id)) b.alternative.add(id)
+        // the fractions that tell the same drivers stay together
+        const groups = new Map<string, { fracoes: number[]; told: typeof evaluations }>()
+        for (const f of b.fracoes) {
+          const told = selectNotified(evaluations, 'parcial', f)
+          const key = told.map((e) => e.carId).join(',')
+          const g = groups.get(key)
+          if (g) g.fracoes.push(f)
+          else groups.set(key, { fracoes: [f], told })
+        }
+        const list = [...groups.values()]
+        list.forEach((g, i) => {
+          const branch = i === 0 ? b : fork(b, g.fracoes)
+          branch.fracoes = g.fracoes
+          for (const e of g.told) if (e.alternative) branch.engine.reroute(e.carId, e.alternative)
+          next.push(branch)
+        })
+      }
+      branches = next
     }
-    clone.tick(TICK_MS)
-    const s = clone.getState()
-    const now = new Map(s.cars.map((c) => [c.id, c.path[c.seg]]))
-    for (const [id, seg] of where) {
-      if (now.get(id) === seg) continue
-      const list = exits.get(seg)
-      if (list) list.push(s.timeMs)
-      else exits.set(seg, [s.timeMs])
-    }
-    where = now
-    if (s.timeMs % DECIDE_EVERY_MS === 0) {
-      for (const [seg, list] of exits) {
-        while (list.length && list[0] <= s.timeMs - WINDOW_MS) list.shift()
-        const pct = ((list.length * 60) / frozen.capacityOf(seg)) * 100
-        maxPct.set(seg, Math.max(maxPct.get(seg) ?? 0, pct))
+    for (const b of branches) {
+      b.engine.tick(TICK_MS)
+      const s = b.engine.getState()
+      const now = new Map(s.cars.map((c) => [c.id, c.path[c.seg]]))
+      for (const [id, seg] of b.where) {
+        if (now.get(id) === seg) continue
+        const list = b.exits.get(seg)
+        if (list) list.push(s.timeMs)
+        else b.exits.set(seg, [s.timeMs])
+      }
+      b.where = now
+      if (s.timeMs % DECIDE_EVERY_MS === 0) {
+        for (const [seg, list] of b.exits) {
+          while (list.length && list[0] <= s.timeMs - WINDOW_MS) list.shift()
+          const pct = ((list.length * 60) / frozen.capacityOf(seg)) * 100
+          b.maxPct.set(seg, Math.max(b.maxPct.get(seg) ?? 0, pct))
+        }
       }
     }
   }
-  alternative.delete(frozen.trecho)
   const round1 = (v: number) => Math.round(v * 10) / 10
-  return {
-    fracao,
-    ocupacaoMaxTrecho: round1(maxPct.get(frozen.trecho) ?? 0),
-    ocupacaoMaxAlternativa: round1(Math.max(0, ...[...alternative].map((id) => maxPct.get(id) ?? 0))),
-    tempoMedioS: travel.length ? round1(travel.reduce((a, b) => a + b, 0) / travel.length) : null,
-    co2Kg: Math.round((clone.getState().co2TotalG - startCo2) / 10) / 100,
+  const results = new Map<number, FractionResult>()
+  for (const b of branches) {
+    b.alternative.delete(frozen.trecho)
+    for (const fracao of b.fracoes) {
+      results.set(fracao, {
+        fracao,
+        ocupacaoMaxTrecho: round1(b.maxPct.get(frozen.trecho) ?? 0),
+        ocupacaoMaxAlternativa: round1(Math.max(0, ...[...b.alternative].map((id) => b.maxPct.get(id) ?? 0))),
+        tempoMedioS: b.travel.length ? round1(b.travel.reduce((a, x) => a + x, 0) / b.travel.length) : null,
+        co2Kg: Math.round((b.engine.getState().co2TotalG - start.co2TotalG) / 10) / 100,
+      })
+    }
   }
+  return FRACOES.map((f) => results.get(f)!)
 }
 
 /**
@@ -123,6 +184,6 @@ export function simulateDiversion(sim: Simulation, trecho: string): DiversionSim
       return c && c > 0 ? c : CONFIGURED_CAPACITY_VEH_H
     },
   }
-  const fracoes = FRACOES.map((f) => runFraction(sim.engine.clone({ cameras: false }), f, frozen))
+  const fracoes = runFractions(sim.engine, frozen)
   return { trecho, horizonteMin: HORIZONTE_MIN, fracoes, ...chooseFraction(fracoes) }
 }

@@ -11,6 +11,7 @@ import type { TelemetryTransport } from '../telemetry/transport'
 import { DiversionController, type DiversionState } from './DiversionController'
 import { candidatesFor, evaluate, outOfReach, selectNotified, type Evaluation } from './DriverRerouter'
 import { simulateDiversion, type DiversionSimulation } from './simulateDiversion'
+import { ForecastClient, type Prever, type PrevisaoEvento } from '../forecast/ForecastClient'
 import { IncidentLog } from './IncidentLog'
 import { MetricsRecorder, SAMPLE_EVERY_MS } from './MetricsRecorder'
 import { HISTORY_EVERY_MS, SegmentHistory } from './SegmentHistory'
@@ -31,6 +32,8 @@ interface Options {
   classifier?: SegmentClassifier
   /** How a partial diversion is sized: the fractions simulated ahead (RF18); injected in tests. */
   simulateDiversion?: (sim: Simulation, trecho: string) => DiversionSimulation
+  /** The ML service's forecast (door 2); without it there is no forecast (experiments, tests). */
+  prever?: Prever
 }
 
 /** A simulated diversion is reused for the same segment for this long when no diversion holds it. */
@@ -103,8 +106,11 @@ export class Simulation {
   readonly windows: DiversionWindow[] = []
   private readonly simulate: (sim: Simulation, trecho: string) => DiversionSimulation
   private simulated: { trecho: string; t: number; result: DiversionSimulation } | null = null
+  /** Forecasts of the paired segments every 60 s (RF16); null without the ML service. */
+  readonly forecast: ForecastClient | null
+  private readonly forecastListeners = new Set<(e: PrevisaoEvento) => void>()
 
-  constructor({ engine, transport, agentControl = false, diversionMode = 'parcial', classifier = ruleClassifier, simulateDiversion: simulate = simulateDiversion }: Options) {
+  constructor({ engine, transport, agentControl = false, diversionMode = 'parcial', classifier = ruleClassifier, simulateDiversion: simulate = simulateDiversion, prever }: Options) {
     this.classifier = classifier
     this.simulate = simulate
     this.agentControl = agentControl
@@ -117,6 +123,23 @@ export class Simulation {
     this.fleet = new AppFleet(this.engine, transport, this.engine.getAppShare())
     this.notifier = new AppNotifier(transport)
     this.metrics = new MetricsRecorder(this.engine)
+    this.forecast = prever
+      ? new ForecastClient({
+          prever,
+          segments: monitoredSegments(this.engine.getState().cameras).map((m) => m.trecho),
+          history: this.history,
+          capacityOf: (id) => this.capacity.snapshot()[id]?.capacidade ?? null,
+          onEvent: (e) => {
+            for (const l of this.forecastListeners) l(e)
+          },
+        })
+      : null
+  }
+
+  /** Door 5: a segment forecast to reach 90% of its capacity in 15 min, once per crossing (V3 subscribes). */
+  onPrevisao(listener: (e: PrevisaoEvento) => void): () => void {
+    this.forecastListeners.add(listener)
+    return () => this.forecastListeners.delete(listener)
   }
 
   start(): void {
@@ -180,6 +203,7 @@ export class Simulation {
     const t = this.engine.getState().timeMs
     if (t % SAMPLE_EVERY_MS === 0) this.decide()
     if (t % HISTORY_EVERY_MS === 0) this.recordHistory(t)
+    this.forecast?.tick(t)
     this.refreshIncidents()
   }
 
@@ -195,7 +219,7 @@ export class Simulation {
   refreshIncidents(): void {
     const fused = this.capacity.fusion.state()
     const anomalies = Object.keys(fused).filter((id) => fused[id].possivelIncidente)
-    this.incidents.update(this.engine.getState(), this.diversion, anomalies)
+    this.incidents.update(this.engine.getState(), this.diversion, anomalies, this.forecast?.predicted() ?? [])
   }
 
   private recordHistory(t: number): void {
@@ -203,7 +227,7 @@ export class Simulation {
     const travel = this.engine.travelStats().lastMinuteAvgS
     this.history.record(
       t,
-      Object.fromEntries(readings.map((r) => [r.id, { fluxo: r.fluxo, capacidade: r.capacidade, velocidade: r.velocidade }])),
+      Object.fromEntries(readings.map((r) => [r.id, { fluxo: r.fluxo, capacidade: r.capacidade, velocidade: r.velocidade, densidade: r.densidade }])),
       { avgSpeed: averageSpeed(readings), travelMin: travel === null ? null : travel / 60 },
     )
   }

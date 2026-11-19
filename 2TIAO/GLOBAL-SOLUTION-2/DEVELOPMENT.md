@@ -6,7 +6,7 @@ Como rodar o projeto localmente. Para o propósito, as funcionalidades e a arqui
 ## Requisitos
 
 - Node.js 24+
-- Docker (para o broker MQTT e o agente LLM)
+- Docker (para o broker MQTT, o agente LLM e o serviço de ML)
 
 ## 1. Broker MQTT e agente LLM
 
@@ -30,7 +30,35 @@ regras. A chave também pode ficar num arquivo `.env` na raiz (não versione ess
 Para subir só um deles: `docker compose up -d mosquitto` ou `docker compose up -d --build agente`.
 Depois de mudar o código em `server/`, rode `docker compose up -d --build agente` de novo.
 
-## 2. Painel (frontend)
+## 2. Serviço de ML (previsão e K-means)
+
+O container `transito-ml` (pasta `ml/`, Python 3.12, FastAPI, LightGBM, scikit-learn) responde em
+`localhost:8788`; o Vite encaminha `/ml` para ele. Ele precisa de um modelo treinado com os dados da
+simulação. Na raiz do repositório:
+
+```bash
+cd src && npm install && npm run dataset -- --episodios 200 --semente 1 && cd ..   # data/treino/metricas.csv (~3 min)
+docker compose build ml
+docker compose run --rm ml python -m ml.treinar   # grava ml/modelos/ e mostra o MAE
+docker compose up -d --build ml
+```
+
+- `npm run dataset` roda episódios de 45 min simulados sem a página (curva de demanda por hora e dia,
+  acidente em metade deles); a mesma semente gera o mesmo arquivo. `--saida arquivo.csv` grava em
+  outro lugar.
+- `python -m ml.treinar` lê `data/treino/metricas.csv`, separa treino e teste por episódio (80/20),
+  treina 4 LightGBM (velocidade e fluxo para 15 e 30 min) e o K-means (k = 4), e grava em
+  `ml/modelos/` os modelos, `metricas.json` (MAE do modelo e da persistência) e `kmeans.json`.
+  Retreinar com o serviço no ar não exige reiniciar: ele relê os modelos.
+- `GET /ml/saude` diz qual modelo está carregado (`modelo: null` sem treino); sem modelo,
+  `/ml/prever` e `/ml/kmeans` respondem `503`.
+- Os dados e os modelos gerados ficam fora do git.
+
+Sem o serviço, o painel funciona: "Via selecionada" mostra "Previsão indisponível" e o mapa é
+classificado pela regra ("classificação por regra", com "Tentar de novo" na legenda). O container
+grava como o usuário `1000:1000`; outro UID: `ML_UID=$(id -u) ML_GID=$(id -g) docker compose ...`.
+
+## 3. Painel (frontend)
 
 ```bash
 cd src
@@ -40,7 +68,7 @@ npm run dev
 
 Abra a URL que o Vite mostrar (normalmente http://localhost:5173).
 
-## 3. Agente LLM fora do Docker (opcional)
+## 4. Agente LLM fora do Docker (opcional)
 
 Para desenvolver o proxy sem rebuild da imagem, pare o container e rode direto:
 
@@ -74,6 +102,9 @@ npm run build && npm run lint
 
 cd ../server
 npm test
+
+cd ..
+docker compose run --rm --no-deps ml python -m pytest -p no:cacheprovider ml/tests -v
 ```
 
 ## Parar

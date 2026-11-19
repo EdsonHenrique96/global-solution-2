@@ -8,6 +8,8 @@ export interface HistoryPoint {
   fluxo: number | null
   capacidade: number | null
   velocidade: number | null
+  /** veh/km; null without a reading (the forecast's lags, door 2). */
+  densidade?: number | null
 }
 
 export interface NetworkPoint {

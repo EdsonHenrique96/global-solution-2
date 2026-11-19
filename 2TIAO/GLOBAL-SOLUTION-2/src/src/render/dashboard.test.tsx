@@ -184,10 +184,11 @@ describe('operations dashboard', () => {
       vi.advanceTimersByTime(3_000)
     })
     expect(screen.getByText('AO VIVO')).toBeInTheDocument()
-    expect(screen.getByTestId('sim-clock')).toHaveTextContent('00:00:03')
+    // the simulated clock starts on Monday 07:00 (AD-077)
+    expect(screen.getByTestId('sim-clock')).toHaveTextContent('Seg 07:00')
     cleanup()
     render(<DashboardHeader connection="connected" simTimeMs={3_665_000} pending={0} active="mapa" onNavigate={() => {}} />)
-    expect(screen.getByTestId('sim-clock')).toHaveTextContent('01:01:05')
+    expect(screen.getByTestId('sim-clock')).toHaveTextContent('Seg 08:01')
   })
 
   it('C6 the bell shows the pending dot and opens Semáforos', () => {
