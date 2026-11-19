@@ -144,7 +144,11 @@ O broker, o proxy e o serviço de ML são opcionais: sem o broker, o transporte 
 
 ## Funcionalidades
 
-O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Relatórios**.
+O painel tem cinco páginas no menu: **Mapa ao vivo**, **Câmeras**, **Semáforos**, **Desvio** e
+**Relatórios**. Cada uma tem endereço próprio (`#mapa`, `#cameras`, `#semaforos`, `#desvio`,
+`#relatorios`), então o Voltar do navegador e um link abrem a página certa. O Mapa é a visão geral;
+os cards de Tempo de viagem, Semáforos operando, Motoristas notificados e Câmeras online levam à
+página com o detalhe.
 
 ### Mapa ao vivo
 - Camadas que ligam e desligam: **Densidade**, **Câmeras** e **Incidentes**. Zoom e arrasto.
@@ -182,10 +186,15 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
 - As 24 câmeras de placa (`C01E`..`C12S`) com trecho, papel (entrada ou saída) e online/offline.
 - Os últimos 20 eventos (hora, câmera, trecho e os 6 primeiros caracteres do hash) e o status MQTT.
 
-### Semáforos (controle da operação)
-- Volume de carros, **Desvio parcial** e **Controle de semáforos**
-  (adaptativo) liga/desliga.
-- Agente: log com a explicação de cada decisão e cards para aprovar ou rejeitar ações grandes.
+### Semáforos
+- As 16 esquinas com a fase das alamedas e das ruas, quanto falta para mudar e as que estão
+  intermitentes (com **Normalizar**).
+- **Controle de semáforos** liga/desliga o modo adaptativo coordenado.
+
+### Desvio
+- O estado do desvio e o botão **Desvio parcial** (liga/desliga).
+- Agente: log com a explicação de cada decisão e cards para aprovar ou rejeitar ações grandes (o
+  sino do cabeçalho abre esta página).
 - Painel do desvio: trecho evitado, motoristas com app à frente, a fração simulada e quantos foram
   avisados na janela; enquanto as frações são calculadas, "calculando a fração…".
 - **Modo sem LLM:** sem chave de API ou com a API fora do ar, as mesmas regras rodam com
@@ -194,8 +203,10 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
   (no trecho, mas sem app).
 
 ### Relatórios
-- Tempo médio de viagem, fila total, % desviado e gráfico dos últimos 10 min.
-- Curva de capacidade do trecho selecionado.
+- Tempo médio de viagem total, fila total, % notificado e gráficos dos últimos 10 min.
+- Modelo de capacidade do trecho selecionado: de onde vem a capacidade, folga, v_f, k_j e a curva
+  fluxo × densidade (o que o trecho mede agora fica na "Via selecionada" do Mapa).
+- **Simulação:** carros na via, gerados e o volume de carros por minuto.
 - **Estados do tráfego:** os 4 centróides do K-means (velocidade, fluxo e densidade em unidades
   reais), um gráfico velocidade × densidade com um ponto por trecho na cor do seu nível e a
   concordância com a regra (%).

@@ -158,16 +158,16 @@ describe('pareamento dashboard', () => {
 
   it('C25 the noise control is gone', () => {
     setup()
-    for (const name of ['Mapa ao vivo', 'Câmeras', 'Semáforos', 'Relatórios']) {
+    for (const name of ['Mapa ao vivo', 'Câmeras', 'Semáforos', 'Desvio', 'Relatórios']) {
       tab(name)
       expect(pageText(), name).not.toMatch(/ruído/i)
     }
-    tab('Semáforos')
+    // the simulation's control (Relatórios, AD-111) has the volume only: no noise
+    tab('Relatórios')
     const controls = screen.getByRole('group', { name: 'Controle da simulação' })
-    expect(within(controls).getByRole('heading')).toHaveTextContent('Controle da operação')
-    expect(within(controls).getAllByRole('slider').map((s) => s.getAttribute('aria-label') ?? s.closest('label')?.textContent)).toHaveLength(1)
+    expect(within(controls).getByRole('heading')).toHaveTextContent('Simulação')
+    expect(within(controls).getAllByRole('slider')).toHaveLength(1)
     expect(within(controls).getByRole('slider', { name: /carros por minuto/i })).toBeInTheDocument()
-    expect(within(controls).getAllByRole('button').map((b) => b.textContent)).toEqual(['Desvio parcial', 'Controle de semáforos'])
   })
 
   it('C26 draws 24 camera icons at the ends of their segments', () => {

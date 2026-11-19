@@ -14,7 +14,7 @@ import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { DashboardHeader } from './Dashboard'
 import { fitTransform } from './draw'
 import { NIVEIS } from './levels'
-import { MetricsPanel } from './MetricsPanel'
+import { DiversionPanel } from './DiversionPanel'
 
 const W = 1000
 const H = 600
@@ -92,7 +92,6 @@ function setup({ prever, kmeans = async () => Promise.reject(new Error('503')), 
   return { engine, transport, ml }
 }
 
-const METRICS = { travelLastMinuteS: 84.25, travelAllS: 71.5, queueTotal: 17, pctDiverted: 12.5, samples: [] }
 const table = (escolhida: number): DiversionSimulation => ({
   trecho: 'I12>I13',
   horizonteMin: 10,
@@ -104,18 +103,18 @@ const table = (escolhida: number): DiversionSimulation => ({
 describe('previsao dashboard', () => {
   it('C22 the diversion panel shows the simulated fraction', () => {
     const { rerender } = render(
-      <MetricsPanel metrics={METRICS} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 60, p: 0.2, candidatos: 10, notificados: 2, semAlcance: 1, simulacao: table(0.2) }} />,
+      <DiversionPanel enabled onToggle={() => {}} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 60, p: 0.2, candidatos: 10, notificados: 2, semAlcance: 1, simulacao: table(0.2) }} />,
     )
-    const state = within(screen.getByRole('region', { name: 'Métricas' })).getByTestId('diversion-state')
+    const state = within(screen.getByRole('region', { name: 'Desvio parcial' })).getByTestId('diversion-state')
     expect(state).toHaveTextContent(`evitar ${segmentName('I12>I13')}`)
     expect(state).toHaveTextContent('fração 20% (simulada)')
     expect(state).toHaveTextContent('2 notificados na janela')
     // "notificar todos": everyone, no simulation behind it
-    rerender(<MetricsPanel metrics={METRICS} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 0, p: 1, candidatos: 10, notificados: 7, semAlcance: 1, simulacao: null }} />)
+    rerender(<DiversionPanel enabled onToggle={() => {}} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 0, p: 1, candidatos: 10, notificados: 7, semAlcance: 1, simulacao: null }} />)
     expect(screen.getByTestId('diversion-state')).toHaveTextContent('fração 100% ·')
     expect(screen.getByTestId('diversion-state')).not.toHaveTextContent('simulada')
     // the fractions are still being computed (AD-103): no fraction yet, nobody told
-    rerender(<MetricsPanel metrics={METRICS} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 0, p: 0, candidatos: 10, notificados: 0, semAlcance: 1, simulacao: null, calculando: true }} />)
+    rerender(<DiversionPanel enabled onToggle={() => {}} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 0, p: 0, candidatos: 10, notificados: 0, semAlcance: 1, simulacao: null, calculando: true }} />)
     expect(screen.getByTestId('diversion-state')).toHaveTextContent('calculando a fração…')
     expect(screen.getByTestId('diversion-state')).toHaveTextContent('0 notificados na janela')
     expect(screen.getByTestId('diversion-state')).not.toHaveTextContent('fração 0%')

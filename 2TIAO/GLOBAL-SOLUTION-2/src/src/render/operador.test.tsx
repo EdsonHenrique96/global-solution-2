@@ -9,6 +9,7 @@ import { lightAt } from '../sim/trafficLight'
 import type { Point } from '../sim/types'
 import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { fitTransform } from './draw'
+import { DiversionPanel } from './DiversionPanel'
 import { MetricsPanel } from './MetricsPanel'
 
 interface Call {
@@ -87,7 +88,7 @@ describe('render', () => {
       const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
       const transport = new FakeTransport(true)
       render(<App engine={engine} transport={transport} />)
-      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
+      fireEvent.click(screen.getByRole('link', { name: 'Desvio' }))
       const toggle = screen.getByRole('button', { name: /desvio parcial/i })
       expect(toggle).toHaveAttribute('aria-pressed', 'true')
       fireEvent.click(toggle)
@@ -142,29 +143,29 @@ describe('render', () => {
     const snapshot = { travelLastMinuteS: 84.25, travelAllS: 71.5, queueTotal: 17, pctDiverted: 12.5, samples: [] }
 
     it('shows travel time, total queue, percent notified and the diversion state', () => {
-      const { rerender } = render(
-        <MetricsPanel
-          metrics={snapshot}
-          diversion={{ status: 'ativo', trecho: 'I12>I13', n: 480, p: 0.4, candidatos: 9, notificados: 3, semAlcance: 2 }}
-        />,
-      )
+      const { rerender } = render(<MetricsPanel metrics={snapshot} />)
       const panel = screen.getByRole('region', { name: 'Métricas' })
-      expect(within(panel).getByTestId('metric-travel-minute')).toHaveTextContent('84,3 s')
+      // the last minute's travel time is the map's card, not repeated here (AD-111)
+      expect(within(panel).queryByTestId('metric-travel-minute')).toBeNull()
       expect(within(panel).getByTestId('metric-travel-total')).toHaveTextContent('71,5 s')
       expect(within(panel).getByTestId('metric-queue')).toHaveTextContent('17')
       expect(within(panel).getByTestId('metric-diverted')).toHaveTextContent('12,5%')
-      const state = within(panel).getByTestId('diversion-state')
+      expect(within(panel).queryByTestId('diversion-state')).toBeNull()
+
+      // the diversion's state is on the Desvio page
+      const { rerender: again } = render(
+        <DiversionPanel diversion={{ status: 'ativo', trecho: 'I12>I13', n: 480, p: 0.4, candidatos: 9, notificados: 3, semAlcance: 2 }} enabled onToggle={() => {}} />,
+      )
+      const state = within(screen.getByRole('region', { name: 'Desvio parcial' })).getByTestId('diversion-state')
       expect(state).toHaveTextContent(`evitar ${segmentName('I12>I13')}`)
       expect(state).toHaveTextContent('9 motoristas com app à frente')
       expect(state).toHaveTextContent('fração 40%')
       expect(state).toHaveTextContent('3 notificados na janela')
-
-      rerender(<MetricsPanel metrics={{ ...snapshot, travelLastMinuteS: null }} diversion={{ status: 'inativo' }} />)
-      expect(within(panel).getByTestId('metric-travel-minute')).toHaveTextContent('—')
-      expect(within(panel).getByTestId('diversion-state')).toHaveTextContent(/inativo/i)
+      again(<DiversionPanel diversion={{ status: 'inativo' }} enabled onToggle={() => {}} />)
+      expect(screen.getByTestId('diversion-state')).toHaveTextContent(/inativo/i)
 
       // a chart whose last window had no arrival shows "—", not a zero travel time
-      rerender(<MetricsPanel metrics={{ ...snapshot, samples: [{ t: 10_000, travelS: null, queue: 3, pctDiverted: 0 }] }} diversion={{ status: 'inativo' }} />)
+      rerender(<MetricsPanel metrics={{ ...snapshot, samples: [{ t: 10_000, travelS: null, queue: 3, pctDiverted: 0 }] }} />)
       expect(screen.getByTestId('chart-travel').closest('figure')!).toHaveTextContent('—')
 
       // the percentage comes from the engine: rerouted over generated
@@ -190,7 +191,7 @@ describe('render', () => {
       expect(samples[59].t).toBe(660_000)
       for (let i = 1; i < samples.length; i++) expect(samples[i].t - samples[i - 1].t).toBe(10_000)
       expect(samples[59].queue).toBe(engine.queueTotal())
-      render(<MetricsPanel metrics={recorder.snapshot()} diversion={{ status: 'inativo' }} />)
+      render(<MetricsPanel metrics={recorder.snapshot()} />)
       for (const id of ['chart-travel', 'chart-queue', 'chart-diverted']) {
         const line = screen.getByTestId(id).querySelector('polyline')!
         expect(line.getAttribute('points')!.trim().split(/\s+/)).toHaveLength(60)
@@ -204,7 +205,7 @@ describe('render', () => {
       const transport = new FakeTransport(true)
       render(<App engine={new SimulationEngine({ ratePerMinute: 0, cameras: [] })} transport={transport} />)
       fireEvent.click(screen.getByRole('link', { name: 'Relatórios' }))
-      const panel = screen.getByRole('region', { name: 'Métricas do trecho' })
+      const panel = screen.getByRole('region', { name: 'Curva de capacidade' })
       let ts = 0
       const send = (k: number) => deliverMetrics(transport, 'I12>I13', (ts += 1), { k, v: 50 * (1 - k / 100) })
       expect(within(panel).queryAllByTestId('sample-point')).toHaveLength(0)

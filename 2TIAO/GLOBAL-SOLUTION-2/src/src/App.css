@@ -225,6 +225,11 @@
   scroll-margin-top: 84px;
 }
 
+/* a page that is not open is not shown: the display above would otherwise win over [hidden] (AD-111) */
+.dash-section[hidden] {
+  display: none;
+}
+
 #mapa {
   scroll-margin-top: 84px;
 }
@@ -240,6 +245,47 @@
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   align-items: start;
   gap: 16px;
+}
+
+.panel-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.signals table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.signals th,
+.signals td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.signals th {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.signals .phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.signals .signal-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .signals table {
+    display: block;
+    overflow-x: auto;
+  }
 }
 
 /* every panel is a card */
@@ -457,6 +503,49 @@
 
 .stat.lg {
   gap: 4px;
+}
+
+/* a card that opens the page with its detail (AD-111) */
+.stat-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.stat-link:hover,
+.stat-link:focus-visible {
+  border-color: var(--accent-border);
+  background: var(--surface-2);
+  outline: none;
+}
+
+.stat-link::after {
+  content: 'ver detalhes →';
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.stat-link:hover::after,
+.stat-link:focus-visible::after {
+  color: var(--accent);
+}
+
+/* a page's title, under the menu */
+.page-head {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.page-head h2 {
+  font-family: var(--display);
+  font-size: 20px;
+  color: var(--text);
 }
 
 .stat-label,

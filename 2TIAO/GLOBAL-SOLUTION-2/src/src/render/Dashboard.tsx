@@ -9,15 +9,8 @@ import type { Point } from '../sim/types'
 import type { ConnectionStatus } from '../telemetry/transport'
 import { labelRect, placeLabels, placeNotes } from './labels'
 import { labelLines, NIVEIS, perMin, type SegmentReading, type StreetRow } from './levels'
+import { TABS, type Tab } from './pages'
 
-export type Tab = 'mapa' | 'cameras' | 'semaforos' | 'relatorios'
-
-const TABS: readonly { id: Tab; label: string }[] = [
-  { id: 'mapa', label: 'Mapa ao vivo' },
-  { id: 'cameras', label: 'Câmeras' },
-  { id: 'semaforos', label: 'Semáforos' },
-  { id: 'relatorios', label: 'Relatórios' },
-]
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -87,7 +80,7 @@ export function DashboardHeader({ connection, simTimeMs, pending, active, onNavi
           type="button"
           className="icon-btn"
           aria-label={pending > 0 ? `Notificações: ${pending} aguardando aprovação` : 'Notificações'}
-          onClick={() => onNavigate('semaforos')}
+          onClick={() => onNavigate('desvio')}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
@@ -111,18 +104,42 @@ interface StatProps {
   alarm?: boolean
   size?: 'md' | 'lg'
   testId?: string
+  /** The page with the detail behind this number (AD-111): the card becomes a link to it. */
+  detail?: { tab: Tab; onOpen: (tab: Tab) => void }
 }
 
-export function StatCard({ label, value, unit, note, tone, alarm, size = 'md', testId }: StatProps) {
-  return (
-    <div className={`stat ${size}`} data-testid={testId}>
+export function StatCard({ label, value, unit, note, tone, alarm, size = 'md', testId, detail }: StatProps) {
+  const body = (
+    <>
       <span className="stat-label">{label}</span>
       <span className={`stat-value ${alarm ? 'tone-bad' : ''}`}>
         {value}
         {unit && <span className="stat-unit"> {unit}</span>}
       </span>
       {note && <span className={`stat-note ${tone ? `tone-${tone}` : ''}`}>{note}</span>}
-    </div>
+    </>
+  )
+  if (!detail) {
+    return (
+      <div className={`stat ${size}`} data-testid={testId}>
+        {body}
+      </div>
+    )
+  }
+  const page = TABS.find((t) => t.id === detail.tab)!.label
+  return (
+    <a
+      className={`stat ${size} stat-link`}
+      data-testid={testId}
+      href={`#${detail.tab}`}
+      title={`Ver detalhes em ${page}`}
+      onClick={(e) => {
+        e.preventDefault()
+        detail.onOpen(detail.tab)
+      }}
+    >
+      {body}
+    </a>
   )
 }
 

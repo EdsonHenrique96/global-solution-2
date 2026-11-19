@@ -134,11 +134,16 @@ describe('operations dashboard', () => {
   it('C3 each tab shows its panels and is marked current', () => {
     setup()
     const links = within(screen.getByRole('navigation', { name: 'Seções' })).getAllByRole('link')
-    expect(links.map((a) => a.textContent)).toEqual(['Mapa ao vivo', 'Câmeras', 'Semáforos', 'Relatórios'])
+    expect(links.map((a) => a.textContent)).toEqual(['Mapa ao vivo', 'Câmeras', 'Semáforos', 'Desvio', 'Relatórios'])
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['#mapa', '#cameras', '#semaforos', '#desvio', '#relatorios'])
     expect(links[0]).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('region', { name: 'Mapa de tráfego' })).toBeInTheDocument()
+    expect(document.title).toBe('Mapa ao vivo · Centro de Operações de Tráfego')
 
     tab('Câmeras')
+    // each menu item is a page: its own address and title (AD-111)
+    expect(window.location.hash).toBe('#cameras')
+    expect(document.title).toBe('Câmeras · Centro de Operações de Tráfego')
     expect(links[1]).toHaveAttribute('aria-current', 'page')
     expect(links[0]).not.toHaveAttribute('aria-current')
     expect(screen.queryByRole('region', { name: 'Mapa de tráfego' })).toBeNull()
@@ -146,20 +151,64 @@ describe('operations dashboard', () => {
     expect(screen.getByRole('complementary', { name: 'Eventos das câmeras' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Agente' })).toBeNull()
 
+    // Semáforos shows the lights: the 16 corners and the adaptive control, nothing of the diversion
     tab('Semáforos')
     expect(links[2]).toHaveAttribute('aria-current', 'page')
-    const controls = screen.getByRole('group', { name: 'Controle da simulação' })
-    expect(within(controls).getByRole('slider', { name: /carros por minuto/i })).toBeInTheDocument()
-    expect(within(controls).getByRole('button', { name: 'Desvio parcial' })).toBeInTheDocument()
-    expect(within(controls).getByRole('button', { name: 'Controle de semáforos' })).toBeInTheDocument()
+    const signals = screen.getByRole('region', { name: 'Semáforos' })
+    expect(within(signals).getAllByTestId(/^signal-I\d\d$/)).toHaveLength(16)
+    expect(within(signals).getByRole('button', { name: 'Controle de semáforos' })).toBeInTheDocument()
+    for (const name of ['Agente', 'Apps de mapa', 'Desvio parcial', 'Câmeras de placa']) expect(screen.queryByRole('region', { name })).toBeNull()
+    expect(screen.queryByRole('slider', { name: /carros por minuto/i })).toBeNull()
+
+    // Desvio: the diversion with its switch, the agent and the apps
+    tab('Desvio')
+    expect(links[3]).toHaveAttribute('aria-current', 'page')
+    expect(within(screen.getByRole('region', { name: 'Desvio parcial' })).getByRole('button', { name: 'Desvio parcial' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Agente' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Apps de mapa' })).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Câmeras de placa' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Semáforos' })).toBeNull()
 
+    // Relatórios: series, the capacity model, the states, the history, the simulation and the experiments
     tab('Relatórios')
-    expect(links[3]).toHaveAttribute('aria-current', 'page')
-    for (const name of ['Métricas', 'Experimentos', 'Métricas do trecho', 'Histórico de incidentes']) expect(screen.getByRole('region', { name })).toBeInTheDocument()
+    expect(links[4]).toHaveAttribute('aria-current', 'page')
+    for (const name of ['Métricas', 'Experimentos', 'Curva de capacidade', 'Histórico de incidentes', 'Estados do tráfego']) expect(screen.getByRole('region', { name })).toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'Controle da simulação' })).getByRole('slider', { name: /carros por minuto/i })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Agente' })).toBeNull()
+    // the diversion's state is only on Desvio
+    expect(within(screen.getByRole('region', { name: 'Página Relatórios' })).queryByTestId('diversion-state')).toBeNull()
+
+    // back/forward (popstate) and an edited address (hashchange) open the page of the address
+    act(() => {
+      window.history.replaceState(null, '', '#desvio')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(links[3]).toHaveAttribute('aria-current', 'page')
+    act(() => {
+      window.history.replaceState(null, '', '#semaforos')
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    expect(links[2]).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('region', { name: 'Semáforos' })).toBeInTheDocument()
+  })
+
+  it('C3 an address opens its page and the map cards open the page of their detail (AD-111)', () => {
+    window.history.replaceState(null, '', '#desvio')
+    setup()
+    const link = (name: string) => within(screen.getByRole('navigation', { name: 'Seções' })).getByRole('link', { name })
+    expect(link('Desvio')).toHaveAttribute('aria-current', 'page')
+    tab('Mapa ao vivo')
+    for (const [card, page] of [
+      ['card-cameras', 'Câmeras'],
+      ['card-semaforos', 'Semáforos'],
+      ['card-notificados', 'Desvio'],
+      ['card-viagem', 'Relatórios'],
+    ] as const) {
+      fireEvent.click(screen.getByTestId(card))
+      expect(link(page)).toHaveAttribute('aria-current', 'page')
+      tab('Mapa ao vivo')
+    }
+    // the network's own numbers have no other page
+    for (const card of ['card-fluxo', 'card-velocidade', 'card-incidentes', 'card-ocupacao']) expect(screen.getByTestId(card).tagName).toBe('DIV')
   })
 
   it('C4 returning to the map keeps the selected road and the layers', () => {
@@ -192,20 +241,20 @@ describe('operations dashboard', () => {
     expect(screen.getByTestId('sim-clock')).toHaveTextContent('Seg 08:01')
   })
 
-  it('C6 the bell shows the pending dot and opens Semáforos', () => {
+  it('C6 the bell shows the pending dot and opens Desvio', () => {
     const go = vi.fn()
     const { rerender } = render(<DashboardHeader connection="connected" simTimeMs={0} pending={0} active="mapa" onNavigate={go} />)
     expect(screen.queryByTestId('bell-dot')).toBeNull()
     rerender(<DashboardHeader connection="connected" simTimeMs={0} pending={2} active="mapa" onNavigate={go} />)
     expect(screen.getByTestId('bell-dot')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Notificações: 2 aguardando aprovação' }))
-    expect(go).toHaveBeenCalledWith('semaforos')
+    expect(go).toHaveBeenCalledWith('desvio')
   })
 
-  it('C6 the bell in the page opens Semáforos', () => {
+  it('C6 the bell in the page opens Desvio', () => {
     setup()
     fireEvent.click(screen.getByRole('button', { name: /^Notificações/ }))
-    expect(screen.getByRole('link', { name: 'Semáforos' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Desvio' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('region', { name: 'Agente' })).toBeInTheDocument()
   })
 
@@ -579,7 +628,8 @@ describe('operations dashboard', () => {
     expect(within(s).getByTestId('selected-level')).toHaveTextContent('Crítico')
     // the learned capacity is close to 1 250 veh/h; the pct is the flow over it
     tab('Relatórios')
-    const cap = Number(screen.getByTestId('capacity-capacidade').textContent!.replace(/[^\d,]/g, '').replace(',', '.'))
+    // (the learned capacity is the curve's peak in Relatórios' capacity model)
+    const cap = Number(screen.getByTestId('capacity-point').getAttribute('data-q'))
     tab('Mapa ao vivo')
     expect(cap).toBeGreaterThan(1200)
     expect(cap).toBeLessThan(1300)

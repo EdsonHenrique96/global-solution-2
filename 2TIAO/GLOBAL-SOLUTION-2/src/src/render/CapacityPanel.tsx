@@ -1,8 +1,5 @@
-import { SPEED_LIMIT_KMH, type Estimate } from '../capacity/CapacityModel'
-import type { FusedSegment } from '../fusion/FusionService'
+import type { Estimate } from '../capacity/CapacityModel'
 import { segmentName } from '../sensors/segments'
-import { NIVEIS, type Exibicao } from './levels'
-import { pairLabel, SEM_DADO } from './tooltip'
 
 const W = 300
 const H = 180
@@ -11,79 +8,44 @@ const PAD = { left: 40, right: 10, top: 10, bottom: 30 }
 interface Props {
   segmentId: string
   estimate: Estimate | undefined
-  /** The segment's level (AD-082), the same the map paints. */
-  nivel: Exibicao
-  fused?: FusedSegment
-  /** The segment's camera pair; null without one. */
-  pair?: readonly [string, string] | null
 }
 
 const fmt = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
-const orNone = (v: number | null | undefined, unit: string) => (v === null || v === undefined ? SEM_DADO : `${fmt(v)} ${unit}`)
+const orLearning = (v: number | null | undefined, unit: string) => (v === null || v === undefined ? 'aprendendo' : `${fmt(v)} ${unit}`)
 
-/** The selected segment's metrics (AC 16) and its flow x density curve forming live. */
-export function CapacityPanel({ segmentId, estimate, nivel, fused, pair = null }: Props) {
-  const lv = NIVEIS[nivel]
-  const known = estimate && nivel !== 'sem dado'
-  // share of the learned capacity in use: flow over capacity
-  const ocupacao = known && estimate.capacidade ? Math.round((estimate.fluxo / estimate.capacidade) * 100) : null
-  const velocidade = fused?.velocidadeMedia ?? null
-  const pctLimite = velocidade === null ? null : Math.round((velocidade / SPEED_LIMIT_KMH) * 100)
+/**
+ * The selected segment's capacity model in Relatórios (AD-111): the fit behind the capacity - free
+ * speed, jam density, slack, where the capacity comes from - and its flow x density curve. What the
+ * segment measures now (flow, speed, cars, density, cameras, level) is the map's "Via selecionada".
+ */
+export function CapacityPanel({ segmentId, estimate }: Props) {
   return (
-    <section className="capacity card" aria-label="Métricas do trecho">
+    <section className="capacity card" aria-label="Curva de capacidade">
       <div className="card-head">
         <div className="card-title">
-          <span className="eyebrow">Fluxo × densidade do trecho selecionado</span>
+          <span className="eyebrow">Modelo de capacidade do trecho selecionado</span>
           <h2 className="display">
             <span data-testid="capacity-via">{segmentName(segmentId)}</span>
           </h2>
-        </div>
-        <span data-testid="capacity-estado" className="pill" style={{ color: lv.color, background: lv.bg }}>
-          {nivel === 'sem dado' ? SEM_DADO : lv.label}
-        </span>
-      </div>
-
-      <div className="meter">
-        <div className="meter-label">
-          <span>Ocupação da capacidade (fluxo ÷ capacidade)</span>
-          <strong>{ocupacao === null ? (estimate?.capacidade == null ? 'aprendendo' : '—') : `${ocupacao}%`}</strong>
-        </div>
-        <div className="track">
-          <span style={{ width: `${Math.min(100, ocupacao ?? 0)}%`, background: lv.color }} />
         </div>
       </div>
 
       <dl className="capacity-facts">
         <div>
-          <dt>Fluxo</dt>
-          <dd data-testid="capacity-fluxo">{known ? `${fmt(estimate.fluxo)} veíc/h` : SEM_DADO}</dd>
-        </div>
-        <div>
           <dt>Capacidade</dt>
-          <dd data-testid="capacity-capacidade">{estimate?.capacidade == null ? 'aprendendo' : `${fmt(estimate.capacidade)} veíc/h`}</dd>
-        </div>
-        <div>
-          <dt>Velocidade (pareamento)</dt>
-          <dd data-testid="capacity-velocidade" style={pctLimite === null ? undefined : { color: lv.color }}>
-            {orNone(velocidade, 'km/h')}
-          </dd>
-          {pctLimite !== null && <small>{pctLimite}% do limite de {SPEED_LIMIT_KMH} km/h</small>}
+          <dd data-testid="capacity-fonte">{estimate?.capacidadeFonte === 'aprendida' ? 'aprendida (Greenshields)' : 'configurada (saturação × verde ÷ ciclo)'}</dd>
         </div>
         <div>
           <dt>Folga</dt>
-          <dd data-testid="capacity-folga">{estimate?.folga == null ? 'aprendendo' : `${fmt(estimate.folga)} veíc/h`}</dd>
+          <dd data-testid="capacity-folga">{orLearning(estimate?.folga, 'veíc/h')}</dd>
         </div>
         <div>
-          <dt>No trecho agora</dt>
-          <dd data-testid="capacity-contagem">{orNone(fused?.contagem, 'veíc')}</dd>
+          <dt>Velocidade livre (v_f)</dt>
+          <dd data-testid="capacity-vf">{orLearning(estimate?.vf, 'km/h')}</dd>
         </div>
         <div>
-          <dt>Densidade</dt>
-          <dd data-testid="capacity-densidade">{orNone(fused?.densidade, 'veíc/km')}</dd>
-        </div>
-        <div className="wide">
-          <dt>Câmeras</dt>
-          <dd data-testid="capacity-unidade">{pairLabel(pair)}</dd>
+          <dt>Densidade de congestionamento (k_j)</dt>
+          <dd data-testid="capacity-kj">{orLearning(estimate?.kj, 'veíc/km')}</dd>
         </div>
       </dl>
 

@@ -23,9 +23,11 @@ import {
   StreetRanking,
   type Classificacao,
   type MapIncident,
-  type Tab,
 } from './render/Dashboard'
 import { StatesPanel } from './render/StatesPanel'
+import { SignalsPanel } from './render/SignalsPanel'
+import { DiversionPanel } from './render/DiversionPanel'
+import { TABS, tabFromHash, type Tab } from './render/pages'
 import { clampView, fitTransform, gridCenter, ZOOM_STEPS, type MapView } from './render/draw'
 import { ExperimentsPanel } from './render/ExperimentsPanel'
 import {
@@ -118,7 +120,8 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   const [signalsOn, setSignalsOn] = useState(() => engine.getState().adaptiveSignals)
   const [hover, setHover] = useState<{ segmentId: string; x: number; y: number } | null>(null)
   const [connection, setConnection] = useState(() => transport.status())
-  const [tab, setTab] = useState<Tab>('mapa')
+  // the page comes from the address (#desvio), so back/forward and links open it (AD-111)
+  const [tab, setTab] = useState<Tab>(() => tabFromHash(window.location.hash))
   const [layers, setLayers] = useState({ density: true, cameras: true, incidents: true })
   const [mode, setMode] = useState<IncidentMode | null>(null)
   const [view, setView] = useState<MapView>(() => ({ zoom: 1, center: gridCenter(engine.getState().network) }))
@@ -287,7 +290,27 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   const apps = sim.fleet.snapshot()
   const jammed = diversion.status === 'ativo' ? diversion.trecho : null
 
+  // a page change from the browser (back, forward, an edited address)
+  useEffect(() => {
+    const follow = () => {
+      setTab(tabFromHash(window.location.hash))
+      setHover(null)
+    }
+    window.addEventListener('popstate', follow)
+    window.addEventListener('hashchange', follow)
+    return () => {
+      window.removeEventListener('popstate', follow)
+      window.removeEventListener('hashchange', follow)
+    }
+  }, [])
+  // each page opens at its top, with its name in the browser tab
+  useEffect(() => {
+    document.title = `${TABS.find((t) => t.id === tab)!.label} · Centro de Operações de Tráfego`
+    document.documentElement.scrollTop = 0
+  }, [tab])
+
   const go = (t: Tab) => {
+    if (window.location.hash !== `#${t}`) window.history.pushState(null, '', `#${t}`)
     setTab(t)
     setHover(null)
   }
@@ -397,15 +420,29 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
                   note={travelNote}
                   tone={travelNote.startsWith('+') ? 'alert' : undefined}
                   testId="card-viagem"
+                  detail={{ tab: 'relatorios', onOpen: go }}
                 />
-                <StatCard label="Semáforos operando" value={sigCard.value} note={sigCard.note} tone={state.flashing.length ? 'warn' : undefined} testId="card-semaforos" />
+                <StatCard
+                  label="Semáforos operando"
+                  value={sigCard.value}
+                  note={sigCard.note}
+                  tone={state.flashing.length ? 'warn' : undefined}
+                  testId="card-semaforos"
+                  detail={{ tab: 'semaforos', onOpen: go }}
+                />
                 <StatCard
                   label="Ocupação média da rede"
                   value={occupancy === null ? 'aprendendo' : `${occupancy.pct}%`}
                   note={occupancy === null ? 'capacidade em aprendizado' : `${n(occupancy.flow)} de ${n(occupancy.cap)} carros/min`}
                   testId="card-ocupacao"
                 />
-                <StatCard label="Motoristas notificados" value={n(sim.notifiedTotal)} note={`${n(apps.total)} com app de mapa ativo`} testId="card-notificados" />
+                <StatCard
+                  label="Motoristas notificados"
+                  value={n(sim.notifiedTotal)}
+                  note={`${n(apps.total)} com app de mapa ativo`}
+                  testId="card-notificados"
+                  detail={{ tab: 'desvio', onOpen: go }}
+                />
               </div>
             </section>
 
@@ -422,7 +459,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
                   testId="card-velocidade"
                 />
                 <StatCard size="lg" label="Incidentes ativos" value={incCard.value} alarm={incCard.value > 0} note={incCard.note} testId="card-incidentes" />
-                <StatCard size="lg" label="Câmeras online" value={camCard.value} note={camCard.note} testId="card-cameras" />
+                <StatCard size="lg" label="Câmeras online" value={camCard.value} note={camCard.note} testId="card-cameras" detail={{ tab: 'cameras', onOpen: go }} />
               </div>
               <SelectedRoad
                 reading={readings[selectedSegment]}
@@ -457,32 +494,34 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
           </>
         )}
 
-        <div id="cameras" className="dash-section" hidden={tab !== 'cameras'}>
+        <section id="cameras" className="dash-section" aria-label="Câmeras" hidden={tab !== 'cameras'}>
           <div className="panel-grid">
             <CameraPanel cameras={cameras} lastStatus={lastStatus} nowMs={now} selected={selectedUnit} />
             <CameraEventsPanel transport={transport} />
           </div>
-        </div>
+        </section>
 
-        <div id="semaforos" className="dash-section" hidden={tab !== 'semaforos'}>
+        <section id="semaforos" className="dash-section" aria-label="Página Semáforos" hidden={tab !== 'semaforos'}>
+          <div className="panel-grid single">
+            <SignalsPanel
+              lights={state.lights}
+              cornerName={cornerName}
+              flashing={state.flashing}
+              nowMs={now}
+              adaptive={signalsOn}
+              onToggleAdaptive={toggleSignals}
+              onNormalize={(id) => {
+                engine.removeFlashing(id)
+                sim.refreshIncidents()
+                refresh()
+              }}
+            />
+          </div>
+        </section>
+
+        <section id="desvio" className="dash-section" aria-label="Página Desvio" hidden={tab !== 'desvio'}>
           <div className="panel-grid">
-            <div className="card controls" role="group" aria-label="Controle da simulação">
-              <div className="card-head">
-                <h2>Controle da operação</h2>
-              </div>
-              <p className="muted">
-                Carros na via: <strong data-testid="active-cars">{state.cars.length}</strong> · Gerados: <strong data-testid="spawned-total">{state.spawnedTotal}</strong>
-              </p>
-              <VolumeControl value={rate} onChange={changeRate} />
-              <div className="toggles stack">
-                <button type="button" aria-pressed={diversionOn} onClick={toggleDiversion}>
-                  Desvio parcial
-                </button>
-                <button type="button" aria-pressed={signalsOn} onClick={toggleSignals}>
-                  Controle de semáforos
-                </button>
-              </div>
-            </div>
+            <DiversionPanel diversion={diversion} enabled={diversionOn} onToggle={toggleDiversion} />
             <AgentPanel
               {...agentView}
               onApprove={(id) => {
@@ -496,23 +535,26 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
             />
             <AppPanel transport={transport} diversion={diversion} />
           </div>
-        </div>
+        </section>
 
-        <div id="relatorios" className="dash-section" hidden={tab !== 'relatorios'}>
+        <section id="relatorios" className="dash-section" aria-label="Página Relatórios" hidden={tab !== 'relatorios'}>
           <div className="panel-grid">
-            <MetricsPanel metrics={metrics} diversion={diversion} />
-            <CapacityPanel
-              segmentId={selectedSegment}
-              estimate={estimates[selectedSegment]}
-              nivel={readings[selectedSegment].exibido}
-              fused={fused[selectedSegment]}
-              pair={pairFor(selectedSegment)}
-            />
+            <MetricsPanel metrics={metrics} />
+            <CapacityPanel segmentId={selectedSegment} estimate={estimates[selectedSegment]} />
             <StatesPanel model={classificacao === 'kmeans' ? classifier.model : null} readings={readingList.filter((r) => pairFor(r.id) !== null)} />
             <IncidentHistory incidents={sim.incidents.history()} placeOf={placeOf} />
+            <div className="card controls" role="group" aria-label="Controle da simulação">
+              <div className="card-head">
+                <h2>Simulação</h2>
+              </div>
+              <p className="muted">
+                Carros na via: <strong data-testid="active-cars">{state.cars.length}</strong> · Gerados: <strong data-testid="spawned-total">{state.spawnedTotal}</strong>
+              </p>
+              <VolumeControl value={rate} onChange={changeRate} />
+            </div>
             <ExperimentsPanel />
           </div>
-        </div>
+        </section>
       </main>
     </div>
   )

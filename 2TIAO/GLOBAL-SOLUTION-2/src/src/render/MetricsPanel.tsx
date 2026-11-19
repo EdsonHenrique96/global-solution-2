@@ -1,46 +1,30 @@
-import type { DiversionState } from '../decision/DiversionController'
 import type { MetricsSample, MetricsSnapshot } from '../decision/MetricsRecorder'
 
-import { segmentName } from '../sensors/segments'
 
 const fmt = (v: number, digits = 1) => v.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 const seconds = (v: number | null) => (v === null ? '—' : `${fmt(v)} s`)
 
-function diversionText(d: DiversionState): string {
-  switch (d.status) {
-    case 'ativo':
-      // the fraction comes from the simulation ahead (RF18); "notificar todos" tells everyone
-      if (d.calculando) return `evitar ${segmentName(d.trecho)} · ${d.candidatos} motoristas com app à frente · calculando a fração… · ${d.notificados} notificados na janela`
-      return `evitar ${segmentName(d.trecho)} · ${d.candidatos} motoristas com app à frente · fração ${Math.round(d.p * 100)}%${d.simulacao ? ' (simulada)' : ''} · ${d.notificados} notificados na janela`
-    case 'desligado':
-      return 'desligado'
-    default:
-      return 'inativo'
-  }
-}
 
 interface Props {
   metrics: MetricsSnapshot
-  diversion: DiversionState
 }
 
-/** Live metrics that show how the network reacts to accidents and decisions (AD-017). */
-export function MetricsPanel({ metrics, diversion }: Props) {
+/**
+ * Live metrics that show how the network reacts to accidents and decisions (AD-017), in Relatórios.
+ * The diversion's state is on the Desvio page (AD-111); the last minute's travel time is the map's card.
+ */
+export function MetricsPanel({ metrics }: Props) {
   const { samples } = metrics
   return (
     <section className="metrics" aria-label="Métricas">
       <h2>Métricas</h2>
       <dl className="capacity-facts">
-        <dt>Tempo médio de viagem (último min)</dt>
-        <dd data-testid="metric-travel-minute">{seconds(metrics.travelLastMinuteS)}</dd>
         <dt>Tempo médio de viagem (total)</dt>
         <dd data-testid="metric-travel-total">{seconds(metrics.travelAllS)}</dd>
         <dt>Fila total</dt>
         <dd data-testid="metric-queue">{metrics.queueTotal}</dd>
         <dt>Notificados</dt>
         <dd data-testid="metric-diverted">{fmt(metrics.pctDiverted)}%</dd>
-        <dt>Desvio</dt>
-        <dd data-testid="diversion-state">{diversionText(diversion)}</dd>
       </dl>
       <Spark id="chart-travel" label="Tempo médio de viagem (s)" samples={samples} value={(s) => s.travelS} />
       <Spark id="chart-queue" label="Fila total" samples={samples} value={(s) => s.queue} />
