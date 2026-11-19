@@ -9,7 +9,8 @@ const seconds = (v: number | null) => (v === null ? '—' : `${fmt(v)} s`)
 function diversionText(d: DiversionState): string {
   switch (d.status) {
     case 'ativo':
-      return `evitar ${segmentName(d.trecho)} · ${d.candidatos} motoristas com app à frente · p ${Math.round(d.p * 100)}% · ${d.notificados} notificados na janela`
+      // the fraction comes from the simulation ahead (RF18); "notificar todos" tells everyone
+      return `evitar ${segmentName(d.trecho)} · ${d.candidatos} motoristas com app à frente · fração ${Math.round(d.p * 100)}%${d.simulacao ? ' (simulada)' : ''} · ${d.notificados} notificados na janela`
     case 'desligado':
       return 'desligado'
     default:

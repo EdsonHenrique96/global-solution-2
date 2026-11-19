@@ -156,7 +156,7 @@ describe('render', () => {
       const state = within(panel).getByTestId('diversion-state')
       expect(state).toHaveTextContent(`evitar ${segmentName('I12>I13')}`)
       expect(state).toHaveTextContent('9 motoristas com app à frente')
-      expect(state).toHaveTextContent('p 40%')
+      expect(state).toHaveTextContent('fração 40%')
       expect(state).toHaveTextContent('3 notificados na janela')
 
       rerender(<MetricsPanel metrics={{ ...snapshot, travelLastMinuteS: null }} diversion={{ status: 'inativo' }} />)

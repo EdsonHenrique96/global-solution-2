@@ -1,3 +1,5 @@
+import { cloneRng } from './random'
+
 /** Free-flow speed: 50 km/h, in metres per second (1 network unit = 1 m). */
 export const DEFAULT_CAR_SPEED = 50 / 3.6
 
@@ -42,6 +44,14 @@ export class CarGenerator {
     // Carry no stale budget across a rate change: the new rate starts from now.
     this.accumulator = 0
     this.untilNextMs = null
+  }
+
+  /** A copy at the same point of its sequence. */
+  clone(): CarGenerator {
+    const c = new CarGenerator(this.ratePerMinute, { arrivals: this.arrivals, rng: cloneRng(this.rng) })
+    c.accumulator = this.accumulator
+    c.untilNextMs = this.untilNextMs
+    return c
   }
 
   /** Cars due in this step. */

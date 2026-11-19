@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { APPS_TOPIC } from '../apps/AppFleet'
 import { Simulation } from '../decision/Simulation'
+import { FRACOES, simulateDiversion, type DiversionSimulation } from '../decision/simulateDiversion'
 import { compareSaturation } from '../render/levels'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { deliverMetrics, FakeTransport } from '../telemetry/testing'
@@ -26,9 +27,18 @@ function scripted(steps: LlmResponse[]): LlmTurn & { calls: number; seen: unknow
   return fn
 }
 
-function setup(llm: LlmTurn, rate = 0) {
+/** A fraction simulation that always picks `escolhida` (the rules' tests are about the policy). */
+const fixedFraction = (escolhida: number) => (_sim: Simulation, trecho: string): DiversionSimulation => ({
+  trecho,
+  horizonteMin: 10,
+  fracoes: FRACOES.map((fracao) => ({ fracao, ocupacaoMaxTrecho: fracao >= escolhida ? 80 : 95, ocupacaoMaxAlternativa: 50, tempoMedioS: 100, co2Kg: 1 })),
+  escolhida,
+  eficaz: true,
+})
+
+function setup(llm: LlmTurn, rate = 0, simulate?: (sim: Simulation, trecho: string) => DiversionSimulation) {
   const transport = new FakeTransport(true)
-  const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: rate }), transport, agentControl: true })
+  const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: rate }), transport, agentControl: true, simulateDiversion: simulate })
   sim.start()
   const runner = new AgentRunner({ sim, llm })
   return { sim, runner, transport }
@@ -113,38 +123,73 @@ describe('agent', () => {
       expect(bad('apagar_tudo', {}).is_error).toBe(true)
     })
 
-    it('sizes a proposed diversion like the rerouter and applies the policy', () => {
+    it('C23 propor_desvio uses the simulated fraction and returns the door 6 table', async () => {
       // no real cameras: only the injected metrics measure the block
       const transport = new FakeTransport(true)
       const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }), transport, agentControl: true })
       sim.start()
       const runner = new AgentRunner({ sim, llm: scripted([]) })
-      // the block crawls at 3 km/h with 8 cars on 140 m: flow 171 veh/h once learned
+      // the block crawls at 3 km/h with 8 cars on 140 m
       const reading = (ts: number) => deliverMetrics(transport, JAMMED, ts, { k: 8 / 0.14, v: 3, ocupacao: 8 })
       reading(0)
-      for (let t = 0; t < 10_100; t += TICK_MS) sim.tick()
-      reading(sim.engine.getState().timeMs)
       sim.engine.addCar({ path: ['I11>I12', JAMMED, 'I13>I14'], app: 'waze', velocity: 0 })
+      for (let t = 0; t < 9_900; t += TICK_MS) sim.tick()
+      transport.deliver(APPS_TOPIC, JSON.stringify({ ts: 0, total: 1, porApp: {}, porTrecho: {}, demandaPorTrecho: { [JAMMED]: 300 } }))
+      // the same simulation, run on its own from the state where the diversion starts
+      const direct = simulateDiversion(sim, JAMMED)
+      reading(sim.engine.getState().timeMs)
+      sim.tick()
+      expect(sim.diversion).toMatchObject({ status: 'ativo', trecho: JAMMED })
+      expect(sim.simulations).toHaveLength(1)
+      expect(sim.simulations[0].result).toEqual(direct)
       const ctx = { sim, propose: (a: Parameters<typeof runner.applyProposal>[0]) => runner.applyProposal(a), explain: () => {} }
-      const propose = (demand: number) => {
-        transport.deliver(APPS_TOPIC, JSON.stringify({ ts: 0, total: 1, porApp: {}, porTrecho: {}, demandaPorTrecho: { [JAMMED]: demand } }))
-        const expected = sim.sizing(JAMMED)
-        const out = JSON.parse(executeTool('propor_desvio', { trecho: JAMMED, justificativa: 'acidente', p: 0.99, n: 9999 }, ctx).content)
-        expect(out).toMatchObject({ n: expected.n, p: expected.p, candidatos: expected.evaluations.length })
-        return out
+      const out = JSON.parse(executeTool('propor_desvio', { trecho: JAMMED, justificativa: 'acidente', p: 0.99, n: 9999 }, ctx).content)
+      // the tool reads the diversion's simulation, not a new one
+      expect(sim.simulations).toHaveLength(1)
+      expect(out.simulacao).toEqual(direct)
+      expect(out.p).toBe(direct.escolhida)
+      // the fraction is applied inside the simulation: telling the one driver changes the outcome
+      expect(direct.fracoes[6]).not.toEqual({ ...direct.fracoes[0], fracao: 1 })
+      expect(out.n).toBe(Math.round(direct.escolhida * 300 * 10) / 10)
+      expect(out.candidatos).toBe(1)
+
+      // the policy reads that fraction: 20% applies at once, 40% waits for the operator
+      const at = (escolhida: number) => {
+        const s = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }), transport: new FakeTransport(true), agentControl: true, simulateDiversion: fixedFraction(escolhida) })
+        const r = new AgentRunner({ sim: s, llm: scripted([]) })
+        const c = { sim: s, propose: (a: Parameters<typeof r.applyProposal>[0]) => r.applyProposal(a), explain: () => {} }
+        return { s, r, out: JSON.parse(executeTool('propor_desvio', { trecho: JAMMED, justificativa: 'acidente' }, c).content) }
       }
-      // small excess: p <= 0.3 applies at once
-      const small = propose(230)
-      expect(small.p).toBeGreaterThan(0)
-      expect(small.p).toBeLessThanOrEqual(0.3)
-      expect(small.resultado).toMatch(/^aplicado/)
-      expect(sim.active).toEqual({ trecho: JAMMED, p: small.p, mode: 'parcial' })
-      // large excess: p above 0.3 waits for the operator
-      const large = propose(600)
-      expect(large.p).toBeGreaterThan(0.3)
-      expect(large.resultado).toMatch(/aguardando aprovação/)
-      expect(runner.queue.pending()[0].acao).toMatchObject({ tipo: 'desvio', trecho: JAMMED, p: large.p })
-      expect(sim.active?.p).toBe(small.p)
+      const small = at(0.2)
+      expect(small.out).toMatchObject({ p: 0.2, simulacao: { escolhida: 0.2, horizonteMin: 10 } })
+      expect(small.out.simulacao.fracoes.map((f: { fracao: number }) => f.fracao)).toEqual([0, 0.1, 0.2, 0.3, 0.4, 0.5, 1])
+      expect(small.out.resultado).toMatch(/^aplicado/)
+      expect(small.s.active).toEqual({ trecho: JAMMED, p: 0.2, mode: 'parcial' })
+      const large = at(0.4)
+      expect(large.out.p).toBe(0.4)
+      expect(large.out.resultado).toMatch(/aguardando aprovação/)
+      expect(large.r.queue.pending()[0].acao).toMatchObject({ tipo: 'desvio', trecho: JAMMED, p: 0.4 })
+      expect(large.s.active).toBeNull()
+
+      // without the LLM, the rules propose that same fraction
+      const llm = (async () => {
+        throw new LlmUnavailable('503')
+      }) as LlmTurn
+      const t3 = new FakeTransport(true)
+      const s3 = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }), transport: t3, agentControl: true, simulateDiversion: fixedFraction(0.3) })
+      s3.start()
+      const r3 = new AgentRunner({ sim: s3, llm })
+      for (let i = 0; i < 6; i++) s3.engine.addCar({ path: ['I11>I12', JAMMED, 'I13>I14'], app: 'waze', velocity: 0 })
+      // Crítico from 10 s on: the controller suggests, the rules propose at the 30 s turn
+      for (let t = 0; t < 30_000; t += TICK_MS) {
+        if (s3.engine.getState().timeMs % 10_000 === 0) deliverMetrics(t3, JAMMED, s3.engine.getState().timeMs, { k: 8 / 0.14, v: 3, ocupacao: 8 })
+        s3.tick()
+        r3.tick()
+        await r3.idle()
+      }
+      expect(s3.diversion).toMatchObject({ status: 'ativo', trecho: JAMMED, p: 0.3 })
+      expect(s3.active).toEqual({ trecho: JAMMED, p: 0.3, mode: 'parcial' })
+      expect(r3.log.entries().some((e) => e.origem === 'regra' && /fração 30%/.test(e.texto))).toBe(true)
     })
   })
 
@@ -261,7 +306,8 @@ describe('agent', () => {
         if (down) throw new LlmUnavailable('503')
         return { content: [text('ok')], stop_reason: 'end_turn' }
       }) as LlmTurn
-      const { sim, runner } = setup(llm, 120)
+      // the size comes from the fraction simulation (C23); here it picks 20%
+      const { sim, runner } = setup(llm, 120, fixedFraction(0.2))
       await runFor(sim, runner, 30_000)
       expect(runner.mode).toBe('regra')
       expect(runner.log.entries()[0].origem).toBe('regra')

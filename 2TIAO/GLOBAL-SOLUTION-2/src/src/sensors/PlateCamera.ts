@@ -127,6 +127,14 @@ export class PlateCameraSet {
     for (const c of cameras) this.bySegment.set(c.trecho, [...(this.bySegment.get(c.trecho) ?? []), c])
   }
 
+  /** A copy that remembers where every car was; `withCameras: false` gives a set that sees nothing. */
+  clone(withCameras = true): PlateCameraSet {
+    const c = new PlateCameraSet(withCameras ? this.cameras : [], this.seed)
+    c.last = new Map(this.last)
+    c.nextStatus = withCameras ? this.nextStatus : Infinity
+    return c
+  }
+
   observe(cars: readonly PlateSample[], ts: number): { events: PlateEvent[]; statuses: CameraStatus[] } {
     const events: PlateEvent[] = []
     const check = (car: PlateSample, prev: PlateSample | undefined, now: PlateSample | undefined) => {

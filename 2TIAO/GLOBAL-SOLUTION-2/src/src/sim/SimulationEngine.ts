@@ -7,7 +7,7 @@ import { CarGenerator, DEFAULT_CAR_SPEED } from './carGenerator'
 import { borderIds, buildCityNetwork } from './cityNetwork'
 import { shortestPath } from './graph'
 import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_DECEL, MAX_STOP_DECEL, step } from './idm'
-import { mulberry32 } from './random'
+import { mulberry32, type Rng } from './random'
 import { phaseFor, SignalController, type LightState } from './trafficLight'
 import type { AppName, Axis, Car, RoadNetwork } from './types'
 
@@ -136,8 +136,8 @@ export class SimulationEngine {
   private readonly plates: PlateGenerator
   private readonly speed: number
   private readonly borders: string[]
-  private readonly tripRng: () => number
-  private readonly appRng: () => number
+  private readonly tripRng: Rng
+  private readonly appRng: Rng
   private readonly appShare: number
   private readonly paths = new Map<string, string[]>()
   private readonly plateListeners = new Set<(e: PlateEvent) => void>()
@@ -187,6 +187,58 @@ export class SimulationEngine {
     this.cameras = (options.cameras ?? defaultPlateCameras(this.segments, STOP_LINE_M)).map((c) => ({ ...c, position: { ...c.position } }))
     this.cameraSet = new PlateCameraSet(this.cameras, seed)
     this.plates = new PlateGenerator(seed)
+  }
+
+  /**
+   * An independent copy of the whole state now - cars, queues, lights, incidents, counters and the
+   * random sequences - with no listeners: ticking the copy never touches this engine, and the copy
+   * evolves as this engine would. `cameras: false` gives a copy whose cameras see nothing (faster;
+   * cameras only observe).
+   */
+  clone({ cameras = true }: { cameras?: boolean } = {}): SimulationEngine {
+    const c = Object.create(SimulationEngine.prototype) as SimulationEngine
+    const car = (x: CarState): CarState => ({ ...x, path: [...x.path] })
+    Object.assign(c, {
+      network: this.network,
+      generator: this.generator.clone(),
+      segments: this.segments,
+      segById: this.segById,
+      lightMode: this.lightMode,
+      cameraSet: this.cameraSet.clone(cameras),
+      plates: this.plates.clone(),
+      speed: this.speed,
+      borders: this.borders,
+      tripRng: this.tripRng.clone(),
+      appRng: this.appRng.clone(),
+      appShare: this.appShare,
+      paths: new Map(this.paths),
+      plateListeners: new Set(),
+      statusListeners: new Set(),
+      entryListeners: new Set(),
+      cars: this.cars.map(car),
+      waiting: this.waiting.map(car),
+      cameras: this.cameras,
+      nextCarId: this.nextCarId,
+      spawnedTotal: this.spawnedTotal,
+      arrivedTotal: this.arrivedTotal,
+      reroutedTotal: this.reroutedTotal,
+      redDecision: new Map([...this.redDecision].map(([k, v]) => [k, { ...v }])),
+      cornerTickets: new Map([...this.cornerTickets].map(([k, v]) => [k, { ...v }])),
+      timeMs: this.timeMs,
+      signals: this.signals.clone(),
+      blockages: this.blockages.map((b) => ({ ...b })),
+      blockageId: this.blockageId,
+      workZones: this.workZones.map((z) => ({ ...z })),
+      flashing: this.flashing.map((f) => ({ ...f })),
+      incidentId: this.incidentId,
+      arrivalListeners: new Set(),
+      blockageListeners: new Set(),
+      arrivals: this.arrivals.map((a) => ({ ...a })),
+      travelSumS: this.travelSumS,
+      co2TotalG: this.co2TotalG,
+      distanceTotalM: this.distanceTotalM,
+    })
+    return c
   }
 
   setRate(ratePerMinute: number): void {

@@ -41,7 +41,7 @@ describe('render', () => {
       expect(entries[0]).toHaveTextContent('1:35 agente Al. Santos congestionada; desvio de 25% dos motoristas com app.')
       expect(entries[1]).toHaveTextContent('1:00 regra Nada a mudar.')
       const card = within(panel).getByTestId('card-7')
-      expect(card).toHaveTextContent('Desvio de Al. Santos, R. Bela Cintra → R. Haddock Lobo · N 120 veíc/h · p 40%')
+      expect(card).toHaveTextContent('Desvio de Al. Santos, R. Bela Cintra → R. Haddock Lobo · fração 40% · N 120 veíc/h')
       expect(card).toHaveTextContent('acidente na Al. Santos')
       fireEvent.click(within(card).getByRole('button', { name: 'Aprovar' }))
       expect(onApprove).toHaveBeenCalledWith(7)

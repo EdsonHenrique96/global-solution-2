@@ -1,7 +1,6 @@
 import type { Exibicao } from '../render/levels'
+import type { DiversionSimulation } from './simulateDiversion'
 
-export const SAFETY_FACTOR = 0.8
-export const MAX_DIVERSION = 0.5
 /** The diversion starts in the recomputation the segment turns Crítico (AD-090). */
 export const START_WINDOWS = 1
 export const STOP_WINDOWS = 2
@@ -32,15 +31,9 @@ export type DiversionState =
       notificados: number
       /** Drivers on it without an app (AC 26); null without a camera count. */
       semAlcance: number | null
+      /** The fractions simulated for this diversion (door 6); null when everyone is told ("notificar todos"). */
+      simulacao?: DiversionSimulation | null
     }
-
-/** N = min(excess of A, slack of B x 0.8); p = min(N / demand of A, 0.5). Rates in veh/h. */
-export function diversionSize(demandA: number, flowA: number, slackB: number): { n: number; p: number } {
-  const excess = Math.max(0, demandA - flowA)
-  const n = Math.max(0, Math.min(excess, slackB * SAFETY_FACTOR))
-  const p = demandA > 0 ? Math.min(n / demandA, MAX_DIVERSION) : 0
-  return { n: Math.round(n * 10) / 10, p: Math.round(p * 1000) / 1000 }
-}
 
 /**
  * When to divert, with hysteresis, evaluated once per 10 s recomputation: starts in the

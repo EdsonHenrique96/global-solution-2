@@ -13,7 +13,7 @@ const FASES = { H: 'alameda', V: 'rua' } as const
 
 function describe(action: AgentAction): string {
   return action.tipo === 'desvio'
-    ? `desvio de ${segmentName(action.trecho)} (N ${Math.round(action.n)} veíc/h, p ${pct(action.p)})`
+    ? `desvio de ${segmentName(action.trecho)} (fração ${pct(action.p)}, N ${Math.round(action.n)} veíc/h)`
     : `verde de ${action.verdeS} s na fase ${FASES[action.fase]} do semáforo ${action.intersecao}`
 }
 

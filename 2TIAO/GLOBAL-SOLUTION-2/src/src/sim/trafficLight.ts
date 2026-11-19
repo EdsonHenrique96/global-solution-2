@@ -76,6 +76,15 @@ export class SignalController {
     this.ids = intersectionIds
   }
 
+  /** A copy with the same stages and pending greens. */
+  clone(): SignalController {
+    const c = new SignalController(this.ids)
+    c.adaptive = this.adaptive
+    for (const [id, s] of this.state) c.state.set(id, { stage: { ...s.stage }, endsAtMs: s.endsAtMs })
+    for (const [k, v] of this.nextGreen) c.nextGreen.set(k, v)
+    return c
+  }
+
   isAdaptive(): boolean {
     return this.adaptive
   }

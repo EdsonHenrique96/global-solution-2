@@ -7,7 +7,7 @@ const ORIGIN: Record<LogEntry['origem'], string> = { agente: 'agente', regra: 'r
 
 function actionText(a: AgentAction): string {
   return a.tipo === 'desvio'
-    ? `Desvio de ${segmentName(a.trecho)} · N ${Math.round(a.n)} veíc/h · p ${Math.round(a.p * 100)}%`
+    ? `Desvio de ${segmentName(a.trecho)} · fração ${Math.round(a.p * 100)}% · N ${Math.round(a.n)} veíc/h`
     : `Verde de ${a.verdeS} s na fase ${FASES[a.fase]} do semáforo ${a.intersecao}`
 }
 

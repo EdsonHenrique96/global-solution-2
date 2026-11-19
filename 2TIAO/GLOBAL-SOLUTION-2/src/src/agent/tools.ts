@@ -58,7 +58,11 @@ export function networkState(sim: Simulation): Record<string, unknown> {
 
 const err = (content: string): ToolResult => ({ content, is_error: true })
 
-/** Runs one tool call. The size of a diversion always comes from the same sizing the rerouter uses. */
+/**
+ * Runs one tool call. The size of a diversion always comes from the same sizing the rerouter uses:
+ * the smallest effective fraction simulated ahead (RF18), returned with its table (door 6) so the
+ * agent can justify the proposal with numbers.
+ */
 export function executeTool(name: string, input: Record<string, unknown>, ctx: ToolContext): ToolResult {
   switch (name) {
     case 'estado_rede':
@@ -68,9 +72,9 @@ export function executeTool(name: string, input: Record<string, unknown>, ctx: T
       if (typeof trecho !== 'string' || !ctx.sim.capacity.segments.some((s) => s.id === trecho)) {
         return err('trecho inválido: use um id como I12>I13')
       }
-      const { n, p, evaluations } = ctx.sim.sizing(trecho)
+      const { n, p, evaluations, simulacao } = ctx.sim.sizing(trecho)
       const resultado = ctx.propose({ tipo: 'desvio', trecho, n, p, justificativa: String(justificativa ?? '') })
-      return { content: JSON.stringify({ n, p, candidatos: evaluations.length, resultado }) }
+      return { content: JSON.stringify({ n, p, candidatos: evaluations.length, simulacao, resultado }) }
     }
     case 'propor_semaforo': {
       const { intersecao, fase, verde_s, justificativa } = input
