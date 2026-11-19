@@ -9,15 +9,16 @@ export const FRACOES = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1] as const
 export const HORIZONTE_MIN = 10
 /** Below this predicted occupancy (%) a segment is relieved (UC01). */
 export const OCUPACAO_LIMITE_PCT = 90
-const WINDOW_MS = 60_000
+/** Occupancy is the 5 min moving average of flow over capacity (AD-102), not the 1 min peak. */
+export const OCCUPANCY_WINDOW_MS = 300_000
 const DECIDE_EVERY_MS = 10_000
 
 /** One fraction, simulated 10 min ahead (door 6). Occupancies in % of capacity. */
 export interface FractionResult {
   fracao: number
-  /** Highest 1 min flow over capacity on the segment, %. */
+  /** Highest 5 min moving average of flow over capacity on the segment, % (AD-102). */
   ocupacaoMaxTrecho: number
-  /** Highest 1 min flow over capacity on any segment of the alternatives, %. */
+  /** The same on the segment of the alternatives that reaches the highest, %. */
   ocupacaoMaxAlternativa: number
   /** Mean travel time of the cars that arrived in the 10 min, s; null when none did. */
   tempoMedioS: number | null
@@ -144,8 +145,11 @@ function runFractions(live: SimulationEngine, frozen: Frozen): FractionResult[] 
       b.where = now
       if (s.timeMs % DECIDE_EVERY_MS === 0) {
         for (const [seg, list] of b.exits) {
-          while (list.length && list[0] <= s.timeMs - WINDOW_MS) list.shift()
-          const pct = ((list.length * 60) / frozen.capacityOf(seg)) * 100
+          while (list.length && list[0] <= s.timeMs - OCCUPANCY_WINDOW_MS) list.shift()
+          // only full windows: the first one ends 5 min into the horizon and covers it from the start
+          if (s.timeMs - start.timeMs < OCCUPANCY_WINDOW_MS) continue
+          const perHour = (list.length * 3_600_000) / OCCUPANCY_WINDOW_MS
+          const pct = (perHour / frozen.capacityOf(seg)) * 100
           b.maxPct.set(seg, Math.max(b.maxPct.get(seg) ?? 0, pct))
         }
       }
