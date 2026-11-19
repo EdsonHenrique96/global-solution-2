@@ -6,8 +6,8 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // the agent's LLM proxy (../server), so the API key never reaches the page
-    proxy: { '/api': 'http://127.0.0.1:8787' },
+    // the agent's LLM proxy (../server), so the API key never reaches the page; the ML service (../ml)
+    proxy: { '/api': 'http://127.0.0.1:8787', '/ml': 'http://127.0.0.1:8788' },
   },
   test: {
     environment: 'jsdom',

@@ -30,3 +30,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  ml:
+    # serviço de ML (AD-072): previsão LightGBM e estados K-means; treino com
+    # `docker compose run --rm ml python -m ml.treinar`
+    build: ./ml
+    image: transito-ml
+    container_name: transito-ml
+    # grava os modelos com o seu usuário, não como root
+    user: "${ML_UID:-1000}:${ML_GID:-1000}"
+    ports:
+      - "127.0.0.1:8788:8788"
+    volumes:
+      - ./ml/modelos:/app/ml/modelos
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/ml/saude')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
