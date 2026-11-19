@@ -19,7 +19,7 @@ export const NIVEIS: Record<Exibicao, { label: string; color: string; bg: string
   critico: { label: 'Crítico', color: '#F0565B', bg: 'rgba(240,86,91,0.16)', range: '≥ 90%' },
   aprendendo: { label: 'Aprendendo', color: '#8A96A8', bg: 'rgba(138,150,168,0.14)' },
   'sem dado': { label: 'Sem dado', color: '#5B6676', bg: 'rgba(91,102,118,0.16)' },
-  verificacao: { label: 'Em verificação', color: '#FFB020', bg: 'rgba(255,176,32,0.16)' },
+  verificacao: { label: 'Em verificação', color: '#E040FB', bg: 'rgba(224,64,251,0.16)' },
 }
 
 /** Worst first: the order a street picks its segment by, and the order of the legend. */

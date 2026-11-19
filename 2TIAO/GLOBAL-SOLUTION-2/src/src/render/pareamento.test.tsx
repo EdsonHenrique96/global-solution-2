@@ -348,7 +348,7 @@ describe('pareamento dashboard', () => {
     expect(shown()).toEqual({ lane: ['#3DBE7A', false], bar: 'rgb(61, 190, 122)', tip: 'Livre', selected: 'Livre' })
     warn(true, 2_100)
     advance(100)
-    expect(shown()).toEqual({ lane: ['#FFB020', true], bar: 'rgb(255, 176, 32)', tip: 'Em verificação', selected: 'Em verificação' })
+    expect(shown()).toEqual({ lane: ['#E040FB', true], bar: 'rgb(224, 64, 251)', tip: 'Em verificação', selected: 'Em verificação' })
     expect(screen.getByTestId('card-incidentes')).toHaveTextContent('1')
     // not Crítico, no diversion
     expect(within(screen.getByRole('region', { name: 'Incidentes' })).queryByTestId(`incident-congestionamento:${id}`)).toBeNull()

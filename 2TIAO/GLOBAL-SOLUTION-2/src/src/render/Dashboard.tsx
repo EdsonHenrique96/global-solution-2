@@ -215,7 +215,8 @@ const KIND_COLOR: Record<Incident['kind'], string> = {
   obra: NIVEIS.intenso.color,
   semaforo: NIVEIS.moderado.color,
   congestionamento: NIVEIS.intenso.color,
-  'possivel-incidente': NIVEIS.moderado.color,
+  // the same colour as the segment it puts "Em verificação" (AD-109)
+  'possivel-incidente': NIVEIS.verificacao.color,
   previsto: '#A78BFA',
 }
 
