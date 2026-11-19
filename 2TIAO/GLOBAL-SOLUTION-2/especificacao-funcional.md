@@ -48,6 +48,21 @@ O recorte mínimo do TCC são as versões V1 a V4: juntas elas já cobrem as cin
 - **Ordem:** V1 → V2 → V3 dependem uma da outra; a V4 não depende delas e pode ser feita em paralelo (por exemplo, pelo colega de grupo).
 - **Se faltar tempo:** a V4 pode entregar só o OCR de placa, sem o alerta de veículo parado, e ainda cobrir Visão Computacional.
 - **Ligação entre V4 e V1:** na V4, as leituras do vídeo podem ser publicadas no mesmo tópico MQTT das câmeras virtuais, o que mostra que o núcleo aceita câmera real sem mudança.
+- **Até a V4, o gestor confirma o incidente:** o aviso "Possível incidente" (anomalia detectada pelo pareamento) só dispara o cálculo das frações; o desvio sai depois que o gestor clica em "Confirmar incidente". Na V4 o drone ou a câmera de vídeo confirma sozinho.
+
+### Estado da V2 (entregue)
+
+| Entrega | Como ficou |
+| --- | --- |
+| Dados de treino | `npm run dataset` gera episódios de 45 min sem a página, com curva de demanda por hora e dia da semana e acidente em metade deles; mesma semente, mesmo arquivo |
+| Previsão | Serviço `ml` (Python, FastAPI) com 4 LightGBM: velocidade e fluxo de cada trecho com par para 15 e 30 min, chamado pelo painel a cada 60 s simulados a partir de 10 min; o modelo de 15 min supera a persistência no MAE |
+| Congestionamento previsto | Ocupação prevista (fluxo previsto ÷ capacidade) ≥ 90% abre o evento, < 80% fecha (histerese); o limiar compara o valor sem arredondar |
+| Estados da via | K-means (k = 4) treinado no mesmo CSV classifica o mapa, o ranking, o tooltip e o gatilho do desvio; sem o serviço, a regra da V1 assume |
+| Fração de desvio | Simulação de 10 min à frente para 0, 10, 20, 30, 40, 50 e 100%, num Web Worker para a tela não congelar; escolhe a menor fração com o trecho e a alternativa abaixo de 90% |
+| Incidente confirmado | O aviso calcula as frações sem aplicar nada; "Confirmar incidente" torna o trecho Crítico e aplica a fração calculada |
+| Experimentos | Os três cenários registram a fração simulada (coluna `fracao_desvio` no CSV) |
+
+**Resultado da hipótese na V2:** na demanda padrão (75 carros/min, semente 1001, acidente de 5 min confirmado 60 s depois do aviso), a simulação enxerga a fila antes do bloqueio (94,4% de ocupação), mas nenhuma fração a reduz: há no máximo 1 motorista com app e rota pelo menos 10% mais rápida por janela de 10 s, e desviar só aumenta a ocupação da alternativa (51,2% → 59,8%). A fração escolhida é 0% e o desvio parcial fica igual a não desviar (52,54 s contra 52,91 s sem sistema). A hipótese não se confirma nessa demanda; o resultado é registrado, não forçado.
 
 ## Arquitetura e fluxo de dados
 
@@ -101,11 +116,11 @@ O MVP prioriza modelos leves e explicáveis, fáceis de treinar com dados da sim
 | Leitura de placa | Detector de placa (YOLO) + OCR (PaddleOCR ou fast-plate-ocr) | Datasets de placas brasileiras disponíveis (UFPR-ALPR, RodoSol-ALPR) | Modelo treinado para o padrão Mercosul |
 | Veículo parado | Regra sobre o rastreamento: deslocamento abaixo de um limite por N segundos | Determinística e fácil de calibrar | Classificador de incidentes |
 | Pedestre na pista | Pessoa detectada + polígono da zona de rolamento | Determinística, sem treino | — |
-| Estados da via | K-means sobre velocidade, fluxo e densidade | Mostra Data Mining de forma clara | — |
-| Capacidade da via | Ajuste do diagrama fundamental (fluxo × densidade) por regressão; capacidade = fluxo máximo antes da queda de velocidade | Base teórica de engenharia de tráfego | Modelo por via com variáveis de contexto |
-| Previsão de congestionamento | LightGBM com features de defasagem (últimos minutos, hora, dia da semana) | Rápido, preciso e com importância de variáveis | LSTM ou modelos em grafo (DCRNN, Graph WaveNet) |
+| Estados da via | K-means (k = 4) sobre velocidade, fluxo e densidade padronizados; níveis ordenados pela velocidade do centróide; regra fluxo ÷ capacidade como reserva | Mostra Data Mining de forma clara | — |
+| Capacidade da via | Greenshields ajustado por mínimos quadrados recursivos; capacidade = v_f × k_j ÷ 4; um ajuste acima da vazão de saturação (1 940 veíc/h) é inválido e mantém a capacidade configurada | Base teórica de engenharia de tráfego | Modelo por via com variáveis de contexto |
+| Previsão de congestionamento | LightGBM com features de defasagem (10 valores de velocidade, fluxo e densidade, hora, dia da semana), um modelo por alvo (velocidade e fluxo, 15 e 30 min), comparado com a persistência | Rápido, preciso e com importância de variáveis | LSTM ou modelos em grafo (DCRNN, Graph WaveNet) |
 | Anomalia no trecho | Isolation Forest sobre tempo de viagem e densidade | Não precisa de dados rotulados | Autoencoder temporal |
-| Fração de desvio | Simulação de cenários no mapa simulado (10%, 20%, 30%...) e escolha da menor fração eficaz | Responde diretamente à hipótese | Otimização ou aprendizado por reforço |
+| Fração de desvio | Cópia do estado atual simulada 10 min à frente para 0, 10, 20, 30, 40, 50 e 100%; no trecho, ocupação de armazenamento (carros antes do bloqueio ÷ espaço a cada 7 m); na alternativa, média móvel de 5 min de fluxo ÷ capacidade; escolhe a menor fração com as duas abaixo de 90% | Responde diretamente à hipótese | Otimização ou aprendizado por reforço |
 | Orquestração e explicação | LLM com tool calling | Cálculos ficam nas tools, o LLM decide e explica | — |
 
 ## Agente LLM
@@ -116,9 +131,9 @@ No MVP o agente só propõe: toda ação passa pela aprovação do gestor no das
 | --- | --- | --- |
 | `consultar_trecho` | Retorna velocidade, fluxo, densidade, estado e capacidade de um trecho | Leitura |
 | `prever_trecho` | Retorna a previsão para 15 e 30 minutos | Leitura |
-| `simular_desvio` | Roda o cenário com uma fração de motoristas e devolve o impacto nos dois trechos | Leitura |
+| `simular_desvio` | Roda o cenário com uma fração de motoristas e devolve o impacto nos dois trechos | Leitura (na V2, embutida em `propor_desvio`) |
 | `propor_ajuste_semaforo` | Cria uma proposta de novo tempo de verde, dentro de limites mínimo e máximo | Ação (aprovação) |
-| `propor_desvio` | Cria uma proposta de notificação para uma fração dos motoristas, com a rota alternativa | Ação (aprovação) |
+| `propor_desvio` | Cria uma proposta de notificação para uma fração dos motoristas, com a rota alternativa; a fração é a simulada e a tabela de frações volta na resposta (`simulacao`); enquanto as frações estão em cálculo, responde `calculando` e não propõe nada | Ação (aprovação) |
 | `propor_acionamento` | Cria uma proposta de envio de agente de trânsito ou socorro | Ação (aprovação) |
 
 **Fluxo de uma proposta**
@@ -143,8 +158,8 @@ Cinco casos de uso cobrem a demonstração do MVP; o ator principal é o gestor 
 
 **UC01 — Congestionamento previsto e desvio parcial**
 
-1. O modelo prevê que o trecho A vai passar de 90% da capacidade em 15 minutos.
-2. O agente simula desvios de 10%, 20% e 30% para a rota B e escolhe a menor fração que mantém A e B abaixo do limite.
+1. O modelo prevê que o trecho A vai passar de 90% da capacidade em 15 minutos, ou o pareamento abre um "Possível incidente" em A e o gestor o confirma.
+2. O sistema simula 10 min à frente com 0, 10, 20, 30, 40, 50 e 100% dos motoristas avisados para a rota B e escolhe a menor fração que mantém A e B abaixo de 90%; se nenhuma alivia, fica a de menor pior ocupação (pode ser 0%, sem desvio).
 3. O agente propõe: “notificar 20% dos motoristas que entram em A”, com o ganho estimado de tempo e CO₂.
 4. O gestor aprova; a API mock notifica a fração; o dashboard mostra a evolução dos dois trechos.
 
@@ -208,6 +223,7 @@ O principal limite do MVP é a integração com apps de navegação: até onde s
 | Relógios dessincronizados | Velocidade calculada errada | Sincronização NTP/GPS (RF03) |
 | Dados de placa são pessoais | Risco de LGPD | Hash na borda e descarte após pareamento (RNF01) |
 | Dados 100% simulados | Resultados podem não se repetir na rua | Declarar a limitação; validar com dados públicos de tráfego no futuro |
+| Poucos motoristas desviáveis na grade 4×4 | Na demanda padrão nenhuma fração muda a fila do acidente e a hipótese não se confirma (V2) | Resultado registrado; testar demanda maior, acidente mais longo ou malha maior como próximo passo |
 | LLM pode propor ação inadequada | Decisão ruim na operação | Aprovação humana obrigatória e limites nas tools |
 
 **Trabalho futuro**

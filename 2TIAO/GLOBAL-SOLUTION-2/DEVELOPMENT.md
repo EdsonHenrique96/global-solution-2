@@ -68,6 +68,15 @@ npm run dev
 
 Abra a URL que o Vite mostrar (normalmente http://localhost:5173).
 
+A simulação das frações de desvio roda num Web Worker (`src/decision/fractionWorker.ts`), sem
+configuração: o Vite o empacota à parte (`dist/assets/fractionWorker-*.js` no `npm run build`).
+Enquanto ele calcula, o painel do desvio mostra "calculando a fração…" e a simulação continua. Nos
+testes e nos experimentos (Node, sem `Worker`) o mesmo cálculo roda na própria thread.
+
+Para ver o desvio de um acidente: crie um acidente numa via com câmeras, espere o aviso "Possível
+incidente" na lista de Incidentes e clique em **Confirmar incidente**. Até a V4, essa confirmação é
+do operador.
+
 ## 4. Agente LLM fora do Docker (opcional)
 
 Para desenvolver o proxy sem rebuild da imagem, pare o container e rode direto:
@@ -105,7 +114,12 @@ npm test
 
 cd ..
 docker compose run --rm --no-deps ml python -m pytest -p no:cacheprovider ml/tests -v
+# depois de gerar o CSV da semente 1 e treinar (seção 2): confere o dataset e o modelo treinado
+docker compose run --rm --no-deps ml python -m pytest -p no:cacheprovider ml/tests_treino -v
 ```
+
+Os testes dos experimentos (`src/experiments/experiments.test.ts`) rodam rodadas inteiras de 25 min
+simulados e levam alguns segundos cada; a suíte unitária completa leva cerca de 2 min.
 
 ## Parar
 
