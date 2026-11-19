@@ -12,7 +12,7 @@ export const METRIC_KEYS: (keyof RunMetrics)[] = [
 ]
 
 export const CSV_HEADER =
-  'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct;acidente_min;demanda_carros_min'
+  'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct;acidente_min;demanda_carros_min;fracao_desvio'
 
 export interface CsvRow {
   cenario: string
@@ -27,7 +27,7 @@ export interface Stat {
 }
 
 /** pt-BR number: decimal comma, up to 4 decimals, no thousands separator; null -> empty. */
-const num = (v: number | null) => (v === null || !Number.isFinite(v) ? '' : String(Number(v.toFixed(4))).replace('.', ','))
+const num = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? '' : String(Number(v.toFixed(4))).replace('.', ','))
 
 /** Mean and sample standard deviation (n - 1) per scenario and metric, leaving nulls out. */
 export function summarise(rows: CsvRow[]): Record<string, Record<keyof RunMetrics, Stat>> {
@@ -47,15 +47,23 @@ export function summarise(rows: CsvRow[]): Record<string, Record<keyof RunMetric
   return out
 }
 
+/** Mean diverted fraction of a scenario's runs; null when none had one. */
+export function meanFraction(rows: readonly CsvRow[]): number | null {
+  const xs = rows.map((r) => r.metrics.fracaoDesvio).filter((v): v is number => v !== null && v !== undefined)
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null
+}
+
 /** One row per run, then a mean and a deviation row per scenario; `;`, decimal comma, BOM. */
 export function toCsv(rows: CsvRow[], params: { acidenteMin: number; demanda: number }): string {
   const tail = [num(params.acidenteMin), num(params.demanda)]
   const lines = [CSV_HEADER]
-  for (const r of rows) lines.push([r.cenario, r.repeticao, r.semente, ...METRIC_KEYS.map((k) => num(r.metrics[k])), ...tail].join(';'))
+  // fracao_desvio closes each line (AC 18): empty without the system
+  for (const r of rows) lines.push([r.cenario, r.repeticao, r.semente, ...METRIC_KEYS.map((k) => num(r.metrics[k])), ...tail, num(r.metrics.fracaoDesvio ?? null)].join(';'))
   const summary = summarise(rows)
   for (const [cenario, stats] of Object.entries(summary)) {
-    lines.push([cenario, 'media', '', ...METRIC_KEYS.map((k) => num(stats[k].media)), ...tail].join(';'))
-    lines.push([cenario, 'desvio_padrao', '', ...METRIC_KEYS.map((k) => num(stats[k].desvio)), ...tail].join(';'))
+    const fracao = meanFraction(rows.filter((r) => r.cenario === cenario))
+    lines.push([cenario, 'media', '', ...METRIC_KEYS.map((k) => num(stats[k].media)), ...tail, num(fracao)].join(';'))
+    lines.push([cenario, 'desvio_padrao', '', ...METRIC_KEYS.map((k) => num(stats[k].desvio)), ...tail, ''].join(';'))
   }
   return '﻿' + lines.join('\r\n') + '\r\n'
 }

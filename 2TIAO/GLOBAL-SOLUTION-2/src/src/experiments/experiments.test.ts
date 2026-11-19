@@ -26,6 +26,68 @@ describe('experiments', () => {
     expect(r.tempoNormalizarS!).toBeLessThanOrEqual(1_500 - 300)
   })
 
+  it('C24 desvio-parcial diverts the fraction chosen by simulateDiversion', { timeout: 300_000 }, () => {
+    const params = { acidenteMin: 2 as const, demanda: 75 }
+    const [sem, todos, parcial] = SCENARIOS.map((c) => runScenario(c, 1001, params))
+    for (const r of [sem, todos, parcial]) expect(r.trace).toMatchObject({ seed: 1001, demanda: 75, acidenteMin: 2 })
+    type Sim = { t: number; trecho: string; escolhida: number; fracoes: unknown[] }
+    type Win = { t: number; trecho: string; p: number; candidatos: number; aptos: number; notificados: number }
+    const sims = parcial.trace.simulacoes as Sim[]
+    const windows = parcial.trace.janelas as Win[]
+    // the decision simulated the fractions and diverted
+    expect(sims.length).toBeGreaterThan(0)
+    expect(windows.length).toBeGreaterThan(0)
+    expect(parcial.fracaoDesvio).toBe(sims[0].escolhida)
+    for (const w of windows) {
+      // no window before its segment's simulation, and the window uses that simulation's choice
+      const s = sims.filter((x) => x.trecho === w.trecho && x.t <= w.t).at(-1)
+      expect(s).toBeDefined()
+      expect(s!.fracoes).toHaveLength(7)
+      expect(w.p).toBe(s!.escolhida)
+      expect(w.notificados).toBe(Math.max(0, Math.min(w.aptos, Math.ceil(w.p * w.candidatos - 1e-9))))
+    }
+    // what the apps were actually sent is what the windows told
+    expect(parcial.trace.notified).toBe(windows.reduce((n, w) => n + w.notificados, 0))
+    // "notificar todos" tells everyone with a faster alternative: no fraction simulated
+    expect(todos.trace.simulacoes).toEqual([])
+    expect(todos.fracaoDesvio).toBe(1)
+    expect(sem.fracaoDesvio).toBeNull()
+    expect(sem.trace.notified).toBe(0)
+    console.log('C24', JSON.stringify({ escolhida: sims.map((x) => [x.t, x.trecho, x.escolhida]), tempo: [sem, todos, parcial].map((r) => r.tempoMedioViagemS), notified: [todos.trace.notified, parcial.trace.notified] }))
+  })
+
+  it('C25 the csv ends with fracao_desvio', () => {
+    const m = (fracaoDesvio: number | null): RunMetrics => ({
+      tempoMedioViagemS: 100,
+      co2TotalKg: 10,
+      co2GKm: 150,
+      tempoParadoMedioS: 20,
+      filaMaxima: 12,
+      tempoNormalizarS: 60,
+      saturacaoAlternativaPct: 80,
+      desviadosPct: 5,
+      fracaoDesvio,
+    })
+    const rows = [
+      { cenario: 'sem-sistema', repeticao: 1, semente: 1001, metrics: m(null) },
+      { cenario: 'notificar-todos', repeticao: 1, semente: 1001, metrics: m(1) },
+      { cenario: 'desvio-parcial', repeticao: 1, semente: 1001, metrics: m(0.2) },
+      { cenario: 'desvio-parcial', repeticao: 2, semente: 1002, metrics: m(0.3) },
+    ]
+    const lines = toCsv(rows, { acidenteMin: 2, demanda: 75 }).slice(1).trimEnd().split('\r\n')
+    expect(lines[0].split(';').at(-1)).toBe('fracao_desvio')
+    expect(lines[0].endsWith(';demanda_carros_min;fracao_desvio')).toBe(true)
+    const last = (prefix: string) => lines.find((l) => l.startsWith(prefix))!.split(';').at(-1)
+    expect(last('sem-sistema;1;')).toBe('')
+    expect(last('notificar-todos;1;')).toBe('1')
+    expect(last('desvio-parcial;1;')).toBe('0,2')
+    expect(last('desvio-parcial;2;')).toBe('0,3')
+    expect(last('sem-sistema;media;')).toBe('')
+    expect(last('notificar-todos;media;')).toBe('1')
+    expect(last('desvio-parcial;media;')).toBe('0,25')
+    for (const l of lines) expect(l.split(';')).toHaveLength(14)
+  })
+
   describe('emission', () => {
     it('adds moving emission by speed factor and idle emission per second', () => {
       expect(emissionFactor(10)).toBeGreaterThan(emissionFactor(30))
@@ -271,16 +333,16 @@ describe('experiments', () => {
       const lines = csv.slice(1).trimEnd().split('\r\n')
       expect(lines[0]).toBe(CSV_HEADER)
       expect(CSV_HEADER).toBe(
-        'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct;acidente_min;demanda_carros_min',
+        'cenario;repeticao;semente;tempo_medio_viagem_s;co2_total_kg;co2_g_km;tempo_parado_medio_s;fila_maxima;tempo_normalizar_s;saturacao_alternativa_pct;desviados_pct;acidente_min;demanda_carros_min;fracao_desvio',
       )
-      expect(lines[1]).toBe('sem-sistema;1;11;100,5;10;150;20;12;60;80;5;5;18')
-      expect(lines[2]).toBe('sem-sistema;2;12;110,5;10;150;20;12;;80;5;5;18')
-      expect(lines[3]).toBe('sem-sistema;media;;105,5;10;150;20;12;60;80;5;5;18')
+      expect(lines[1]).toBe('sem-sistema;1;11;100,5;10;150;20;12;60;80;5;5;18;')
+      expect(lines[2]).toBe('sem-sistema;2;12;110,5;10;150;20;12;;80;5;5;18;')
+      expect(lines[3]).toBe('sem-sistema;media;;105,5;10;150;20;12;60;80;5;5;18;')
       // sample standard deviation: sqrt(((100.5-105.5)^2 + (110.5-105.5)^2) / 1) = 7.0711
       expect(lines[4].split(';')[3]).toBe('7,0711')
       expect(lines[4].startsWith('sem-sistema;desvio_padrao;;')).toBe(true)
-      expect(lines[4].endsWith(';5;18')).toBe(true)
-      expect(lines[4].split(';')).toHaveLength(13)
+      expect(lines[4].endsWith(';5;18;')).toBe(true)
+      expect(lines[4].split(';')).toHaveLength(14)
       expect(lines).toHaveLength(5)
       const summary = summarise(results)
       expect(summary['sem-sistema'].tempoMedioViagemS.media).toBeCloseTo(105.5, 9)

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { METRIC_KEYS, summarise, toCsv } from '../experiments/csv'
+import { meanFraction, METRIC_KEYS, summarise, toCsv } from '../experiments/csv'
 import { ACCIDENT_MINUTES, clampDemand, clampRepetitions, DEMAND_MAX, DEMAND_MIN, RATE_PER_MINUTE, runExperiment, SCENARIOS, type ExperimentParams, type RunMetrics, type RunResult } from '../experiments/ExperimentRunner'
 
 const LABELS: Record<keyof RunMetrics, string> = {
@@ -11,6 +11,7 @@ const LABELS: Record<keyof RunMetrics, string> = {
   tempoNormalizarS: 'Tempo até normalizar (s)',
   saturacaoAlternativaPct: 'Saturação da alternativa (%)',
   desviadosPct: 'Desviados (%)',
+  fracaoDesvio: 'Fração do desvio',
 }
 const SCENARIO_NAMES: Record<string, string> = {
   'sem-sistema': 'Sem sistema',
@@ -177,6 +178,17 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
                   })}
                 </tr>
               ))}
+              <tr>
+                <th scope="row">{LABELS.fracaoDesvio}</th>
+                {SCENARIOS.map((c) => {
+                  const f = meanFraction(results.filter((r) => r.cenario === c))
+                  return (
+                    <td key={c} data-testid={`cell-fracaoDesvio-${c}`}>
+                      {f === null ? '—' : `${fmt(f * 100, 0)}%`}
+                    </td>
+                  )
+                })}
+              </tr>
             </tbody>
           </table>
           {bar('tempoMedioViagemS', 'Tempo médio de viagem (s)')}

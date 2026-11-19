@@ -35,6 +35,11 @@ export interface RunMetrics {
   tempoNormalizarS: number | null
   saturacaoAlternativaPct: number | null
   desviadosPct: number
+  /**
+   * The fraction told to avoid the segment: none without the system, 1 when notifying everyone, the
+   * one simulateDiversion chose at the first trigger in the partial diversion (null if it never fired).
+   */
+  fracaoDesvio?: number | null
 }
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null)
@@ -110,6 +115,7 @@ export function* scenarioSteps(
     tempoNormalizarS: normalisationS(queueBySecond, ACCIDENT.startMs / 1000),
     saturacaoAlternativaPct: ratios.length ? Math.max(...ratios) : null,
     desviadosPct: s.spawnedTotal ? (100 * s.reroutedTotal) / s.spawnedTotal : 0,
+    fracaoDesvio: scenario === 'sem-sistema' ? null : scenario === 'notificar-todos' ? 1 : (sim.simulations[0]?.result.escolhida ?? null),
   }
   return {
     ...metrics,
@@ -130,6 +136,9 @@ export function* scenarioSteps(
       queueBySecond,
       altFlowMax,
       altCapacity,
+      // what the decision did: each fraction simulation and each 10 s window it was applied in
+      simulacoes: sim.simulations.map((x) => ({ t: x.t, ...x.result })),
+      janelas: [...sim.windows],
     },
   }
 }

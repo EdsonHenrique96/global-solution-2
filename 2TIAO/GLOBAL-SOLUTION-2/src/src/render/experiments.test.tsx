@@ -42,6 +42,30 @@ describe('render', () => {
       for (const row of lines.filter((l) => l.startsWith('sem-sistema;'))) expect(row.split(';')[col]).toBe('')
     })
 
+    it('C25 shows travel time CO2 and the diverted fraction per scenario', async () => {
+      const withFraction: RunResult[] = results.map((r) => ({
+        ...r,
+        metrics: { ...r.metrics, fracaoDesvio: r.cenario === 'sem-sistema' ? null : r.cenario === 'notificar-todos' ? 1 : r.repeticao === 1 ? 0.2 : 0.3 },
+      }))
+      const run = vi.fn(async () => ({ results: withFraction, cancelado: false }))
+      const save = vi.fn()
+      render(<ExperimentsPanel run={run} save={save} />)
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Rodar' })))
+      expect(screen.getByRole('rowheader', { name: 'Tempo médio de viagem (s)' })).toBeInTheDocument()
+      expect(screen.getByTestId('cell-tempoMedioViagemS-sem-sistema')).toHaveTextContent('125,0 ± 7,1')
+      expect(screen.getByTestId('cell-tempoMedioViagemS-desvio-parcial')).toHaveTextContent('102,0 ± 2,8')
+      expect(screen.getByRole('rowheader', { name: 'CO₂ total (kg)' })).toBeInTheDocument()
+      expect(screen.getByTestId('cell-co2TotalKg-notificar-todos')).toHaveTextContent('28,5 ± 0,7')
+      expect(screen.getByRole('rowheader', { name: 'Fração do desvio' })).toBeInTheDocument()
+      expect(screen.getByTestId('cell-fracaoDesvio-sem-sistema')).toHaveTextContent('—')
+      expect(screen.getByTestId('cell-fracaoDesvio-notificar-todos')).toHaveTextContent('100%')
+      expect(screen.getByTestId('cell-fracaoDesvio-desvio-parcial')).toHaveTextContent('25%')
+      fireEvent.click(screen.getByRole('button', { name: 'Baixar CSV' }))
+      const lines = (save.mock.calls[0][0] as string).trim().split('\r\n')
+      expect(lines[0].endsWith(';fracao_desvio')).toBe(true)
+      expect(lines.find((l) => l.startsWith('desvio-parcial;1;'))!.endsWith(';0,2')).toBe(true)
+    })
+
     it('shows mean and sample deviation per scenario and the comparison bars', async () => {
       const run = vi.fn(async () => ({ results, cancelado: false }))
       const save = vi.fn()
@@ -110,7 +134,7 @@ describe('render', () => {
       expect(screen.getByText(/central, 500 m, aos 5 min, por 5 min/)).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Baixar CSV' }))
       const lines = (save.mock.calls[0][0] as string).trim().split('\r\n')
-      for (const line of lines.slice(1)) expect(line.endsWith(';5;90')).toBe(true)
+      for (const line of lines.slice(1)) expect(line).toMatch(/;5;90;[^;]*$/)
       // a typed but unclamped value is clamped when the run starts
       run.mockClear()
       fireEvent.change(demand, { target: { value: '999' } })
