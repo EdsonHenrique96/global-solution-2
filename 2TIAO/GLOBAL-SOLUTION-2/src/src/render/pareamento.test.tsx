@@ -217,7 +217,7 @@ describe('pareamento dashboard', () => {
     expect(card()).toHaveTextContent('0 / 24')
   })
 
-  it('C43 the anomaly shows as Possível incidente in the panel and on the map, with Confirmar incidente', () => {
+  it('C43 the anomaly shows as Possível incidente in the panel and on the map', () => {
     const { transport } = setup()
     advance(15_000)
     const warn = (ativo: boolean, ts: number) =>
@@ -233,15 +233,36 @@ describe('pareamento dashboard', () => {
     expect(card).toHaveTextContent('Anomalia: carros que entraram não saíram no tempo esperado · aguarda confirmação')
     expect(screen.getByTestId('marker-possivel-incidente:I12>I13')).toHaveAttribute('aria-label', 'Possível incidente')
     expect(screen.getAllByRole('note').some((n) => /Possível incidente/.test(n.textContent ?? ''))).toBe(true)
-    // the operator confirms it (AD-104) until V4's drone does
-    const confirm = within(card).getByRole('button', { name: 'Confirmar incidente' })
-    expect(confirm).toBeEnabled()
-    fireEvent.click(confirm)
-    expect(within(card).getByRole('button', { name: 'Incidente confirmado' })).toBeDisabled()
     warn(false, 15_100)
     advance(100)
     expect(within(incidents).queryByTestId('incident-possivel-incidente:I12>I13')).toBeNull()
     expect(screen.queryByTestId('marker-possivel-incidente:I12>I13')).toBeNull()
+  })
+
+  it('C38 the warning card has Confirmar incidente, which confirms it until the warning closes (AD-104)', () => {
+    const { transport } = setup()
+    advance(15_000)
+    const warn = (ativo: boolean, ts: number) =>
+      act(() => {
+        transport.deliver(anomalyTopic('I12>I13'), JSON.stringify({ trecho: 'I12>I13', ts, ativo, atrasados: 4, fracao: 1 }))
+      })
+    warn(true, 15_000)
+    advance(100)
+    const incidents = screen.getByRole('region', { name: 'Incidentes' })
+    const card = within(incidents).getByTestId('incident-possivel-incidente:I12>I13')
+    const confirm = within(card).getByRole('button', { name: 'Confirmar incidente' })
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    expect(within(card).getByRole('button', { name: 'Incidente confirmado' })).toBeDisabled()
+    expect(within(card).queryByRole('button', { name: 'Confirmar incidente' })).toBeNull()
+    // the warning closes: the card and its button leave; a new warning asks again
+    warn(false, 15_100)
+    advance(100)
+    expect(within(incidents).queryByTestId('incident-possivel-incidente:I12>I13')).toBeNull()
+    warn(true, 15_200)
+    advance(100)
+    const again = within(incidents).getByTestId('incident-possivel-incidente:I12>I13')
+    expect(within(again).getByRole('button', { name: 'Confirmar incidente' })).toBeEnabled()
   })
 
   it('C44 shows the held speed as último par há X s', () => {

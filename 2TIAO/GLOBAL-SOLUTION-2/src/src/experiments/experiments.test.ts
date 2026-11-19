@@ -57,7 +57,7 @@ describe('experiments', () => {
     console.log('C24', JSON.stringify({ escolhida: sims.map((x) => [x.t, x.trecho, x.escolhida]), tempo: [sem, todos, parcial].map((r) => r.tempoMedioViagemS), notified: [todos.trace.notified, parcial.trace.notified] }))
   })
 
-  it('C50 the confirmed accident is simulated and its fraction recorded, whatever it is (AD-104, AD-107, AD-108)', { timeout: 300_000 }, () => {
+  it('C39 the confirmed accident is simulated and its fraction recorded, whatever it is (AD-104, AD-107, AD-108)', { timeout: 300_000 }, () => {
     const parcial = runScenario('desvio-parcial', 1001, { acidenteMin: 5, demanda: 75 })
     const { avisoEm, confirmadoEm } = parcial.trace as { avisoEm: number | null; confirmadoEm: number | null }
     // the warning opens and the incident is confirmed 60 s later
@@ -73,7 +73,7 @@ describe('experiments', () => {
     expect(acc[0].fracoes[0].ocupacaoMaxTrecho).toBeGreaterThanOrEqual(90)
     // the choice is a result, not a target: it is the rule's answer on the table, 0% included (AD-108)
     for (const s of acc) expect(chooseFraction(s.fracoes).escolhida).toBe(s.escolhida)
-    console.log('C50', JSON.stringify(acc.map((s) => ({ t: s.t, escolhida: s.escolhida, eficaz: s.eficaz, linhas: s.fracoes.map((f) => [f.fracao, f.ocupacaoMaxTrecho, f.ocupacaoMaxAlternativa]) }))))
+    console.log('C39', JSON.stringify(acc.map((s) => ({ t: s.t, escolhida: s.escolhida, eficaz: s.eficaz, linhas: s.fracoes.map((f) => [f.fracao, f.ocupacaoMaxTrecho, f.ocupacaoMaxAlternativa]) }))))
   })
 
   it('C25 the csv ends with fracao_desvio', () => {

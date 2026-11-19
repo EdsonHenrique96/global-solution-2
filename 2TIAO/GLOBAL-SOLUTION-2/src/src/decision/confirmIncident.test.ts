@@ -40,7 +40,7 @@ function setup(runner: FractionRunner) {
 }
 
 describe('confirm, then divert (AD-104)', () => {
-  it('C45 the warning computes the fractions and applies nothing; the confirmation applies them', () => {
+  it('C34 the warning computes the fractions and applies nothing; the confirmation applies them', () => {
     const run = vi.fn((_sim: Simulation, trecho: string) => table(trecho, 0.2))
     const { sim, warn, advance, notices } = setup({ run })
     advance(5_000)
@@ -73,7 +73,7 @@ describe('confirm, then divert (AD-104)', () => {
     expect(sim.confirmIncident(JAMMED)).toBe(false)
   })
 
-  it('C46 a warning that closes unconfirmed discards its computation', async () => {
+  it('C35 a warning that closes unconfirmed discards its computation', async () => {
     let answer!: (r: DiversionSimulation) => void
     const run = vi.fn(() => new Promise<DiversionSimulation>((resolve) => (answer = resolve)))
     const { sim, warn, advance } = setup({ run })
@@ -93,7 +93,7 @@ describe('confirm, then divert (AD-104)', () => {
 })
 
 describe('fractions off the tick (AD-103)', () => {
-  it('C47 the tick goes on while the fractions compute; the diversion is sized when they arrive', async () => {
+  it('C36 the tick goes on while the fractions compute; the diversion is sized when they arrive', async () => {
     let answer!: (r: DiversionSimulation) => void
     const run = vi.fn(() => new Promise<DiversionSimulation>((resolve) => (answer = resolve)))
     const { sim, warn, advance, notices } = setup({ run })
@@ -118,7 +118,7 @@ describe('fractions off the tick (AD-103)', () => {
     expect(run).toHaveBeenCalledTimes(1)
   })
 
-  it('C48 the worker gets the job as plain data and answers what this thread would', async () => {
+  it('C37 the worker gets the job as plain data and answers what this thread would', async () => {
     const posted: WorkerRequest[] = []
     const fake: WorkerLike = { postMessage: (m) => posted.push(structuredClone(m)), onmessage: null, onerror: null }
     const runner = workerRunner(() => fake)
@@ -141,7 +141,7 @@ describe('fractions off the tick (AD-103)', () => {
     expect(answerJob({ id: 9, job: { ...posted[0].job, engine: null as never } })).toMatchObject({ id: 9, error: expect.any(String) })
   }, 60_000)
 
-  it('C49 without Worker support it runs in this thread', () => {
+  it('C37 without Worker support it runs in this thread', () => {
     expect(typeof Worker).toBe('undefined')
     const runner = workerRunner()
     const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }), transport: new FakeTransport(true) })
