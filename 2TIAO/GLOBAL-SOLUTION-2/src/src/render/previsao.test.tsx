@@ -114,6 +114,11 @@ describe('previsao dashboard', () => {
     rerender(<MetricsPanel metrics={METRICS} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 0, p: 1, candidatos: 10, notificados: 7, semAlcance: 1, simulacao: null }} />)
     expect(screen.getByTestId('diversion-state')).toHaveTextContent('fração 100% ·')
     expect(screen.getByTestId('diversion-state')).not.toHaveTextContent('simulada')
+    // the fractions are still being computed (AD-103): no fraction yet, nobody told
+    rerender(<MetricsPanel metrics={METRICS} diversion={{ status: 'ativo', trecho: 'I12>I13', n: 0, p: 0, candidatos: 10, notificados: 0, semAlcance: 1, simulacao: null, calculando: true }} />)
+    expect(screen.getByTestId('diversion-state')).toHaveTextContent('calculando a fração…')
+    expect(screen.getByTestId('diversion-state')).toHaveTextContent('0 notificados na janela')
+    expect(screen.getByTestId('diversion-state')).not.toHaveTextContent('fração 0%')
   })
 
   it('C13 the selected road shows the 15 and 30 min forecast', async () => {
@@ -297,6 +302,25 @@ describe('previsao dashboard', () => {
     expect(points[0].getAttribute('data-nivel')).toBe('livre')
     expect(chart.querySelectorAll('[data-testid^="grafico-centroide-"]')).toHaveLength(4)
     expect(within(panel).getByTestId('kmeans-concordancia')).toHaveTextContent('Concordância com a regra: 87%')
+
+    // K-means and the rule disagree on the empty road: a model whose Moderado centroid sits on it
+    // (50 km/h, 0, 0) and whose Livre is at 80 km/h; the rule says Livre - every point is Moderado
+    cleanup()
+    const std = (v: number, f: number, d: number) => [(v - 30) / 10, (f - 5) / 4, (d - 20) / 15]
+    const shifted = kmeansFixture()
+    shifted.centroides = shifted.centroides.map((c) =>
+      c.nivel === 'livre' ? { ...c, centro: std(80, 0, 0) } : c.nivel === 'moderado' ? { ...c, centro: std(50, 0, 0) } : c,
+    )
+    setup({ kmeans: async () => shifted })
+    await settle()
+    advance(10_000)
+    tab('Relatórios')
+    const shiftedPoints = within(screen.getByRole('img', { name: 'Velocidade × densidade por nível' })).getAllByTestId(/^ponto-/)
+    expect(shiftedPoints).toHaveLength(12)
+    for (const p of shiftedPoints) {
+      expect(p.getAttribute('data-nivel')).toBe('moderado')
+      expect(p.getAttribute('fill')).toBe(NIVEIS.moderado.color)
+    }
   })
 })
 

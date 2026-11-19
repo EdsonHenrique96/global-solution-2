@@ -18,12 +18,14 @@ def test_dataset_has_the_door_3_header_and_one_row_per_paired_segment_every_10_s
     assert len(linhas) == 200 * 270 * TRECHOS_COM_PAR
     eps = np.array([int(l.split(";", 1)[0]) for l in linhas])
     assert sorted(set(eps.tolist())) == list(range(1, 201))
-    # cada episódio: t_s 10..2700 de 10 em 10, 12 trechos distintos em cada t_s
-    primeiro = [l.split(";") for l in linhas[: 270 * TRECHOS_COM_PAR]]
-    ts = sorted({int(c[4]) for c in primeiro})
-    assert ts == list(range(10, 2701, 10))
-    for t in (10, 1350, 2700):
-        assert len({c[5] for c in primeiro if int(c[4]) == t}) == TRECHOS_COM_PAR
+    # cada episódio: exatamente um par (t_s, trecho) para cada t_s 10..2700 de 10 em 10 e cada um
+    # dos 12 trechos com par, os mesmos 12 em todos os episódios
+    grade = {(ep, t, tr) for ep, t, tr in ((int(c[0]), int(c[4]), c[5]) for c in (l.split(";") for l in linhas))}
+    assert len(grade) == len(linhas)
+    trechos = sorted({tr for _, _, tr in grade})
+    assert len(trechos) == TRECHOS_COM_PAR
+    esperado = {(ep, t, tr) for ep in range(1, 201) for t in range(10, 2701, 10) for tr in trechos}
+    assert grade == esperado
 
 
 def test_speed_15_beats_persistence():

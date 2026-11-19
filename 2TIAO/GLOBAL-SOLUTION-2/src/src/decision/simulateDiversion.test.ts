@@ -4,7 +4,7 @@ import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { topicMatches } from '../telemetry/transport'
 import { candidatesFor, evaluate, selectNotified } from './DriverRerouter'
-import { chooseFraction, FRACOES, simulateDiversion, type DiversionSimulation } from './simulateDiversion'
+import { chooseFraction, FRACOES, runFractionJob, simulateDiversion, storageOccupancyPct, windowOccupancyPct, type DiversionSimulation } from './simulateDiversion'
 import { Simulation } from './Simulation'
 
 const JAMMED = 'I12>I13'
@@ -134,6 +134,30 @@ describe('simulateDiversion', () => {
     expect(snapshot(a.engine)).toEqual(snapshot(b.engine))
     expect(a.engine.getState().spawnedTotal).toBeGreaterThan(0)
     expect(a.transport.published.map((m) => [m.topic, m.payload])).toEqual(b.transport.published.map((m) => [m.topic, m.payload]))
+  })
+
+  it('C40 the occupancies are storage before the block and the 5 min flow over capacity (AD-102, AD-105, AD-107)', () => {
+    const on = (seg: string, distance: number) => ({ path: ['I11>I12', seg], seg: 1, distance })
+    const cars = [on(JAMMED, 10), on(JAMMED, 30), on(JAMMED, 50), on(JAMMED, 70), on(JAMMED, 100), on('I13>I14', 20)]
+    // no block: the 5 cars on 140 m over 140 / 7 = 20 standing
+    expect(storageOccupancyPct(cars, JAMMED, 140, undefined)).toBe(25)
+    // block at 70 m: the 4 cars at or before it over 70 / 7 = 10; the one past it does not count
+    expect(storageOccupancyPct(cars, JAMMED, 140, { distance: 70 })).toBe(40)
+    // a block 3 m in still holds one car
+    expect(storageOccupancyPct([on(JAMMED, 1)], JAMMED, 140, { distance: 3 })).toBe(100)
+    expect(storageOccupancyPct([], JAMMED, 140, { distance: 70 })).toBe(0)
+    // 70 exits in 5 min = 840 veh/h: 100 % of 840, 50 % of 1 680
+    expect(windowOccupancyPct(70, 840)).toBe(100)
+    expect(windowOccupancyPct(70, 1680)).toBe(50)
+    expect(windowOccupancyPct(0, 840)).toBe(0)
+    // end to end: 5 stopped cars before a block at 70 m stay there for the 10 min - 50 % at every fraction
+    const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
+    engine.addBlockage(JAMMED, 70, 1_200_000)
+    for (let i = 0; i < 5; i++) engine.addCar({ path: [JAMMED, 'I13>I14'], distance: 5 + i * 10, velocity: 0, app: null })
+    const r = runFractionJob({ trecho: JAMMED, engine: engine.exportState({ cameras: false }), speeds: {}, capacities: {} })
+    expect(r.fracoes.map((f) => f.ocupacaoMaxTrecho)).toEqual(FRACOES.map(() => 50))
+    // nobody has an app: no alternative was evaluated
+    expect(r.fracoes.map((f) => f.ocupacaoMaxAlternativa)).toEqual(FRACOES.map(() => 0))
   })
 
   it('C21 picks the smallest effective fraction', () => {

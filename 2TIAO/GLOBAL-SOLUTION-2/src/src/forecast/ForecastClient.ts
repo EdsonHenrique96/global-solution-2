@@ -72,9 +72,13 @@ interface Options {
   start?: ClockTime
 }
 
-/** f x 60 / capacity, in %, to one decimal (AC 11). */
+/** f x 60 / capacity, in %, unrounded: the 90/80 thresholds compare this (AC 11). */
+export const forecastOccupancyRaw = (fluxoVeicMin: number, capacidadeVeicH: number | null) =>
+  capacidadeVeicH && capacidadeVeicH > 0 ? (fluxoVeicMin * 60 * 100) / capacidadeVeicH : 0
+
+/** The same to one decimal, as shown and sent in door 5 (AC 11). */
 export const forecastOccupancy = (fluxoVeicMin: number, capacidadeVeicH: number | null) =>
-  capacidadeVeicH && capacidadeVeicH > 0 ? Math.round((fluxoVeicMin * 60 * 1000) / capacidadeVeicH) / 10 : 0
+  Math.round(forecastOccupancyRaw(fluxoVeicMin, capacidadeVeicH) * 10) / 10
 
 /**
  * Asks the ML service for every paired segment's forecast every 60 simulated seconds, keeps the
@@ -152,11 +156,13 @@ export class ForecastClient {
       const cap = this.opts.capacityOf(trecho)
       const ocupacao15 = forecastOccupancy(p.f15, cap)
       const ocupacao30 = forecastOccupancy(p.f30, cap)
+      // the thresholds compare the unrounded value: 89,96% does not round up into a crossing
+      const raw15 = forecastOccupancyRaw(p.f15, cap)
       const known = this.previstos.get(trecho)
-      if (!known && ocupacao15 >= ENTER_PCT) {
+      if (!known && raw15 >= ENTER_PCT) {
         this.previstos.set(trecho, { trecho, ts: t, previstoPara: t + HORIZON_15_MS, ocupacao15 })
         this.opts.onEvent({ tipo: 'previsao', trecho, ts: t, ocupacao15, ocupacao30, v15: p.v15, f15: p.f15 })
-      } else if (known && ocupacao15 < EXIT_PCT) {
+      } else if (known && raw15 < EXIT_PCT) {
         this.previstos.delete(trecho)
       } else if (known) {
         this.previstos.set(trecho, { ...known, ts: t, previstoPara: t + HORIZON_15_MS, ocupacao15 })

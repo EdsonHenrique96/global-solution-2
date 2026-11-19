@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_RATE_PER_MINUTE, SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { emissionFactor, IDLE_G_PER_S } from './emission'
 import { CSV_HEADER, summarise, toCsv } from './csv'
-import { chooseFraction } from '../decision/simulateDiversion'
+import { chooseFraction, FRACOES } from '../decision/simulateDiversion'
 import { ACCIDENT, normalisationS, RUN_MS, runExperiment, runScenario, SCENARIOS, seedFor, type RunMetrics } from './ExperimentRunner'
 
 const FREE_MS = 50 / 3.6
@@ -54,6 +54,25 @@ describe('experiments', () => {
     expect(todos.fracaoDesvio).toBe(1)
     expect(sem.fracaoDesvio).toBeNull()
     expect(sem.trace.notified).toBe(0)
+    // the same rules with a fraction above 0: a simulation that always chooses 20 %
+    const fixed = runScenario('desvio-parcial', 1001, params, (_sim, trecho) => ({
+      trecho,
+      horizonteMin: 10,
+      fracoes: FRACOES.map((fracao) => ({ fracao, ocupacaoMaxTrecho: 80, ocupacaoMaxAlternativa: 40, tempoMedioS: 90, co2Kg: 2 })),
+      escolhida: 0.2,
+      eficaz: true,
+    }))
+    const fSims = fixed.trace.simulacoes as Sim[]
+    const fWindows = fixed.trace.janelas as Win[]
+    expect(fixed.fracaoDesvio).toBe(0.2)
+    expect(fWindows.some((w) => w.p === 0.2 && w.notificados > 0)).toBe(true)
+    for (const w of fWindows) {
+      expect(fSims.some((x) => x.trecho === w.trecho && x.t <= w.t)).toBe(true)
+      expect(w.p).toBe(0.2)
+      expect(w.notificados).toBe(Math.max(0, Math.min(w.aptos, Math.ceil(w.p * w.candidatos - 1e-9))))
+    }
+    expect(fixed.trace.notified).toBe(fWindows.reduce((n, w) => n + w.notificados, 0))
+    expect(fixed.trace.notified).toBeGreaterThan(0)
     console.log('C24', JSON.stringify({ escolhida: sims.map((x) => [x.t, x.trecho, x.escolhida]), tempo: [sem, todos, parcial].map((r) => r.tempoMedioViagemS), notified: [todos.trace.notified, parcial.trace.notified] }))
   })
 

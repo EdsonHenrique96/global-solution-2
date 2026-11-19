@@ -15,6 +15,24 @@ export const STOPPED_SPACING_M = 7
 export const storageOf = (lengthM: number) => Math.max(1, lengthM / STOPPED_SPACING_M)
 /** Occupancy is the 5 min moving average of flow over capacity (AD-102), not the 1 min peak. */
 export const OCCUPANCY_WINDOW_MS = 300_000
+
+/**
+ * How full the incident segment is, %: the cars on it over the cars it holds standing (AD-105); with
+ * a block on it, only the stretch before the block fills - cars before it over what it holds (AD-107).
+ */
+export function storageOccupancyPct(
+  cars: readonly { path: readonly string[]; seg: number; distance: number }[],
+  trecho: string,
+  lengthM: number,
+  block: { distance: number } | undefined,
+): number {
+  const onIt = cars.reduce((n, c) => n + (c.path[c.seg] === trecho && (!block || c.distance <= block.distance) ? 1 : 0), 0)
+  return (onIt / storageOf(block ? block.distance : lengthM)) * 100
+}
+
+/** The exits of the last 5 min as a flow, over the capacity, % (AD-102). */
+export const windowOccupancyPct = (exitsInWindow: number, capacidadeVeicH: number) =>
+  ((exitsInWindow * 3_600_000) / OCCUPANCY_WINDOW_MS / capacidadeVeicH) * 100
 const DECIDE_EVERY_MS = 10_000
 
 /** One fraction, simulated 10 min ahead (door 6). Occupancies in % of capacity. */
@@ -156,15 +174,12 @@ function runFractions(live: SimulationEngine, frozen: Frozen): FractionResult[] 
         // the incident segment: how full it is - cars on it over the cars it holds (AD-105); with the
         // incident on it, only the stretch before it fills: cars before it over what it holds (AD-107)
         const block = s.blockages.find((x) => x.segmentId === frozen.trecho)
-        const onIt = s.cars.reduce((n, c) => n + (c.path[c.seg] === frozen.trecho && (!block || c.distance <= block.distance) ? 1 : 0), 0)
-        const holds = storageOf(block ? block.distance : segById.get(frozen.trecho)!.length)
-        b.storagePct = Math.max(b.storagePct, (onIt / holds) * 100)
+        b.storagePct = Math.max(b.storagePct, storageOccupancyPct(s.cars, frozen.trecho, segById.get(frozen.trecho)!.length, block))
         for (const [seg, list] of b.exits) {
           while (list.length && list[0] <= s.timeMs - OCCUPANCY_WINDOW_MS) list.shift()
           // only full windows: the first one ends 5 min into the horizon and covers it from the start
           if (s.timeMs - start.timeMs < OCCUPANCY_WINDOW_MS) continue
-          const perHour = (list.length * 3_600_000) / OCCUPANCY_WINDOW_MS
-          const pct = (perHour / frozen.capacityOf(seg)) * 100
+          const pct = windowOccupancyPct(list.length, frozen.capacityOf(seg))
           b.maxPct.set(seg, Math.max(b.maxPct.get(seg) ?? 0, pct))
         }
       }

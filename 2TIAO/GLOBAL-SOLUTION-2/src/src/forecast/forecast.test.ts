@@ -109,6 +109,26 @@ describe('forecast', () => {
     expect(events[1]).toMatchObject({ trecho: JAMMED, ts: 960_000, ocupacao15: 90 })
     const inc = sim.incidents.active().find((x) => x.key === `previsto:${JAMMED}`)!
     expect(inc).toMatchObject({ kind: 'previsto', segmentId: JAMMED, previstoPara: 960_000 + 900_000, ocupacaoPrevista: 90 })
+    // 89,96% shows as 90,0 but is below 90: no event, not listed (the threshold reads the unrounded value)
+    const near = new Simulation({
+      engine: new SimulationEngine({ ratePerMinute: 0 }),
+      transport: new FakeTransport(true),
+      prever: async (body) => {
+        const c = near.capacity.snapshot()[JAMMED].capacidade!
+        const previsoes: Record<string, Previsao> = {}
+        for (const id of Object.keys(body.trechos)) previsoes[id] = { v15: 30, f15: 1, v30: 30, f30: 1 }
+        previsoes[JAMMED] = { v15: 21, f15: (89.96 * c) / 6000, v30: 18, f30: (89.96 * c) / 6000 }
+        return { modelo: 'teste', previsoes }
+      },
+    })
+    near.start()
+    const nearEvents: PrevisaoEvento[] = []
+    near.onPrevisao((e) => nearEvents.push(e))
+    await runTo(near, 720_000)
+    near.refreshIncidents()
+    expect(near.forecast!.previsoes[JAMMED]).toBeDefined()
+    expect(nearEvents).toEqual([])
+    expect(near.incidents.active().some((x) => x.key === `previsto:${JAMMED}`)).toBe(false)
     // the service goes down for 3 calls: the forecast segments leave the list
     const down = new Simulation({
       engine: new SimulationEngine({ ratePerMinute: 0 }),

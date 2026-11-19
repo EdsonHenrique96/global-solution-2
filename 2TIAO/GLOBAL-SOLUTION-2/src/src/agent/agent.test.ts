@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { APPS_TOPIC } from '../apps/AppFleet'
 import { Simulation } from '../decision/Simulation'
 import { FRACOES, simulateDiversion, type DiversionSimulation } from '../decision/simulateDiversion'
@@ -164,6 +164,19 @@ describe('agent', () => {
       expect(small.out).toMatchObject({ p: 0.2, simulacao: { escolhida: 0.2, horizonteMin: 10 } })
       expect(small.out.simulacao.fracoes.map((f: { fracao: number }) => f.fracao)).toEqual([0, 0.1, 0.2, 0.3, 0.4, 0.5, 1])
       expect(small.out.resultado).toMatch(/^aplicado/)
+      // the fractions are still being computed (AD-103): the tool says so and proposes nothing
+      const pendingSim = new Simulation({
+        engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }),
+        transport: new FakeTransport(true),
+        agentControl: true,
+        fractionRunner: { run: () => new Promise<never>(() => {}) },
+      })
+      const pendingRunner = new AgentRunner({ sim: pendingSim, llm: scripted([]) })
+      const propose = vi.fn((a: Parameters<typeof pendingRunner.applyProposal>[0]) => pendingRunner.applyProposal(a))
+      const pending = JSON.parse(executeTool('propor_desvio', { trecho: JAMMED, justificativa: 'acidente' }, { sim: pendingSim, propose, explain: () => {} }).content)
+      expect(pending).toEqual({ calculando: true, mensagem: 'frações em cálculo; consulte de novo na próxima janela' })
+      expect(propose).not.toHaveBeenCalled()
+      expect(pendingSim.diversion.status).toBe('inativo')
       expect(small.s.active).toEqual({ trecho: JAMMED, p: 0.2, mode: 'parcial' })
       const large = at(0.4)
       expect(large.out.p).toBe(0.4)

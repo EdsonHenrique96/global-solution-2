@@ -27,8 +27,29 @@ function metrics(trecho: string, ts: number, k: number, v: number | null, fluxo 
   return JSON.stringify({ trecho, ts, janelaS: 60, fluxoVeicMin: fluxo, velocidadeMediaKmh: v, pares: v === null ? 0 : 1, entraram: 0, sairam: 0, ocupacao: 0, densidadeVeicKm: k, camerasPar: ['C02E', 'C02S'] })
 }
 
+/** Samples exactly on v = vf (1 - k / kj), k from 3 % to 90 % of kj (30 samples). */
+function fittedOn(vf: number, kj: number): CapacityModel {
+  const model = new CapacityModel()
+  for (let i = 1; i <= 30; i++) {
+    const k = (kj * 3 * i) / 100
+    model.observe(entry(k, vf * (1 - k / kj)), i * 6_000)
+  }
+  return model
+}
+
 describe('capacity', () => {
   describe('CapacityModel', () => {
+    it('C41 a fit above the saturation flow keeps the configured capacity (AD-106)', () => {
+      // vf 80, kj 200: 4 000 veh/h, above 1 940 - not a road
+      const above = fittedOn(80, 200).estimate(200_000)
+      expect(above).toMatchObject({ capacidadeFonte: 'configurada', capacidade: CONFIGURED_CAPACITY_VEH_H, vf: null, kj: null })
+      // vf 50, kj 152: 1 900 veh/h, below 1 940 - learned
+      const below = fittedOn(50, 152).estimate(200_000)
+      expect(below.capacidadeFonte).toBe('aprendida')
+      expect(below.capacidade!).toBeGreaterThan(1880)
+      expect(below.capacidade!).toBeLessThanOrEqual(SATURATION_FLOW_VEH_H)
+    })
+
     it('recovers vf 50 and kj 100 from exact samples and estimates capacity 1250', () => {
       const est = trainedModel().estimate(200_000)
       expect(est.vf!).toBeGreaterThanOrEqual(49.5)
