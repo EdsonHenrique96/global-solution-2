@@ -96,7 +96,8 @@ export class CapacityModel {
   /** `nowMs` is simulated time; metrics older than 20 s leave the segment without data. */
   estimate(nowMs: number): Estimate {
     const [a, b] = this.theta
-    const known = this.fitted >= MIN_SAMPLES && b < -1e-6 && a > 0
+    // a fit whose capacity exceeds the saturation flow is not a road (AD-106): keep the configured one
+    const known = this.fitted >= MIN_SAMPLES && b < -1e-6 && a > 0 && (a * (-a / b)) / 4 <= SATURATION_FLOW_VEH_H
     const vf = known ? a : null
     const kj = known ? -a / b : null
     const capacidade = known ? (a * (-a / b)) / 4 : CONFIGURED_CAPACITY_VEH_H
