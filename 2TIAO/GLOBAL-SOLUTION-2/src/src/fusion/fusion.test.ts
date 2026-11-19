@@ -101,7 +101,7 @@ describe('fusion', () => {
       now.t = 40_000
       expect(fusion.state()['I11>I12']).toMatchObject({ fontes: [], estimado: true, velocidadeMedia: 45, densidade: 20, atualizadoEm: 10_000 })
     })
-    it('C44 holds the last pair speed at most 2 min while the segment looks normal', () => {
+    it('C44 holds the last pair speed up to 5 min until a warning opens', () => {
       const now = { t: 10_000 }
       const transport = new FakeTransport(true)
       const service = new CapacityService(transport, () => now.t, segments)
@@ -112,31 +112,29 @@ describe('fusion', () => {
         transport.deliver(metricsTopic(id), JSON.stringify({ trecho: id, ts, janelaS: 60, fluxoVeicMin: fluxo, velocidadeMediaKmh: v, pares: v === null ? 0 : 1, entraram: 0, sairam: 0, ocupacao, densidadeVeicKm: ocupacao * 20, camerasPar: ['C01E', 'C01S'] }))
       }
       const read = () => readSegment(id, service.snapshot()[id], service.fusion.state()[id], now.t)
-      // last pair at 10 km/h; 90 s later, no pair and normal traffic: shown, "último par há 90 s"
+      // before the segment's first pair there is no speed
+      send(5_000, null, 1)
+      expect(service.fusion.state()[id]).toMatchObject({ velocidadeMedia: null, velocidadeUltimoParEm: null })
+      // last pair at 10 km/h; 4 min later, no pair and no warning: shown, "último par há 240 s"
       send(10_000, 10, 2)
-      send(100_000, null, 2)
+      send(250_000, null, 2)
       expect(service.fusion.state()[id]).toMatchObject({ velocidadeMedia: 10, velocidadeUltimoParEm: 10_000, pares: 0 })
       expect(read()).toMatchObject({ velocidade: 10, ultimoParEm: 10_000 })
-      // 120 s: still held; 125 s: no speed, the level from flow / capacity alone (360 of ~844 veh/h: Livre)
-      send(130_000, null, 2)
+      // a car entered and has not left (occupancy grows), no warning: kept
+      send(260_000, null, 3)
       expect(service.fusion.state()[id].velocidadeMedia).toBe(10)
-      send(135_000, null, 2)
+      // 5 min: still held; 5 min 10 s: no speed, the level from flow / capacity alone (360 of ~844 veh/h: Livre)
+      send(310_000, null, 3)
+      expect(service.fusion.state()[id].velocidadeMedia).toBe(10)
+      send(320_000, null, 3)
       expect(service.fusion.state()[id]).toMatchObject({ velocidadeMedia: null, velocidadeUltimoParEm: null })
       expect(read()).toMatchObject({ velocidade: null, nivel: 'livre' })
-      // "Possível incidente" opens: dropped at once, without waiting 2 min
-      send(200_000, 10, 2)
-      send(210_000, null, 2)
+      // "Possível incidente" opens: dropped at once, long before 5 min
+      send(400_000, 10, 2)
+      send(410_000, null, 2)
       expect(service.fusion.state()[id].velocidadeMedia).toBe(10)
-      now.t = 215_000
-      transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: 215_000, ativo: true, atrasados: 4, fracao: 1 }))
-      expect(service.fusion.state()[id].velocidadeMedia).toBeNull()
-      // occupancy grows past the last pair's: dropped
-      now.t = 216_000
-      transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: 216_000, ativo: false, atrasados: 0, fracao: 0 }))
-      send(300_000, 30, 2)
-      send(310_000, null, 2)
-      expect(service.fusion.state()[id].velocidadeMedia).toBe(30)
-      send(320_000, null, 3)
+      now.t = 415_000
+      transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: 415_000, ativo: true, atrasados: 4, fracao: 1 }))
       expect(service.fusion.state()[id].velocidadeMedia).toBeNull()
     })
   })

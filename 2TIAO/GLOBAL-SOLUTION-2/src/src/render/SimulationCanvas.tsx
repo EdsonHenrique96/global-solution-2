@@ -11,7 +11,7 @@ import {
   ROUTE_PICK_PX,
   type MapView,
 } from './draw'
-import type { Nivel } from './levels'
+import type { Exibicao } from './levels'
 
 export type IncidentMode = 'acidente' | 'obra' | 'semaforo'
 
@@ -21,7 +21,7 @@ export type IncidentTarget = { segmentId: string; distance: number } | { interse
 interface Props {
   engine: SimulationEngine
   /** Read on every frame: the density level of each road segment. */
-  segmentLevel?: () => Record<string, Nivel>
+  segmentLevel?: () => Record<string, Exibicao>
   selectedSegment?: string
   onSelectSegment?: (segmentId: string) => void
   /** The "Densidade" layer (on by default). */

@@ -6,13 +6,20 @@ import { ALAMEDAS, RUAS } from '../sim/cityNetwork'
 
 export { nivelOf, type Nivel }
 
-export const NIVEIS: Record<Nivel, { label: string; color: string; bg: string; range?: string }> = {
+/**
+ * What a segment shows: its level, or "Em verificação" while its "Possível incidente" warning is
+ * open (AD-100). Only for display: the decision reads the level.
+ */
+export type Exibicao = Nivel | 'verificacao'
+
+export const NIVEIS: Record<Exibicao, { label: string; color: string; bg: string; range?: string }> = {
   livre: { label: 'Livre', color: '#3DBE7A', bg: 'rgba(61,190,122,0.14)', range: '< 50%' },
   moderado: { label: 'Moderado', color: '#F5D04E', bg: 'rgba(245,208,78,0.14)', range: '50–74%' },
   intenso: { label: 'Intenso', color: '#F59544', bg: 'rgba(245,149,68,0.16)', range: '75–89%' },
   critico: { label: 'Crítico', color: '#F0565B', bg: 'rgba(240,86,91,0.16)', range: '≥ 90%' },
   aprendendo: { label: 'Aprendendo', color: '#8A96A8', bg: 'rgba(138,150,168,0.14)' },
   'sem dado': { label: 'Sem dado', color: '#5B6676', bg: 'rgba(91,102,118,0.16)' },
+  verificacao: { label: 'Em verificação', color: '#FFB020', bg: 'rgba(255,176,32,0.16)' },
 }
 
 /** Worst first: the order a street picks its segment by, and the order of the legend. */
@@ -37,8 +44,10 @@ export interface SegmentReading {
   densidade: number | null
   /** Plate pairs closed in the last minute. */
   pares: number | null
-  /** When the speed is a held last-pair speed (AD-098), that pair's time; else null. */
+  /** When the speed is a held last-pair speed (AD-099), that pair's time; else null. */
   ultimoParEm: number | null
+  /** What the map, the ranking, the tooltip and the selected road show (AD-100). */
+  exibido: Exibicao
 }
 
 /**
@@ -62,10 +71,10 @@ export function readSegment(
   const fluxo = stale || !estimate ? null : estimate.fluxo
   const capacidade = estimate?.capacidade ?? null
   const base = { id, fluxo, capacidade, velocidade, contagem, densidade, pares, ultimoParEm }
-  if (stale) return { ...base, nivel: 'sem dado', pct: null }
+  if (stale) return { ...base, nivel: 'sem dado', exibido: 'sem dado', pct: null }
   const nivel = classifier.classify({ fluxo, capacidade, velocidade, densidade })
   const pct = capacidade === null || capacidade <= 0 || fluxo === null ? null : Math.round((fluxo / capacidade) * 100)
-  return { ...base, nivel, pct }
+  return { ...base, nivel, exibido: fused?.possivelIncidente ? 'verificacao' : nivel, pct }
 }
 
 /** veh/h -> cars per minute, rounded. */

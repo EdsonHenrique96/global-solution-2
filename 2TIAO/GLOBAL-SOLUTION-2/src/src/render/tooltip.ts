@@ -1,7 +1,6 @@
-import type { Nivel } from '../capacity/SegmentClassifier'
 import type { FusedSegment } from '../fusion/FusionService'
 import { segmentName } from '../sensors/segments'
-import { NIVEIS } from './levels'
+import { NIVEIS, type Exibicao } from './levels'
 
 export interface TooltipContent {
   nome: string
@@ -35,7 +34,7 @@ export function segmentTooltip(
   pair: readonly [string, string] | null,
   fused: FusedSegment | undefined,
   /** The segment's level (AD-082), the same the map paints. */
-  nivel: Nivel,
+  nivel: Exibicao,
   nowMs: number,
   /** The segment the diversion is steering drivers away from. */
   jammed: string | null = null,

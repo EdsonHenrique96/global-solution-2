@@ -153,7 +153,8 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   const readings = Object.fromEntries(state.segments.map((s) => [s.id, readSegment(s.id, estimates[s.id], fused[s.id], now, sim.classifier)]))
   const readingList = Object.values(readings)
   const streets = streetRows(state.segments, readings)
-  const levelMap = Object.fromEntries(readingList.map((r) => [r.id, r.nivel]))
+  // the map shows "Em verificação" while a warning is open (AD-100); the decision reads the level
+  const levelMap = Object.fromEntries(readingList.map((r) => [r.id, r.exibido]))
   const levelsNow = () => levelMap
 
   const changeRate = (next: number) => {
@@ -349,7 +350,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
                         hover.segmentId,
                         pairFor(hover.segmentId),
                         capacity.fusion.state()[hover.segmentId],
-                        readings[hover.segmentId].nivel,
+                        readings[hover.segmentId].exibido,
                         now,
                         jammed,
                       )}
@@ -471,7 +472,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
             <CapacityPanel
               segmentId={selectedSegment}
               estimate={estimates[selectedSegment]}
-              nivel={readings[selectedSegment].nivel}
+              nivel={readings[selectedSegment].exibido}
               fused={fused[selectedSegment]}
               pair={pairFor(selectedSegment)}
             />

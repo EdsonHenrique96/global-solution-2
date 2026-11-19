@@ -99,7 +99,7 @@ describe('v1 demo', () => {
       for (let t = 0; t < FIFTEEN_MIN; t += TICK_MS) sim.tick()
       const id = 'I12>I13'
       const block = sim.engine.addBlockage(id, sim.engine.segment(id)!.length / 2, 120_000)
-      const frames: { t: number; open: boolean; levels: string; diversion: string; active: string }[] = []
+      const frames: { t: number; open: boolean; shown: string; levels: string; diversion: string; active: string }[] = []
       while (sim.engine.getState().timeMs < block.endsAtMs + 120_000) {
         sim.tick()
         const now = sim.engine.getState().timeMs
@@ -110,7 +110,7 @@ describe('v1 demo', () => {
         const open = sim.capacity.fusion.state()[id].possivelIncidente
         const incident = sim.incidents.active().some((x) => x.kind === 'possivel-incidente' && x.segmentId === id)
         expect(incident).toBe(open)
-        frames.push({ t: now, open, levels, diversion: JSON.stringify(sim.diversion), active: JSON.stringify(sim.active) })
+        frames.push({ t: now, open, shown: sim.readings()[id].exibido, levels, diversion: JSON.stringify(sim.diversion), active: JSON.stringify(sim.active) })
       }
       return { frames, end: block.endsAtMs }
     }
@@ -121,9 +121,12 @@ describe('v1 demo', () => {
     expect(open[0].t).toBeLessThan(warned.end)
     expect(warned.frames.at(-1)!.open, 'it closes once the cars leave').toBe(false)
     expect(silent.frames.some((f) => f.open)).toBe(false)
-    // with the warning open, every level and the diversion are what they are without it
+    // with the warning open the segment shows "Em verificação" (AD-100), but every rule level and
+    // the diversion are what they are without it
     for (const f of open) {
       const twin = silent.frames.find((x) => x.t === f.t)!
+      expect(f.shown, `shown at ${f.t}`).toBe('verificacao')
+      expect(twin.shown, `shown without the warning at ${f.t}`).not.toBe('verificacao')
       expect(f.levels, `levels at ${f.t}`).toBe(twin.levels)
       expect(f.diversion, `diversion at ${f.t}`).toBe(twin.diversion)
       expect(f.active, `active diversion at ${f.t}`).toBe(twin.active)
@@ -173,4 +176,40 @@ describe('v1 demo', () => {
     }
   })
 
+  it('C40 low traffic still shows speed flow density and a level', { timeout: 180_000 }, () => {
+    const transport = new FakeTransport(true)
+    const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 30, seed: 1001 }), transport })
+    sim.start()
+    const monitored = [...new Set(sim.engine.getState().cameras.map((c) => c.trecho))]
+    let exits = 0
+    sim.engine.onPlateEvent((e) => {
+      if (e.papel === 'saida') exits += 1
+    })
+    // each segment's first pair: from then on it has a speed (AD-099)
+    const firstPair = new Map<string, number>()
+    let checked = 0
+    for (let t = 0; t < FIFTEEN_MIN; t += TICK_MS) {
+      sim.tick()
+      const now = sim.engine.getState().timeMs
+      if (now % 10_000 !== 0) continue
+      const readings = sim.readings()
+      for (const id of monitored) {
+        const r = readings[id]
+        expect(['aprendendo', 'sem dado'], `${id} at ${now}`).not.toContain(r.nivel)
+        if (!firstPair.has(id) && sim.capacity.fusion.state()[id].pares) firstPair.set(id, now)
+        if (!firstPair.has(id)) continue
+        expect(r.velocidade, `${id} at ${now}`).not.toBeNull()
+        expect(r.fluxo, `${id} at ${now}`).not.toBeNull()
+        expect(r.densidade, `${id} at ${now}`).not.toBeNull()
+        expect(['aprendendo', 'sem dado'], `${id} at ${now}`).not.toContain(r.nivel)
+        checked += 1
+      }
+    }
+    expect(firstPair.size).toBe(12)
+    expect(checked).toBeGreaterThan(12 * 80)
+    // about 2 cars/min on each monitored segment
+    const perMinute = exits / monitored.length / 15
+    expect(perMinute).toBeGreaterThan(1.5)
+    expect(perMinute).toBeLessThan(2.5)
+  })
 })

@@ -1,8 +1,7 @@
 import { SPEED_LIMIT_KMH, type Estimate } from '../capacity/CapacityModel'
-import type { Nivel } from '../capacity/SegmentClassifier'
 import type { FusedSegment } from '../fusion/FusionService'
 import { segmentName } from '../sensors/segments'
-import { NIVEIS } from './levels'
+import { NIVEIS, type Exibicao } from './levels'
 import { pairLabel, SEM_DADO } from './tooltip'
 
 const W = 300
@@ -13,7 +12,7 @@ interface Props {
   segmentId: string
   estimate: Estimate | undefined
   /** The segment's level (AD-082), the same the map paints. */
-  nivel: Nivel
+  nivel: Exibicao
   fused?: FusedSegment
   /** The segment's camera pair; null without one. */
   pair?: readonly [string, string] | null

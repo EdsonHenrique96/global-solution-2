@@ -130,9 +130,12 @@ export function MapLegend() {
     <div className="map-foot">
       <div className="legend" aria-label="Legenda da densidade">
         <span className="muted">Densidade (fluxo ÷ capacidade)</span>
-        {(['livre', 'moderado', 'intenso', 'critico', 'aprendendo', 'sem dado'] as const).map((k) => (
+        {(['livre', 'moderado', 'intenso', 'critico', 'aprendendo', 'sem dado', 'verificacao'] as const).map((k) => (
           <span key={k} className="legend-item">
-            <span className={`legend-swatch ${k === 'sem dado' ? 'dashed' : ''}`} style={{ color: NIVEIS[k].color, background: k === 'sem dado' ? undefined : NIVEIS[k].color }} />
+            <span
+              className={`legend-swatch ${k === 'sem dado' || k === 'verificacao' ? 'dashed' : ''}`}
+              style={{ color: NIVEIS[k].color, background: k === 'sem dado' || k === 'verificacao' ? undefined : NIVEIS[k].color }}
+            />
             {NIVEIS[k].label}
             {NIVEIS[k].range && <span className="faint">{NIVEIS[k].range}</span>}
           </span>
@@ -229,7 +232,7 @@ export function MapOverlay({ map, base, width, height, corners, streets, selecte
       {streets.map(({ rua, worst }) => {
         const at = map(spots[rua])
         const l = labelLines(worst)
-        const color = NIVEIS[worst.nivel].color
+        const color = NIVEIS[worst.exibido].color
         const on = worst.id === selected
         return (
           <button
@@ -435,7 +438,7 @@ export function StreetRanking({ rows, selected, onSelect }: { rows: readonly Str
         >
           <span className="rank-name">{rua}</span>
           <span className="track" aria-hidden="true">
-            <span style={{ width: `${Math.min(100, pct ?? 0)}%`, background: NIVEIS[worst.nivel].color }} />
+            <span style={{ width: `${Math.min(100, pct ?? 0)}%`, background: NIVEIS[worst.exibido].color }} />
           </span>
           <span className="rank-pct">{pct === null ? '—' : `${pct}%`}</span>
         </button>
@@ -461,7 +464,7 @@ interface SelectedProps {
 
 /** The selected segment: level, occupancy, the pairing figures and its last 2 h (AC 35-40). */
 export function SelectedRoad({ reading: r, pair, history, nowMs, onCameras, onSignals }: SelectedProps) {
-  const lv = NIVEIS[r.nivel]
+  const lv = NIVEIS[r.exibido]
   const speedPct = r.velocidade === null ? null : Math.round((r.velocidade / SPEED_LIMIT_KMH) * 100)
   const speedColor = speedPct === null ? undefined : speedPct < 40 ? NIVEIS.critico.color : speedPct < 70 ? NIVEIS.moderado.color : NIVEIS.livre.color
   const from = nowMs - WINDOW_MS

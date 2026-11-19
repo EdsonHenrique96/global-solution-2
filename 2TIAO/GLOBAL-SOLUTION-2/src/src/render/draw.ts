@@ -1,7 +1,7 @@
 import type { SimulationState } from '../sim/SimulationEngine'
 import type { Phase } from '../sim/trafficLight'
 import type { Point, RoadNetwork } from '../sim/types'
-import { NEUTRAL_LANE, NIVEIS, type Nivel } from './levels'
+import { NEUTRAL_LANE, NIVEIS, type Exibicao } from './levels'
 
 const PADDING = 24
 
@@ -25,15 +25,16 @@ const COLORS = {
 }
 
 /** How a lane is painted: the colour of its density level (AD-047), or neutral with the layer off. */
-export function laneStyle(nivel: Nivel, density = true): { color: string; dash: number[] } {
+export function laneStyle(nivel: Exibicao, density = true): { color: string; dash: number[] } {
   if (!density) return { color: NEUTRAL_LANE, dash: [] }
-  return { color: NIVEIS[nivel].color, dash: nivel === 'sem dado' ? [6, 5] : [] }
+  // "sem dado" and "Em verificação" (AD-100) are dashed
+  return { color: NIVEIS[nivel].color, dash: nivel === 'sem dado' || nivel === 'verificacao' ? [6, 5] : [] }
 }
 
 /** What the page adds to a frame. */
 export interface SceneOverlay {
   /** The level of each segment; a segment missing here has no data. */
-  segmentLevel?: Record<string, Nivel>
+  segmentLevel?: Record<string, Exibicao>
   selectedSegment?: string
   /** The "Densidade" layer: off paints every lane neutral. */
   density?: boolean

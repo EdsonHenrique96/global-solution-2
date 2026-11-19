@@ -258,10 +258,81 @@ describe('pareamento dashboard', () => {
     const p = screenOf(engine, pointOnSegment(engine.segment('I12>I13')!, 30))
     fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y })
     expect(within(screen.getByRole('tooltip')).getByTestId('tooltip-velocidade')).toHaveTextContent('10,0 km/h · último par há 15 s')
-    // past 2 min: no speed any more
-    advance(120_000)
+    // past 5 min: no speed any more
+    advance(300_000)
     expect(within(road).getByTestId('selected-media')).toHaveTextContent(/^— km\/h/)
     expect(within(road).queryByTestId('selected-ultimo-par')).toBeNull()
+  })
+
+  it('C45 shows Em verificação while the warning is open and the level when it closes', () => {
+    let strokes: { from: number[]; to: number[]; style: unknown; dash: unknown }[] = []
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => {
+      const st: Record<string | symbol, unknown> = { dash: [] }
+      let path: number[][] = []
+      return new Proxy(st, {
+        get(target, key) {
+          if (key === 'setLineDash') return (d: unknown) => {
+            target.dash = d
+          }
+          if (key in target) return target[key]
+          return (...args: number[]) => {
+            if (key === 'clearRect') strokes = []
+            else if (key === 'beginPath') path = []
+            else if (key === 'moveTo' || key === 'lineTo') path.push(args)
+            else if (key === 'stroke' && path.length === 2) strokes.push({ from: path[0], to: path[1], style: target.strokeStyle, dash: target.dash })
+            return key === 'measureText' ? { width: 10 } : undefined
+          }
+        },
+        set(target, key, value) {
+          target[key] = value
+          return true
+        },
+      }) as never
+    })
+    const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
+    const transport = new FakeTransport(true)
+    render(<App engine={engine} transport={transport} />)
+    advance(2_000)
+    const id = 'I12>I13'
+    const seg = engine.segment(id)!
+    // the rule level: 360 of ~844 veh/h at 40 km/h -> Livre
+    const metrics = (ts: number) => act(() => deliverMetrics(transport, id, ts, { k: 10, v: 40, fluxoVeicMin: 6 }))
+    const warn = (ativo: boolean, ts: number) =>
+      act(() => {
+        transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts, ativo, atrasados: 4, fracao: 1 }))
+      })
+    const shown = () => {
+      act(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+      const [a, b] = seg.points.map((p) => screenOf(engine, p))
+      const lane = strokes.filter((x) => near(x.from[0], a.x) && near(x.from[1], a.y) && near(x.to[0], b.x) && near(x.to[1], b.y)).at(-1)!
+      const bar = screen.getByTestId(`rank-${seg.rua}`).querySelector('.track span') as HTMLElement
+      const p = screenOf(engine, pointOnSegment(seg, seg.length / 2))
+      fireEvent.mouseMove(document.querySelector('canvas')!, { clientX: p.x, clientY: p.y })
+      return {
+        lane: [lane.style, Array.isArray(lane.dash) && lane.dash.length > 0],
+        bar: bar.style.background,
+        tip: within(screen.getByRole('tooltip')).getByTestId('tooltip-estado').textContent,
+        selected: within(screen.getByRole('region', { name: 'Via selecionada' })).getByTestId('selected-level').textContent,
+      }
+    }
+    metrics(2_000)
+    advance(100)
+    expect(shown()).toEqual({ lane: ['#3DBE7A', false], bar: 'rgb(61, 190, 122)', tip: 'Livre', selected: 'Livre' })
+    warn(true, 2_100)
+    advance(100)
+    expect(shown()).toEqual({ lane: ['#FFB020', true], bar: 'rgb(255, 176, 32)', tip: 'Em verificação', selected: 'Em verificação' })
+    expect(screen.getByTestId('card-incidentes')).toHaveTextContent('1')
+    // not Crítico, no diversion
+    expect(within(screen.getByRole('region', { name: 'Incidentes' })).queryByTestId(`incident-congestionamento:${id}`)).toBeNull()
+    // the warning closes: the rule level is back in the same recomputation
+    advance(10_000 - engine.getState().timeMs)
+    expect(engine.getState().timeMs).toBe(10_000)
+    metrics(10_000)
+    warn(false, 10_000)
+    advance(100)
+    expect(shown()).toEqual({ lane: ['#3DBE7A', false], bar: 'rgb(61, 190, 122)', tip: 'Livre', selected: 'Livre' })
   })
 
   it('C34 map ranking tooltip and selected road show the same level', () => {

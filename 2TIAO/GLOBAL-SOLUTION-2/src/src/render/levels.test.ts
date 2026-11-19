@@ -65,6 +65,7 @@ const reading = (id: string, over: Partial<SegmentReading>): SegmentReading => (
   densidade: null,
   pares: null,
   ultimoParEm: null,
+  exibido: over.nivel ?? 'livre',
   ...over,
 })
 
