@@ -9,6 +9,24 @@ services:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     healthcheck:
       test: ["CMD", "mosquitto_sub", "-t", "$$SYS/broker/uptime", "-C", "1", "-W", "3"]
-      interval: 2s
+      # checa a cada 2s só na subida; depois a cada 30s, pra não poluir o log
+      interval: 30s
+      start_period: 30s
+      start_interval: 2s
       timeout: 5s
-      retries: 15
+      retries: 3
+
+  agente:
+    build: ./server
+    image: transito-agente
+    container_name: transito-agente
+    environment:
+      # sem a chave, o proxy sobe e o painel usa o modo sem LLM
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "127.0.0.1:8787:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/').then(()=>process.exit(0),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

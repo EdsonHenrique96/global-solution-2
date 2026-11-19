@@ -15,9 +15,10 @@ A página publica a telemetria dos drones em `transito/drones/<droneId>/telemetr
 Agente LLM (opcional): o proxy em `../server` guarda a chave e fala com a API da Anthropic.
 
 ```bash
-cd ../server && npm install && npm run build
-ANTHROPIC_API_KEY=... npm start   # escuta em 127.0.0.1:8787; o Vite encaminha /api para ele
+cd .. && ANTHROPIC_API_KEY=... docker compose up -d --build agente   # :8787; o Vite encaminha /api para ele
 ```
+
+Para rodar sem Docker, veja o [DEVELOPMENT.md](../DEVELOPMENT.md).
 
 Sem o proxy ou sem chave, o painel mostra "modo sem LLM" e as mesmas regras rodam com explicações
 por modelo de texto.
