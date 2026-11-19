@@ -9,9 +9,13 @@ interface Props {
   transport: TelemetryTransport
 }
 
+/** What the panel keeps of an event: never the full hash, only its first characters. */
 interface Row {
   key: number
-  event: PlateEvent
+  ts: number
+  cameraId: string
+  trecho: string
+  hashPrefix: string
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -33,7 +37,8 @@ export function CameraEventsPanel({ transport }: Props) {
       try {
         const event = JSON.parse(payload) as PlateEvent
         if (typeof event.cameraId !== 'string' || typeof event.placaHash !== 'string' || typeof event.ts !== 'number') return
-        setRows((prev) => [{ key: seq++, event }, ...prev].slice(0, LOG_SIZE))
+        const row: Row = { key: seq++, ts: event.ts, cameraId: event.cameraId, trecho: event.trecho, hashPrefix: event.placaHash.slice(0, HASH_SHOWN) }
+        setRows((prev) => [row, ...prev].slice(0, LOG_SIZE))
       } catch {
         // not an event
       }
@@ -63,13 +68,13 @@ export function CameraEventsPanel({ transport }: Props) {
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ key, event }) => (
-              <tr key={key} data-testid="event-row">
-                <td>{clock(event.ts)}</td>
-                <td>{event.cameraId}</td>
-                <td>{event.trecho}</td>
+            {rows.map((row) => (
+              <tr key={row.key} data-testid="event-row">
+                <td>{clock(row.ts)}</td>
+                <td>{row.cameraId}</td>
+                <td>{row.trecho}</td>
                 <td>
-                  <code>{event.placaHash.slice(0, HASH_SHOWN)}</code>
+                  <code>{row.hashPrefix}</code>
                 </td>
               </tr>
             ))}

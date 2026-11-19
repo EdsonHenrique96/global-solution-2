@@ -216,6 +216,20 @@ describe('plate matcher', () => {
     expect(all.map((a) => a.ativo)).toEqual([true, false])
   })
 
+  it('C35 an open warning with no new entries stays open', () => {
+    // a full block also stops the entries: the warning holds until it is confirmed or cleared (V4's drone)
+    const { transport, ev, at } = bench()
+    for (let i = 0; i < 6; i++) {
+      ev('A', 'entrada', `n${i}`, i * 1_000)
+      ev('A', 'saida', `n${i}`, i * 1_000 + 5_000)
+    }
+    const B = 200_000
+    for (let i = 0; i < 4; i++) ev('A', 'entrada', `b${i}`, B + 1_000 + i * 1_000)
+    for (let t = B + 10_000; t <= B + 400_000; t += 10_000) at(t)
+    const sent = transport.published.filter((p) => p.topic === anomalyTopic('A')).map((p) => JSON.parse(p.payload) as SegmentAnomaly)
+    expect(sent.map((a) => a.ativo)).toEqual([true])
+  })
+
   it('C37 exits after the salt change close the entries from before it', () => {
     const { transport, matcher, ev, at } = bench()
     // 5 cars enter at 00:59:50 and leave at 01:00:05; the hour turned, so their exit hashes differ

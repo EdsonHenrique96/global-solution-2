@@ -524,6 +524,7 @@ export function SelectedRoad({ reading: r, pair, history, nowMs, onCameras, onSi
           <dt>Velocidade média (pareamento)</dt>
           <dd data-testid="selected-media" style={{ color: speedColor }}>
             {r.velocidade === null ? '—' : Math.round(r.velocidade)} <small>km/h{speedPct !== null && ` · ${speedPct}% do limite`}</small>
+            {r.ultimoParEm !== null && <small data-testid="selected-ultimo-par"> · último par há {Math.max(0, Math.round((nowMs - r.ultimoParEm) / 1000))} s</small>}
           </dd>
         </div>
         <div>

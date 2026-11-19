@@ -37,6 +37,8 @@ export interface SegmentReading {
   densidade: number | null
   /** Plate pairs closed in the last minute. */
   pares: number | null
+  /** When the speed is a held last-pair speed (AD-098), that pair's time; else null. */
+  ultimoParEm: number | null
 }
 
 /**
@@ -56,9 +58,10 @@ export function readSegment(
   const contagem = stale ? null : (fused?.contagem ?? null)
   const densidade = stale ? null : (fused?.densidade ?? null)
   const pares = stale ? null : (fused?.pares ?? null)
+  const ultimoParEm = stale ? null : (fused?.velocidadeUltimoParEm ?? null)
   const fluxo = stale || !estimate ? null : estimate.fluxo
   const capacidade = estimate?.capacidade ?? null
-  const base = { id, fluxo, capacidade, velocidade, contagem, densidade, pares }
+  const base = { id, fluxo, capacidade, velocidade, contagem, densidade, pares, ultimoParEm }
   if (stale) return { ...base, nivel: 'sem dado', pct: null }
   const nivel = classifier.classify({ fluxo, capacidade, velocidade, densidade })
   const pct = capacidade === null || capacidade <= 0 || fluxo === null ? null : Math.round((fluxo / capacidade) * 100)

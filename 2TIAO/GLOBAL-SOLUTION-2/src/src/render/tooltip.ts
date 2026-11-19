@@ -46,7 +46,10 @@ export function segmentTooltip(
     nome: segmentName(segmentId),
     estado: NIVEIS[nivel].label,
     contagem: fused?.contagem != null ? `${fused.contagem} veíc` : SEM_DADO,
-    velocidade: fused?.velocidadeMedia != null ? `${fmt(fused.velocidadeMedia, 1)} km/h` : SEM_DADO,
+    velocidade:
+      fused?.velocidadeMedia != null
+        ? `${fmt(fused.velocidadeMedia, 1)} km/h${fused.velocidadeUltimoParEm != null ? ` · último par há ${Math.max(0, Math.round((nowMs - fused.velocidadeUltimoParEm) / 1000))} s` : ''}`
+        : SEM_DADO,
     densidade: fused?.densidade != null ? `${fmt(fused.densidade, 1)} veíc/km` : SEM_DADO,
     unidade: pairLabel(pair),
     confianca: fmt(fused?.confianca ?? 0, 2),

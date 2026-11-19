@@ -45,6 +45,7 @@ const fused = (velocidadeMedia: number | null, atualizadoEm: number | null = NOW
   fluxoVeicMin: null,
   pares: null,
   possivelIncidente: false,
+  velocidadeUltimoParEm: null,
   alertas: [],
   demandaOD: null,
   fontes: ['C01E', 'C01S'],
@@ -63,6 +64,7 @@ const reading = (id: string, over: Partial<SegmentReading>): SegmentReading => (
   contagem: 3,
   densidade: null,
   pares: null,
+  ultimoParEm: null,
   ...over,
 })
 

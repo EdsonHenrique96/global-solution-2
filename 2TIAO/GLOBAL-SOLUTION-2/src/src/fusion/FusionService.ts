@@ -5,8 +5,11 @@ import { agedConfidence, FRESH_MS } from './confidence'
 import { ANOMALY_FILTER, METRICS_FILTER } from './PlateMatcher'
 import { APPS_TOPIC } from '../apps/AppFleet'
 
-/** Without a pair in the last minute, the last measured pair speed is shown for up to 5 min (AC 24). */
-export const SPEED_HOLD_MS = 300_000
+/**
+ * Without a pair in the last minute, the last pair speed is shown for at most 2 min, and dropped at
+ * once when "Possível incidente" opens or the occupancy grows past the last pair's (AD-098).
+ */
+export const SPEED_HOLD_MS = 120_000
 
 export const ALERT_MERGE_M = 50
 export const ALERT_MERGE_MS = 60_000
@@ -31,6 +34,8 @@ export interface FusedSegment {
   densidade: number | null
   /** Space mean speed of the last minute's plate pairs, km/h; without a pair, the last measured one up to 5 min old; else null. */
   velocidadeMedia: number | null
+  /** When `velocidadeMedia` is a held last-pair speed, the time of that pair; null when measured now. */
+  velocidadeUltimoParEm: number | null
   /** Exits in the last minute. */
   fluxoVeicMin: number | null
   /** Plate pairs closed in the last minute. */
@@ -96,7 +101,7 @@ export class FusionService {
   private readonly demand = new Map<string, number | null>()
   private readonly anomalies = new Map<string, { ts: number; ativo: boolean }>()
   /** Each segment's last measured pair speed: a sparse segment still shows one (AC 24). */
-  private readonly lastSpeed = new Map<string, { v: number; ts: number }>()
+  private readonly lastSpeed = new Map<string, { v: number; ts: number; ocupacao: number }>()
   private offs: (() => void)[] = []
 
   constructor(transport: TelemetryTransport, now: () => number, segments: readonly Segment[]) {
@@ -142,13 +147,23 @@ export class FusionService {
     const current = this.latest.get(msg.trecho)
     if (current && ts <= current.ts) return
     this.latest.set(msg.trecho, { ts, ocupacao, densidadeVeicKm, velocidadeMediaKmh, fluxoVeicMin, pares, camerasPar: [...camerasPar] })
-    if (velocidadeMediaKmh !== null) this.lastSpeed.set(msg.trecho, { v: velocidadeMediaKmh, ts })
+    if (velocidadeMediaKmh !== null) this.lastSpeed.set(msg.trecho, { v: velocidadeMediaKmh, ts, ocupacao })
     this.pending.push({ segmentId: msg.trecho, ts, densidadeVeicKm, velocidadeMediaKmh, fluxoVeicMin })
   }
 
-  private heldSpeed(segmentId: string, at: number): number | null {
+  /** The last pair speed while the segment looks normal (AD-098), or null. */
+  private heldSpeed(segmentId: string, m: Metrics): { v: number; ts: number } | null {
     const last = this.lastSpeed.get(segmentId)
-    return last && at - last.ts <= SPEED_HOLD_MS ? last.v : null
+    if (!last || m.ts - last.ts > SPEED_HOLD_MS) return null
+    if (this.anomalies.get(segmentId)?.ativo || m.ocupacao > last.ocupacao) return null
+    return { v: last.v, ts: last.ts }
+  }
+
+  private speedOf(segmentId: string, m: Metrics | undefined): { velocidadeMedia: number | null; velocidadeUltimoParEm: number | null } {
+    if (!m) return { velocidadeMedia: null, velocidadeUltimoParEm: null }
+    if (m.velocidadeMediaKmh !== null) return { velocidadeMedia: m.velocidadeMediaKmh, velocidadeUltimoParEm: null }
+    const held = this.heldSpeed(segmentId, m)
+    return { velocidadeMedia: held?.v ?? null, velocidadeUltimoParEm: held?.ts ?? null }
   }
 
   private onAnomaly(payload: string): void {
@@ -227,7 +242,7 @@ export class FusionService {
           {
             contagem: m ? m.ocupacao : null,
             densidade: m ? m.densidadeVeicKm : null,
-            velocidadeMedia: m ? (m.velocidadeMediaKmh ?? this.heldSpeed(s.id, m.ts)) : null,
+            ...this.speedOf(s.id, m),
             fluxoVeicMin: m ? m.fluxoVeicMin : null,
             pares: m ? m.pares : null,
             possivelIncidente: this.anomalies.get(s.id)?.ativo ?? false,

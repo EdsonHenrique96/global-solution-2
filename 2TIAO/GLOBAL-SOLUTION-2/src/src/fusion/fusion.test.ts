@@ -10,7 +10,8 @@ import { FakeTransport } from '../telemetry/testing'
 import { ALERTS_TOPIC, wireAlerts } from './AlertPublisher'
 import { agedConfidence } from './confidence'
 import { FusionService } from './FusionService'
-import { METRICS_FILTER, metricsTopic } from './PlateMatcher'
+import { anomalyTopic, METRICS_FILTER, metricsTopic } from './PlateMatcher'
+import { readSegment } from '../render/levels'
 
 const segments = buildSegments(buildCityNetwork())
 const SANTOS = segments.find((x) => x.id === 'I12>I13')!
@@ -54,9 +55,9 @@ describe('fusion', () => {
       expect(Object.keys(state).sort()).toEqual(segments.map((s) => s.id).sort())
       for (const s of Object.values(state)) {
         expect(Object.keys(s).sort()).toEqual(
-          ['alertas', 'atualizadoEm', 'confianca', 'contagem', 'demandaOD', 'densidade', 'estimado', 'fluxoVeicMin', 'fontes', 'pares', 'possivelIncidente', 'velocidadeMedia'].sort(),
+          ['alertas', 'atualizadoEm', 'confianca', 'contagem', 'demandaOD', 'densidade', 'estimado', 'fluxoVeicMin', 'fontes', 'pares', 'possivelIncidente', 'velocidadeMedia', 'velocidadeUltimoParEm'].sort(),
         )
-        expect(s).toMatchObject({ contagem: null, densidade: null, velocidadeMedia: null, fluxoVeicMin: null, pares: null, possivelIncidente: false, alertas: [], demandaOD: null, fontes: [], confianca: 0, atualizadoEm: null, estimado: false })
+        expect(s).toMatchObject({ contagem: null, densidade: null, velocidadeMedia: null, fluxoVeicMin: null, pares: null, possivelIncidente: false, velocidadeUltimoParEm: null, alertas: [], demandaOD: null, fontes: [], confianca: 0, atualizadoEm: null, estimado: false })
       }
     })
 
@@ -99,6 +100,44 @@ describe('fusion', () => {
       })
       now.t = 40_000
       expect(fusion.state()['I11>I12']).toMatchObject({ fontes: [], estimado: true, velocidadeMedia: 45, densidade: 20, atualizadoEm: 10_000 })
+    })
+    it('C44 holds the last pair speed at most 2 min while the segment looks normal', () => {
+      const now = { t: 10_000 }
+      const transport = new FakeTransport(true)
+      const service = new CapacityService(transport, () => now.t, segments)
+      service.start()
+      const id = 'I11>I12'
+      const send = (ts: number, v: number | null, ocupacao: number, fluxo = 6) => {
+        now.t = ts
+        transport.deliver(metricsTopic(id), JSON.stringify({ trecho: id, ts, janelaS: 60, fluxoVeicMin: fluxo, velocidadeMediaKmh: v, pares: v === null ? 0 : 1, entraram: 0, sairam: 0, ocupacao, densidadeVeicKm: ocupacao * 20, camerasPar: ['C01E', 'C01S'] }))
+      }
+      const read = () => readSegment(id, service.snapshot()[id], service.fusion.state()[id], now.t)
+      // last pair at 10 km/h; 90 s later, no pair and normal traffic: shown, "último par há 90 s"
+      send(10_000, 10, 2)
+      send(100_000, null, 2)
+      expect(service.fusion.state()[id]).toMatchObject({ velocidadeMedia: 10, velocidadeUltimoParEm: 10_000, pares: 0 })
+      expect(read()).toMatchObject({ velocidade: 10, ultimoParEm: 10_000 })
+      // 120 s: still held; 125 s: no speed, the level from flow / capacity alone (360 of ~844 veh/h: Livre)
+      send(130_000, null, 2)
+      expect(service.fusion.state()[id].velocidadeMedia).toBe(10)
+      send(135_000, null, 2)
+      expect(service.fusion.state()[id]).toMatchObject({ velocidadeMedia: null, velocidadeUltimoParEm: null })
+      expect(read()).toMatchObject({ velocidade: null, nivel: 'livre' })
+      // "Possível incidente" opens: dropped at once, without waiting 2 min
+      send(200_000, 10, 2)
+      send(210_000, null, 2)
+      expect(service.fusion.state()[id].velocidadeMedia).toBe(10)
+      now.t = 215_000
+      transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: 215_000, ativo: true, atrasados: 4, fracao: 1 }))
+      expect(service.fusion.state()[id].velocidadeMedia).toBeNull()
+      // occupancy grows past the last pair's: dropped
+      now.t = 216_000
+      transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: 216_000, ativo: false, atrasados: 0, fracao: 0 }))
+      send(300_000, 30, 2)
+      send(310_000, null, 2)
+      expect(service.fusion.state()[id].velocidadeMedia).toBe(30)
+      send(320_000, null, 3)
+      expect(service.fusion.state()[id].velocidadeMedia).toBeNull()
     })
   })
 

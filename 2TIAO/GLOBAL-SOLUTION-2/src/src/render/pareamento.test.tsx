@@ -239,6 +239,31 @@ describe('pareamento dashboard', () => {
     expect(screen.queryByTestId('marker-possivel-incidente:I12>I13')).toBeNull()
   })
 
+  it('C44 shows the held speed as último par há X s', () => {
+    const { engine, transport } = setup()
+    advance(15_000)
+    // a pair at 10 km/h at 15 s; the matcher's next recomputations (20 s, 30 s) have no pair
+    act(() => {
+      transport.deliver(
+        metricsTopic('I12>I13'),
+        JSON.stringify({ trecho: 'I12>I13', ts: 15_000, janelaS: 60, fluxoVeicMin: 1, velocidadeMediaKmh: 10, pares: 1, entraram: 0, sairam: 0, ocupacao: 0, densidadeVeicKm: 0, camerasPar: ['C02E', 'C02S'] }),
+      )
+    })
+    advance(15_000)
+    const road = screen.getByRole('region', { name: 'Via selecionada' })
+    expect(within(road).getByTestId('selected-media')).toHaveTextContent(/^10 km\/h/)
+    expect(within(road).getByTestId('selected-ultimo-par')).toHaveTextContent('último par há 15 s')
+    expect(within(road).getByTestId('selected-pares')).toHaveTextContent('0')
+    const canvas = document.querySelector('canvas')!
+    const p = screenOf(engine, pointOnSegment(engine.segment('I12>I13')!, 30))
+    fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y })
+    expect(within(screen.getByRole('tooltip')).getByTestId('tooltip-velocidade')).toHaveTextContent('10,0 km/h · último par há 15 s')
+    // past 2 min: no speed any more
+    advance(120_000)
+    expect(within(road).getByTestId('selected-media')).toHaveTextContent(/^— km\/h/)
+    expect(within(road).queryByTestId('selected-ultimo-par')).toBeNull()
+  })
+
   it('C34 map ranking tooltip and selected road show the same level', () => {
     // a canvas that records each lane stroke and its colour
     let strokes: { from: number[]; to: number[]; style: unknown }[] = []

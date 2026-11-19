@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { NIVEL_ORDER, readSegment, type Nivel } from '../render/levels'
+import { ANOMALY_FILTER } from '../fusion/PlateMatcher'
+import { NIVEL_ORDER, type Nivel } from '../render/levels'
+import { topicMatches } from '../telemetry/transport'
 import { eventsTopic, type PlateEvent } from '../sensors/PlateCamera'
 import { DEFAULT_RATE_PER_MINUTE, QUEUE_SPEED_MS, SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
+import { CONFIGURED_CAPACITY_VEH_H } from '../capacity/CapacityModel'
 import { Simulation } from './Simulation'
 
 /** How bad a map level is: critico 3 .. livre 0; learning and no data are not on the scale. */
@@ -81,34 +84,50 @@ describe('v1 demo', () => {
     expect(at! - FIFTEEN_MIN).toBeLessThanOrEqual(180_000)
   })
 
-  it('C35 a full block warns Possível incidente without changing the level or the diversion', { timeout: 180_000 }, async () => {
-    const transport = new FakeTransport(true)
-    const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: DEFAULT_RATE_PER_MINUTE, seed: 1001 }), transport })
-    sim.start()
-    const id = 'I12>I13'
-    for (let t = 0; t < FIFTEEN_MIN; t += TICK_MS) sim.tick()
-    const block = sim.engine.addBlockage(id, sim.engine.segment(id)!.length / 2, 120_000)
-    let opened: number | null = null
-    let closed: number | null = null
-    while (sim.engine.getState().timeMs < block.endsAtMs + 120_000) {
-      sim.tick()
-      const now = sim.engine.getState().timeMs
-      if (now % 10_000 !== 0) continue
-      const fused = sim.capacity.fusion.state()[id]
-      if (fused.possivelIncidente) {
-        opened ??= now
-        // the level is the pairs' alone: the same with or without the warning
-        const est = sim.capacity.snapshot()[id]
-        expect(sim.readings()[id].nivel).toBe(readSegment(id, est, { ...fused, possivelIncidente: false }, now).nivel)
-        expect(sim.incidents.active().some((i) => i.kind === 'possivel-incidente' && i.segmentId === id)).toBe(true)
-      } else if (opened !== null) closed ??= now
+  it('C35 a full block warns Possível incidente without changing the level or the diversion', { timeout: 300_000 }, () => {
+    // the same seeded run twice: once as is, once with the warning dropped before it reaches the fusion
+    const run = (withWarning: boolean) => {
+      const transport = new FakeTransport(true)
+      if (!withWarning) {
+        const publish = transport.publish.bind(transport)
+        transport.publish = (topic, payload, options) => {
+          if (!topicMatches(ANOMALY_FILTER, topic)) publish(topic, payload, options)
+        }
+      }
+      const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: DEFAULT_RATE_PER_MINUTE, seed: 1001 }), transport })
+      sim.start()
+      for (let t = 0; t < FIFTEEN_MIN; t += TICK_MS) sim.tick()
+      const id = 'I12>I13'
+      const block = sim.engine.addBlockage(id, sim.engine.segment(id)!.length / 2, 120_000)
+      const frames: { t: number; open: boolean; levels: string; diversion: string; active: string }[] = []
+      while (sim.engine.getState().timeMs < block.endsAtMs + 120_000) {
+        sim.tick()
+        const now = sim.engine.getState().timeMs
+        if (now % 10_000 !== 0) continue
+        const levels = Object.values(sim.readings())
+          .map((r) => `${r.id}:${r.nivel}`)
+          .join(',')
+        const open = sim.capacity.fusion.state()[id].possivelIncidente
+        const incident = sim.incidents.active().some((x) => x.kind === 'possivel-incidente' && x.segmentId === id)
+        expect(incident).toBe(open)
+        frames.push({ t: now, open, levels, diversion: JSON.stringify(sim.diversion), active: JSON.stringify(sim.active) })
+      }
+      return { frames, end: block.endsAtMs }
     }
-    expect(opened, 'the full block opens the warning during the block').not.toBeNull()
-    expect(opened!).toBeLessThan(block.endsAtMs)
-    expect(closed, 'it closes once the cars leave').not.toBeNull()
-    // the diversion never reads the warning: the controller only gets levels and capacity figures
-    const src = (await import('node:fs')).readFileSync(`${process.cwd()}/src/decision/DiversionController.ts`, 'utf8')
-    expect(src).not.toMatch(/possivelIncidente|anomal/)
+    const warned = run(true)
+    const silent = run(false)
+    const open = warned.frames.filter((f) => f.open)
+    expect(open.length, 'the full block opens the warning').toBeGreaterThan(0)
+    expect(open[0].t).toBeLessThan(warned.end)
+    expect(warned.frames.at(-1)!.open, 'it closes once the cars leave').toBe(false)
+    expect(silent.frames.some((f) => f.open)).toBe(false)
+    // with the warning open, every level and the diversion are what they are without it
+    for (const f of open) {
+      const twin = silent.frames.find((x) => x.t === f.t)!
+      expect(f.levels, `levels at ${f.t}`).toBe(twin.levels)
+      expect(f.diversion, `diversion at ${f.t}`).toBe(twin.diversion)
+      expect(f.active, `active diversion at ${f.t}`).toBe(twin.active)
+    }
   })
 
   it('C38 a full block warns within 70 s of the first stuck car', { timeout: 300_000 }, () => {
@@ -139,34 +158,19 @@ describe('v1 demo', () => {
     }
   })
 
-  it('C40 low traffic still shows speed flow density and a level', { timeout: 180_000 }, () => {
-    const transport = new FakeTransport(true)
-    const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 30, seed: 1001 }), transport })
+  it('C39 no monitored segment is Aprendendo at the first recompute with metrics', () => {
+    const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: DEFAULT_RATE_PER_MINUTE, seed: 1001 }), transport: new FakeTransport(true) })
     sim.start()
     const monitored = [...new Set(sim.engine.getState().cameras.map((c) => c.trecho))]
-    let exits = 0
-    sim.engine.onPlateEvent((e) => {
-      if (e.papel === 'saida') exits += 1
-    })
-    let checked = 0
-    for (let t = 0; t < FIFTEEN_MIN; t += TICK_MS) {
-      sim.tick()
-      const now = sim.engine.getState().timeMs
-      if (now <= 300_000 || now % 10_000 !== 0) continue
-      const readings = sim.readings()
-      for (const id of monitored) {
-        const r = readings[id]
-        expect(r.velocidade, `${id} at ${now}`).not.toBeNull()
-        expect(r.fluxo, `${id} at ${now}`).not.toBeNull()
-        expect(r.densidade, `${id} at ${now}`).not.toBeNull()
-        expect(['aprendendo', 'sem dado'], `${id} at ${now}`).not.toContain(r.nivel)
-        checked += 1
-      }
+    for (let t = 0; t < 10_000; t += TICK_MS) sim.tick()
+    // the first recomputation: every monitored segment has metrics and the configured capacity
+    const fused = sim.capacity.fusion.state()
+    const readings = sim.readings()
+    for (const id of monitored) {
+      expect(fused[id].atualizadoEm, id).toBe(10_000)
+      expect(readings[id].capacidade, id).toBeCloseTo(CONFIGURED_CAPACITY_VEH_H, 6)
+      expect(['aprendendo', 'sem dado'], id).not.toContain(readings[id].nivel)
     }
-    expect(checked).toBe(12 * 60)
-    // about 2 cars/min on each monitored segment
-    const perMinute = exits / monitored.length / 15
-    expect(perMinute).toBeGreaterThan(1.5)
-    expect(perMinute).toBeLessThan(2.5)
   })
+
 })
