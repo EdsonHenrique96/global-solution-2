@@ -136,6 +136,16 @@ describe('fusion', () => {
       now.t = 415_000
       transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: 415_000, ativo: true, atrasados: 4, fracao: 1 }))
       expect(service.fusion.state()[id].velocidadeMedia).toBeNull()
+      // and it does not come back when the warning closes: pair 30 km/h at +10 s, warning opens at
+      // +25 s and closes at +35 s, metrics without a pair at +40 s -> no speed
+      const T = 500_000
+      send(T + 10_000, 30, 2)
+      now.t = T + 25_000
+      transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: T + 25_000, ativo: true, atrasados: 4, fracao: 1 }))
+      now.t = T + 35_000
+      transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: T + 35_000, ativo: false, atrasados: 0, fracao: 0 }))
+      send(T + 40_000, null, 2)
+      expect(service.fusion.state()[id]).toMatchObject({ possivelIncidente: false, velocidadeMedia: null, velocidadeUltimoParEm: null })
     })
   })
 

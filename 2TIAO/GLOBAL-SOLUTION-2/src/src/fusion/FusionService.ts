@@ -173,6 +173,8 @@ export class FusionService {
     const current = this.anomalies.get(msg.trecho)
     if (current && msg.ts < current.ts) return
     this.anomalies.set(msg.trecho, { ts: msg.ts, ativo: msg.ativo })
+    // a warning drops the held speed for good: it does not come back when the warning closes
+    if (msg.ativo) this.lastSpeed.delete(msg.trecho)
   }
 
   private onAlert(payload: string): void {

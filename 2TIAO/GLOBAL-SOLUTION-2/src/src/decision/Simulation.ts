@@ -214,7 +214,9 @@ export class Simulation {
   private decide(): void {
     const estimates = this.capacity.snapshot()
     const levels = this.readings()
-    const views = Object.fromEntries(Object.entries(estimates).map(([id, e]) => [id, { ...e, nivel: levels[id].nivel }]))
+    // a segment "Em verificação" does not count as Crítico: it never starts a diversion, and one
+    // active on it ends by the normal rule (AD-100, AD-086)
+    const views = Object.fromEntries(Object.entries(estimates).map(([id, e]) => [id, { ...e, nivel: levels[id].exibido }]))
     const jammed = this.controller.evaluate(this.engine.getState().timeMs, views)
     const sizing = typeof jammed === 'string' && jammed !== 'desligado' ? this.sizing(jammed) : null
     if (!this.agentControl) {

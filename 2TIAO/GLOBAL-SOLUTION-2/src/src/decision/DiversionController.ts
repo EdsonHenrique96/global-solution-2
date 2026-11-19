@@ -1,4 +1,4 @@
-import type { Nivel } from '../capacity/SegmentClassifier'
+import type { Exibicao } from '../render/levels'
 
 export const SAFETY_FACTOR = 0.8
 export const MAX_DIVERSION = 0.5
@@ -9,7 +9,7 @@ export const MIN_CHANGE_INTERVAL_MS = 30_000
 
 /** What the decision needs to know about a segment: its level (AD-082) and capacity figures. */
 export interface RouteView {
-  nivel: Nivel
+  nivel: Exibicao
   velocidade: number | null
   /** Current flow, veh/h. */
   fluxo: number

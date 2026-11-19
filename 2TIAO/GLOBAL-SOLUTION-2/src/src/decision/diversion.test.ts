@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ruleClassifier, type Nivel } from '../capacity/SegmentClassifier'
+import { anomalyTopic } from '../fusion/PlateMatcher'
 import { eventsTopic } from '../sensors/PlateCamera'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
@@ -58,5 +59,59 @@ describe('diversion', () => {
     expect(sim.readings()[id]).toMatchObject({ nivel: 'critico' })
     expect(sim.readings()[id].velocidade!).toBeLessThan(15)
     expect(sim.diversion).toMatchObject({ status: 'ativo', trecho: id })
+  })
+})
+
+describe('diversion', () => {
+  it('C46 a segment in verification never starts a diversion and an active one ends by the normal rule', () => {
+    const id = 'I12>I13'
+    /** A simulation where I12>I13 has slow pairs (~10 km/h) in the matcher's 40 s recomputation. */
+    const slowPairs = () => {
+      const transport = new FakeTransport(true)
+      const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0 }), transport })
+      sim.start()
+      const run = (ms: number) => {
+        for (let t = 0; t < ms; t += TICK_MS) sim.tick()
+      }
+      run(30_000)
+      for (let i = 0; i < 3; i++) {
+        const car = (papel: 'entrada' | 'saida', ts: number) =>
+          transport.deliver(eventsTopic(id), JSON.stringify({ cameraId: papel === 'entrada' ? 'C02E' : 'C02S', trecho: id, papel, placaHash: `slow${i}`, ts, faixa: 1, classe: 'carro' }))
+        car('entrada', 5_000 + i * 1_000)
+        car('saida', 25_000 + i * 1_000)
+      }
+      const warn = (ativo: boolean) =>
+        transport.deliver(anomalyTopic(id), JSON.stringify({ trecho: id, ts: sim.engine.getState().timeMs, ativo, atrasados: 4, fracao: 1 }))
+      return { sim, run, warn }
+    }
+
+    // the warning is open when the segment turns Crítico: no diversion starts
+    {
+      const { sim, run, warn } = slowPairs()
+      warn(true)
+      run(10_000)
+      expect(sim.engine.getState().timeMs).toBe(40_000)
+      expect(sim.readings()[id]).toMatchObject({ nivel: 'critico', exibido: 'verificacao' })
+      expect(sim.diversion.status).not.toBe('ativo')
+      run(30_000)
+      expect(sim.diversion.status).not.toBe('ativo')
+    }
+
+    // a diversion already active on it ends by the normal rule: 2 recomputations out of Crítico
+    // (here "Em verificação") and at least 30 s after it started (AD-086)
+    {
+      const { sim, run, warn } = slowPairs()
+      run(10_000)
+      expect(sim.diversion).toMatchObject({ status: 'ativo', trecho: id })
+      warn(true)
+      run(10_000) // 50 s: 1 out of Crítico
+      expect(sim.readings()[id]).toMatchObject({ nivel: 'critico', exibido: 'verificacao' })
+      expect(sim.diversion).toMatchObject({ status: 'ativo', trecho: id })
+      run(10_000) // 60 s: 2 out, but only 20 s since it started
+      expect(sim.diversion).toMatchObject({ status: 'ativo', trecho: id })
+      run(10_000) // 70 s: 30 s since it started
+      expect(sim.readings()[id].nivel).toBe('critico')
+      expect(sim.diversion.status).not.toBe('ativo')
+    }
   })
 })
