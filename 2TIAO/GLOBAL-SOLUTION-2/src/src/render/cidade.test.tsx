@@ -2,15 +2,14 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { notificationTopic, type DriverNotification } from '../apps/AppNotifier'
-import { bearing } from '../sensors/camera'
-import { COVERAGE_MIN } from '../sensors/coverage'
+import { pairOf } from '../sensors/PlateCamera'
 import { pointOnSegment, segmentName } from '../sensors/segments'
 import { SimulationEngine } from '../sim/SimulationEngine'
 import type { Point } from '../sim/types'
-import { FakeTransport } from '../telemetry/testing'
+import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { fitTransform, laneStyle } from './draw'
 import { fusedStatus, sortRoads } from './roads'
-import { coveringUnit, segmentTooltip } from './tooltip'
+import { segmentTooltip } from './tooltip'
 
 interface Call {
   op: string
@@ -108,25 +107,9 @@ describe('render cidade', () => {
     expect(near(parseFloat(marker.style.left), at.x) && near(parseFloat(marker.style.top), at.y)).toBe(true)
   })
 
-  it('changing a unit heading in the panel recomputes coverage', () => {
-    const engine = new SimulationEngine({ ratePerMinute: 0 })
-    render(<App engine={engine} transport={new FakeTransport(true)} />)
-    fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
-    const covers = (id: string) => engine.coverage.entries(id).some((e) => e.sensorId === 'U01' && e.cobertura >= COVERAGE_MIN)
-    expect(covers('I11>I12')).toBe(true)
-    const net = engine.getState().network.intersections
-    const toJau = bearing(net.find((i) => i.id === 'I11')!.position, net.find((i) => i.id === 'I21')!.position)
-    const row = screen.getByTestId('camera-U01')
-    fireEvent.change(within(row).getByLabelText(/Direção/), { target: { value: String(toJau) } })
-    expect(engine.getState().cameras.find((c) => c.id === 'U01')!.heading).toBe(toJau)
-    expect(covers('I11>I12')).toBe(false)
-    expect(covers('I11>I21')).toBe(true)
-    expect(within(screen.getByTestId('camera-U01')).getByLabelText(/Direção/)).toHaveValue(toJau)
-  })
-
   it('draws only roads lights street labels unit icons and incidents', { timeout: 60_000 }, () => {
     vi.useFakeTimers()
-    const engine = new SimulationEngine({ ratePerMinute: 120, noisePct: 0 })
+    const engine = new SimulationEngine({ ratePerMinute: 120 })
     render(<App engine={engine} transport={new FakeTransport(true)} />)
     act(() => {
       vi.advanceTimersByTime(60_000)
@@ -158,7 +141,7 @@ describe('render cidade', () => {
     expect(laneStyle('sem dado').color).toBe('#5B6676')
     expect(laneStyle('sem dado').dash.length).toBeGreaterThan(0)
     // the state is the AD-006 rule on the newest fused reading; none for 20 s -> sem dados
-    const f = (v: number | null, at: number | null) => ({ contagem: 1, densidade: 1, velocidadeMedia: v, alertas: [], demandaOD: null, fontes: [], confianca: 1, atualizadoEm: at, estimado: false })
+    const f = (v: number | null, at: number | null) => ({ contagem: 1, densidade: 1, velocidadeMedia: v, fluxoVeicMin: 1, pares: 1, alertas: [], demandaOD: null, fontes: [], confianca: 1, atualizadoEm: at, estimado: false })
     expect(fusedStatus(f(40, 50_000), 60_000)).toBe('fluindo')
     expect(fusedStatus(f(39.9, 50_000), 60_000)).toBe('carregado')
     expect(fusedStatus(f(25, 50_000), 60_000)).toBe('carregado')
@@ -183,9 +166,8 @@ describe('render cidade', () => {
     const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
     const transport = new FakeTransport(true)
     render(<App engine={engine} transport={transport} />)
-    const seg = (trecho: string, v: number) => ({ trecho, contagem: 4, velocidadeMediaKmh: v, comprimentoCobertoM: 120, cobertura: 1 })
     act(() => {
-      transport.deliver('transito/sensores/U99/telemetria', JSON.stringify({ sensorId: 'U99', ts: 0, porTrecho: [seg('I12>I13', 3), seg('I13>I12', 45), seg('I22>I23', 30)] }))
+      for (const [trecho, v] of [['I12>I13', 3], ['I13>I12', 45], ['I22>I23', 30]] as const) deliverMetrics(transport, trecho, 0, { k: 4 / 0.12, v, ocupacao: 4 })
     })
     const frame = redraw()
     const at = (id: string) => laneStrokes(engine, frame, id).at(-1)!
@@ -198,7 +180,7 @@ describe('render cidade', () => {
 
   it('hovering a segment shows its tooltip with metrics and alerts', { timeout: 60_000 }, () => {
     vi.useFakeTimers()
-    const engine = new SimulationEngine({ ratePerMinute: 120, noisePct: 0 })
+    const engine = new SimulationEngine({ ratePerMinute: 120 })
     render(<App engine={engine} transport={new FakeTransport(true)} />)
     const canvas = document.querySelector('canvas')!
     act(() => {
@@ -212,13 +194,14 @@ describe('render cidade', () => {
     const tip = screen.getByRole('tooltip')
     expect(within(tip).getByTestId('tooltip-nome')).toHaveTextContent('Al. Santos, R. Augusta → R. Haddock Lobo')
     for (const id of ['estado', 'contagem', 'velocidade', 'densidade', 'unidade', 'confianca', 'idade']) expect(within(tip).getByTestId(`tooltip-${id}`)).toBeInTheDocument()
-    expect(within(tip).getByTestId('tooltip-unidade')).toHaveTextContent(coveringUnit(engine.coverage.entries('I14>I13')))
+    // no camera pair on this block
+    expect(within(tip).getByTestId('tooltip-unidade')).toHaveTextContent('estimado')
     expect(within(tip).getByTestId('tooltip-avisos')).toHaveTextContent('Acidente')
     // the segment the diversion steers app drivers away from carries the persistent-congestion warning; its opposite direction does not
-    const jammed = segmentTooltip('I12>I13', [], undefined, 'congestionado', 0, 'I12>I13')
+    const jammed = segmentTooltip('I12>I13', null, undefined, 'congestionado', 0, 'I12>I13')
     expect(jammed.avisos.some((a) => /Congestionamento persistente/.test(a))).toBe(true)
-    expect(segmentTooltip('I13>I12', [], undefined, 'fluindo', 0, 'I12>I13').avisos).toEqual([])
-    expect(segmentTooltip('I12>I13', [], undefined, 'congestionado', 0, null).avisos).toEqual([])
+    expect(segmentTooltip('I13>I12', null, undefined, 'fluindo', 0, 'I12>I13').avisos).toEqual([])
+    expect(segmentTooltip('I12>I13', null, undefined, 'congestionado', 0, null).avisos).toEqual([])
 
     // a covered segment with a fresh reading shows the measured numbers
     const covered = 'I12>I13'
@@ -226,13 +209,13 @@ describe('render cidade', () => {
     fireEvent.mouseMove(canvas, { clientX: q.x, clientY: q.y })
     const tip2 = screen.getByRole('tooltip')
     expect(within(tip2).getByTestId('tooltip-nome')).toHaveTextContent(segmentName(covered))
-    expect(within(tip2).getByTestId('tooltip-unidade')).toHaveTextContent(/^U02 \(\d+%\)$/)
+    expect(within(tip2).getByTestId('tooltip-unidade')).toHaveTextContent('C02E · C02S')
     expect(within(tip2).getByTestId('tooltip-contagem')).toHaveTextContent(/^\d+ veíc$/)
     expect(within(tip2).getByTestId('tooltip-idade')).toHaveTextContent('2 s')
     expect(within(tip2).getByTestId('tooltip-confianca')).not.toHaveTextContent('0,00')
 
-    // a segment no unit reaches: "estimado"
-    const blind = engine.getState().segments.find((s) => engine.coverage.entries(s.id).length === 0)!
+    // a segment with no camera pair: "estimado"
+    const blind = engine.getState().segments.find((s) => pairOf(engine.getState().cameras, s.id) === null)!
     const r = onLane(engine, blind.id, blind.length / 2)
     fireEvent.mouseMove(canvas, { clientX: r.x, clientY: r.y })
     expect(within(screen.getByRole('tooltip')).getByTestId('tooltip-unidade')).toHaveTextContent('estimado')
@@ -242,7 +225,7 @@ describe('render cidade', () => {
 
   it('clicking a segment shows its metrics in the segment panel', { timeout: 60_000 }, () => {
     vi.useFakeTimers()
-    const engine = new SimulationEngine({ ratePerMinute: 120, noisePct: 0 })
+    const engine = new SimulationEngine({ ratePerMinute: 120 })
     const transport = new FakeTransport(true)
     render(<App engine={engine} transport={transport} />)
     const canvas = document.querySelector('canvas')!
@@ -257,13 +240,13 @@ describe('render cidade', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Relatórios' }))
     const panel = screen.getByRole('region', { name: 'Métricas do trecho' })
     expect(within(panel).getByTestId('capacity-via')).toHaveTextContent(segmentName(id))
-    expect(within(panel).getByTestId('capacity-unidade')).toHaveTextContent(/^U03 \(\d+%\)$/)
+    expect(within(panel).getByTestId('capacity-unidade')).toHaveTextContent('C03E · C03S')
     expect(within(panel).getByTestId('capacity-contagem')).toHaveTextContent(/^\d+ veíc$/)
     expect(within(panel).getByTestId('capacity-densidade')).toHaveTextContent(/veíc\/km$/)
     expect(within(panel).getByTestId('capacity-fluxo')).toHaveTextContent(/veíc\/h$/)
     for (const t of ['velocidade', 'capacidade', 'folga', 'estado']) expect(within(panel).getByTestId(`capacity-${t}`)).not.toBeEmptyDOMElement()
-    expect(within(panel).getByText('Contagem (câmera)')).toBeInTheDocument()
-    expect(within(panel).getByText('Velocidade (radar)')).toBeInTheDocument()
+    expect(within(panel).getByText('No trecho agora')).toBeInTheDocument()
+    expect(within(panel).getByText('Velocidade (pareamento)')).toBeInTheDocument()
   })
 
   it('orders roads from worst to best', () => {

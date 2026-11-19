@@ -1,8 +1,7 @@
 import { DEFAULT_APP_SHARE, drawApp } from '../apps/apps'
-import { defaultUnits, unitId, type FixedCamera } from '../sensors/camera'
-import { CoverageIndex } from '../sensors/coverage'
-import { SensorReader, type CarSample, type Reading } from '../sensors/reader'
-import { buildSegments, pointOnSegment, type Segment } from '../sensors/segments'
+import { defaultPlateCameras, PlateCameraSet, type CameraStatus, type PlateCamera, type PlateEvent, type PlateSample } from '../sensors/PlateCamera'
+import { PlateGenerator } from '../sensors/plates'
+import { buildSegments, type Segment } from '../sensors/segments'
 import { stepEmission } from '../experiments/emission'
 import { CarGenerator, DEFAULT_CAR_SPEED } from './carGenerator'
 import { borderIds, buildCityNetwork } from './cityNetwork'
@@ -10,7 +9,7 @@ import { shortestPath } from './graph'
 import { IDM, idmAcceleration, LOOKAHEAD_M, MAX_DECEL, MAX_STOP_DECEL, step } from './idm'
 import { mulberry32 } from './random'
 import { phaseFor, SignalController, type LightState } from './trafficLight'
-import type { AppName, Axis, Car, Point, RoadNetwork } from './types'
+import type { AppName, Axis, Car, RoadNetwork } from './types'
 
 export const TICK_MS = 100
 export const DEFAULT_RATE_PER_MINUTE = 30
@@ -90,9 +89,8 @@ export interface SimulationState {
   arrivedTotal: number
   timeMs: number
   lights: readonly LightState[]
-  cameras: readonly FixedCamera[]
+  cameras: readonly PlateCamera[]
   segments: readonly Segment[]
-  noisePct: number
   blockages: readonly Blockage[]
   workZones: readonly WorkZone[]
   flashing: readonly FlashingLight[]
@@ -110,27 +108,14 @@ export interface SimulationOptions {
   speed?: number
   /** 'fixed' runs the fixed-time cycle; 'always-green' never stops a car. */
   trafficLights?: 'fixed' | 'always-green'
-  /** Camera+radar units; [] for a map without sensors. */
-  cameras?: readonly FixedCamera[]
-  noisePct?: number
+  /** The plate cameras, fixed at the ends of their segments (AD-076); [] for a map without sensors. */
+  cameras?: readonly PlateCamera[]
+  /** The run's seed: trips, apps, plates and the plate hash salt. */
   seed?: number
   /** 'deterministic' (default) spaces cars evenly; 'poisson' draws exponential gaps from the seed. */
   arrivals?: 'deterministic' | 'poisson'
   /** Share of drivers with a map app open. */
   appShare?: number
-}
-
-export const CAMERA_LIMITS = { fovMin: 10, fovMax: 170, rangeMin: 20, rangeMax: 500 } as const
-
-function clampCamera(c: FixedCamera, previous: FixedCamera): FixedCamera {
-  const num = (v: number, old: number) => (Number.isFinite(v) ? v : old)
-  const heading = num(c.heading, previous.heading)
-  return {
-    ...c,
-    heading: ((Math.round(heading) % 360) + 360) % 360,
-    fov: Math.min(CAMERA_LIMITS.fovMax, Math.max(CAMERA_LIMITS.fovMin, num(c.fov, previous.fov))),
-    range: Math.min(CAMERA_LIMITS.rangeMax, Math.max(CAMERA_LIMITS.rangeMin, num(c.range, previous.range))),
-  }
 }
 
 /**
@@ -143,20 +128,20 @@ export class SimulationEngine {
   private readonly segments: Segment[]
   private readonly segById: Map<string, Segment>
   private readonly lightMode: 'fixed' | 'always-green'
-  private readonly sensor: SensorReader
-  readonly coverage: CoverageIndex
+  private readonly cameraSet: PlateCameraSet
+  private readonly plates: PlateGenerator
   private readonly speed: number
   private readonly borders: string[]
   private readonly tripRng: () => number
   private readonly appRng: () => number
   private readonly appShare: number
   private readonly paths = new Map<string, string[]>()
-  private readonly readingListeners = new Set<(r: Reading) => void>()
+  private readonly plateListeners = new Set<(e: PlateEvent) => void>()
+  private readonly statusListeners = new Set<(s: CameraStatus) => void>()
   private readonly entryListeners = new Set<(e: SegmentEntry) => void>()
   private cars: CarState[] = []
   private waiting: CarState[] = []
-  private cameras: FixedCamera[]
-  private nextCamera = 1
+  private readonly cameras: readonly PlateCamera[]
   private nextCarId = 1
   private spawnedTotal = 0
   private arrivedTotal = 0
@@ -195,12 +180,9 @@ export class SimulationEngine {
     this.segments = buildSegments(this.network)
     this.segById = new Map(this.segments.map((s) => [s.id, s]))
     this.borders = borderIds(this.network)
-    const positions = new Map(this.network.intersections.map((i) => [i.id, i.position]))
-    this.cameras = (options.cameras ?? defaultUnits(positions)).map((c) => ({ ...c, position: { ...c.position } }))
-    this.coverage = new CoverageIndex(this.segments)
-    this.coverage.setCameras(this.cameras)
-    this.nextCamera = 1 + Math.max(0, ...this.cameras.map((c) => Number(c.id.replace(/\D/g, '')) || 0))
-    this.sensor = new SensorReader({ noisePct: options.noisePct, rng: mulberry32(seed) })
+    this.cameras = (options.cameras ?? defaultPlateCameras(this.segments, STOP_LINE_M)).map((c) => ({ ...c, position: { ...c.position } }))
+    this.cameraSet = new PlateCameraSet(this.cameras, seed)
+    this.plates = new PlateGenerator(seed)
   }
 
   setRate(ratePerMinute: number): void {
@@ -209,14 +191,6 @@ export class SimulationEngine {
 
   getRate(): number {
     return this.generator.getRate()
-  }
-
-  setNoise(pct: number): void {
-    this.sensor.setNoise(pct)
-  }
-
-  getNoise(): number {
-    return this.sensor.getNoise()
   }
 
   getAppShare(): number {
@@ -235,38 +209,6 @@ export class SimulationEngine {
     const path = shortestPath(this.segments, from, to)
     if (path) this.paths.set(key, path)
     return path
-  }
-
-  /** Moves a unit, clamped to the map area; the coverage index follows. */
-  moveCamera(id: string, to: Point): void {
-    const { minX, minY, maxX, maxY } = this.network.bounds
-    this.updateCamera(id, { position: { x: Math.min(maxX, Math.max(minX, to.x)), y: Math.min(maxY, Math.max(minY, to.y)) } })
-  }
-
-  /**
-   * Changes a unit's position, heading, FOV or range, clamped to their limits (heading wraps to
-   * 0-359, FOV 10-170, range 20-500, anything not a number keeps the old value). Camera and radar
-   * move together; the coverage index is rebuilt only when something changed.
-   */
-  updateCamera(id: string, change: Partial<Omit<FixedCamera, 'id'>>): void {
-    const i = this.cameras.findIndex((c) => c.id === id)
-    if (i === -1) return
-    this.cameras[i] = clampCamera({ ...this.cameras[i], ...change, position: { ...(change.position ?? this.cameras[i].position) } }, this.cameras[i])
-    this.coverage.updateCamera(this.cameras[i])
-  }
-
-  /** Adds the next unit (U13, U14, ... - ids are never reused) at the map centre. */
-  addCamera(): FixedCamera {
-    const { minX, minY, maxX, maxY } = this.network.bounds
-    const camera: FixedCamera = { id: unitId(this.nextCamera++), position: { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }, heading: 90, fov: 40, range: 130 }
-    this.cameras.push(camera)
-    this.coverage.setCameras(this.cameras)
-    return camera
-  }
-
-  removeCamera(id: string): void {
-    this.cameras = this.cameras.filter((c) => c.id !== id)
-    this.coverage.setCameras(this.cameras)
   }
 
   /** Places a car on the road (scenario setup; the generator makes trips between border corners). */
@@ -293,6 +235,8 @@ export class SimulationEngine {
       speed: this.speed,
       velocity,
       app,
+      placa: this.plates.next(),
+      classe: 'carro',
       entrada: first.from,
       saida: last.to,
       bornAtMs: this.timeMs,
@@ -304,9 +248,16 @@ export class SimulationEngine {
     return car
   }
 
-  onReading(listener: (r: Reading) => void): () => void {
-    this.readingListeners.add(listener)
-    return () => this.readingListeners.delete(listener)
+  /** A car crossed a plate camera's line. */
+  onPlateEvent(listener: (e: PlateEvent) => void): () => void {
+    this.plateListeners.add(listener)
+    return () => this.plateListeners.delete(listener)
+  }
+
+  /** Every camera's status, every 10 simulated seconds. */
+  onCameraStatus(listener: (s: CameraStatus) => void): () => void {
+    this.statusListeners.add(listener)
+    return () => this.statusListeners.delete(listener)
   }
 
   onSegmentEntry(listener: (e: SegmentEntry) => void): () => void {
@@ -455,7 +406,7 @@ export class SimulationEngine {
    * segment or the first one on its next segment, a blockage ahead, and the stop line of a red light
    * it can still stop for. A car reaching the end of its segment enters the next one only if there
    * is room there (it waits at the corner otherwise) or leaves at the end of its path. Then waiting
-   * cars enter, new trips are drawn and the sensors sample.
+   * cars enter, new trips are drawn and the plate cameras look at every car.
    */
   tick(dtMs: number): void {
     const dt = dtMs / 1000
@@ -603,8 +554,9 @@ export class SimulationEngine {
     this.flashing = this.flashing.filter((f) => f.endsAtMs > this.timeMs)
     this.signals.advance(this.timeMs, (id, axis) => this.queueAt(id, axis))
 
-    const readings = this.sensor.observe(dtMs, this.timeMs, this.cameras, this.coverage, this.observations())
-    for (const r of readings) for (const l of this.readingListeners) l(r)
+    const { events, statuses } = this.cameraSet.observe(this.plateSamples(), this.timeMs)
+    for (const e of events) for (const l of this.plateListeners) l(e)
+    for (const st of statuses) for (const l of this.statusListeners) l(st)
   }
 
   /** Whether a car is held by the red light ahead of it (before its line, decided to stop). */
@@ -697,6 +649,8 @@ export class SimulationEngine {
         speed: this.speed,
         velocity: 0,
         app: drawApp(this.appRng, this.appShare),
+        placa: this.plates.next(),
+        classe: 'carro',
         entrada,
         saida,
         bornAtMs: this.timeMs,
@@ -754,12 +708,8 @@ export class SimulationEngine {
     this.waiting = remaining
   }
 
-  private observations(): CarSample[] {
-    return this.cars.map((car) => {
-      const s = this.segById.get(car.path[car.seg])!
-      const p = pointOnSegment(s, car.distance)
-      return { x: p.x, y: p.y, speedKmh: car.velocity * 3.6, segmentId: s.id }
-    })
+  private plateSamples(): PlateSample[] {
+    return this.cars.map((car) => ({ id: car.id, placa: car.placa, classe: car.classe, segmentId: car.path[car.seg], distance: car.distance }))
   }
 
   getState(): SimulationState {
@@ -774,7 +724,6 @@ export class SimulationEngine {
       lights: this.lights(this.timeMs),
       cameras: this.cameras,
       segments: this.segments,
-      noisePct: this.sensor.getNoise(),
       blockages: this.blockages,
       workZones: this.workZones,
       flashing: this.flashing,

@@ -42,6 +42,9 @@ export interface Car {
   speed: number
   /** The map app the driver has open, or null. */
   app: AppName | null
+  /** Mercosul plate, unique in the run; only the plate cameras read it, and never publish it. */
+  placa: string
+  classe: 'carro'
   entrada: string
   saida: string
   /** Simulated time the car was generated (travel time includes the wait to enter). */

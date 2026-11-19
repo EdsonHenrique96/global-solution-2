@@ -2,9 +2,10 @@ import { AppFleet } from '../apps/AppFleet'
 import { AppNotifier, NOTIFICATIONS_FILTER } from '../apps/AppNotifier'
 import { CapacityService } from '../capacity/CapacityService'
 import { wireAlerts } from '../fusion/AlertPublisher'
+import { monitoredSegments, PlateMatcher } from '../fusion/PlateMatcher'
+import { CAMERA_STATUS_FILTER, wirePlateCameras } from '../sensors/PlateCamera'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { averageSpeed, readSegment } from '../render/levels'
-import { TELEMETRY_FILTER, wireTelemetry } from '../telemetry/TelemetryPublisher'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { DiversionController, diversionSize, type DiversionState } from './DiversionController'
 import { candidatesFor, evaluate, outOfReach, selectNotified, type Evaluation } from './DriverRerouter'
@@ -41,8 +42,9 @@ export interface Sizing {
 }
 
 /**
- * The whole loop: the engine, the capacity model fed by the broker, the map apps, the diversion
- * decision every 10 s window and the metrics. The page and the scenario tests run the same object.
+ * The whole loop: the engine and its plate cameras, the plate matcher, the capacity model fed by
+ * the broker, the map apps, the diversion decision every 10 s window and the metrics. The page and
+ * the scenario tests run the same object.
  */
 export class Simulation {
   readonly engine: SimulationEngine
@@ -52,8 +54,10 @@ export class Simulation {
   readonly notifier: AppNotifier
   readonly history = new SegmentHistory()
   readonly incidents = new IncidentLog()
-  /** Simulated time of each unit's last reading that came through the broker. */
-  readonly unitLastReading: Record<string, number> = {}
+  /** Pairs the cameras' plate events and publishes each segment's metrics (door 2). */
+  readonly matcher: PlateMatcher
+  /** Simulated time of each camera's last status that came through the broker. */
+  readonly cameraLastStatus: Record<string, number> = {}
   /** Route-change notices that went out through the broker to the drivers' map apps. */
   notifiedTotal = 0
   private readonly transport: TelemetryTransport
@@ -72,7 +76,9 @@ export class Simulation {
     this.diversionMode = diversionMode
     this.engine = engine ?? new SimulationEngine()
     this.transport = transport
-    this.capacity = new CapacityService(transport, () => this.engine.getState().timeMs, this.engine.getState().segments)
+    const now = () => this.engine.getState().timeMs
+    this.capacity = new CapacityService(transport, now, this.engine.getState().segments)
+    this.matcher = new PlateMatcher(transport, now, monitoredSegments(this.engine.getState().cameras))
     this.fleet = new AppFleet(this.engine, transport, this.engine.getAppShare())
     this.notifier = new AppNotifier(transport)
     this.metrics = new MetricsRecorder(this.engine)
@@ -80,22 +86,23 @@ export class Simulation {
 
   start(): void {
     this.capacity.start()
+    this.matcher.start()
     if (!this.unwire) {
-      const offTelemetry = wireTelemetry(this.engine, this.transport)
+      const offCameras = wirePlateCameras(this.engine, this.transport)
       const offAlerts = wireAlerts(this.engine, this.transport)
-      const offPresence = this.transport.subscribe(TELEMETRY_FILTER, (_t, payload) => {
+      const offPresence = this.transport.subscribe(CAMERA_STATUS_FILTER, (_t, payload) => {
         try {
-          const msg = JSON.parse(payload) as { sensorId?: unknown; ts?: unknown }
-          if (typeof msg.sensorId === 'string' && typeof msg.ts === 'number') this.unitLastReading[msg.sensorId] = msg.ts
+          const msg = JSON.parse(payload) as { cameraId?: unknown; ts?: unknown }
+          if (typeof msg.cameraId === 'string' && typeof msg.ts === 'number') this.cameraLastStatus[msg.cameraId] = msg.ts
         } catch {
-          // not a reading
+          // not a status
         }
       })
       const offNotices = this.transport.subscribe(NOTIFICATIONS_FILTER, () => {
         this.notifiedTotal += 1
       })
       this.unwire = () => {
-        offTelemetry()
+        offCameras()
         offAlerts()
         offPresence()
         offNotices()
@@ -105,6 +112,7 @@ export class Simulation {
 
   stop(): void {
     this.capacity.stop()
+    this.matcher.stop()
     this.unwire?.()
     this.unwire = null
   }
@@ -131,6 +139,7 @@ export class Simulation {
 
   tick(): void {
     this.engine.tick(TICK_MS)
+    this.matcher.tick()
     this.fleet.tick()
     this.metrics.record()
     const t = this.engine.getState().timeMs

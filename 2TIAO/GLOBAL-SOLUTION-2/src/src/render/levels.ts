@@ -40,7 +40,12 @@ export interface SegmentReading {
   fluxo: number | null
   capacidade: number | null
   velocidade: number | null
+  /** Cars inside the segment now (entered minus left). */
   contagem: number | null
+  /** veh/km */
+  densidade: number | null
+  /** Plate pairs closed in the last minute. */
+  pares: number | null
 }
 
 /**
@@ -51,16 +56,19 @@ export function readSegment(id: string, estimate: Estimate | undefined, fused: F
   const stale = !fused || fused.atualizadoEm === null || nowMs - fused.atualizadoEm > STALE_AFTER_MS
   const velocidade = stale ? null : (fused?.velocidadeMedia ?? null)
   const contagem = stale ? null : (fused?.contagem ?? null)
+  const densidade = stale ? null : (fused?.densidade ?? null)
+  const pares = stale ? null : (fused?.pares ?? null)
   const fluxo = stale || !estimate ? null : estimate.fluxo
   const capacidade = estimate?.capacidade ?? null
-  if (stale) return { id, nivel: 'sem dado', pct: null, fluxo, capacidade, velocidade, contagem }
+  const base = { id, fluxo, capacidade, velocidade, contagem, densidade, pares }
+  if (stale) return { ...base, nivel: 'sem dado', pct: null }
   if (capacidade === null || capacidade <= 0 || fluxo === null) {
     // a stopped queue is critical even before its capacity is known (AC 8: whatever the pct)
     const nivel = velocidade !== null && velocidade < SPEED_LIMIT_KMH * 0.5 ? 'critico' : 'aprendendo'
-    return { id, nivel, pct: null, fluxo, capacidade, velocidade, contagem }
+    return { ...base, nivel, pct: null }
   }
   const pct = Math.round((fluxo / capacidade) * 100)
-  return { id, nivel: nivelOf(pct, velocidade), pct, fluxo, capacidade, velocidade, contagem }
+  return { ...base, nivel: nivelOf(pct, velocidade), pct }
 }
 
 /** veh/h -> cars per minute, rounded. */
@@ -110,14 +118,14 @@ export function labelLines(r: SegmentReading): { atual: string; suporta: string;
 
 export const ONLINE_MS = 20_000
 
-/** A unit is online up to 20 s after its last reading (AD-054). */
+/** A camera is online up to 20 s after its last status (AD-054). */
 export function unitOnline(lastReadingMs: number | undefined, nowMs: number): boolean {
   return lastReadingMs !== undefined && nowMs - lastReadingMs <= ONLINE_MS
 }
 
 const minutes = (ms: number) => Math.floor(ms / 60_000)
 
-/** "Câmeras online": count and the unit silent the longest. */
+/** "Câmeras online": count and the camera silent the longest. */
 export function camerasCard(unitIds: readonly string[], lastReading: Record<string, number>, nowMs: number): { value: string; note: string } {
   const offline = unitIds.filter((id) => !unitOnline(lastReading[id], nowMs))
   const value = `${unitIds.length - offline.length} / ${unitIds.length}`

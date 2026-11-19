@@ -2,7 +2,7 @@ import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
-import type { Reading } from '../sensors/reader'
+import type { PlateEvent } from '../sensors/PlateCamera'
 import { FakeTransport } from '../telemetry/testing'
 import { SimulationCanvas } from './SimulationCanvas'
 
@@ -70,14 +70,14 @@ describe('render', () => {
     it('keeps counting and sensing cars that are no longer drawn', { timeout: 60_000 }, () => {
       vi.useFakeTimers()
       const engine = new SimulationEngine({ ratePerMinute: 120 })
-      const readings: Reading[] = []
-      engine.onReading((r) => readings.push(r))
+      const events: PlateEvent[] = []
+      engine.onPlateEvent((e) => events.push(e))
       render(<App engine={engine} transport={new FakeTransport(true)} />)
       act(() => {
         vi.advanceTimersByTime(60_000)
       })
       expect(Number(screen.getByTestId('active-cars').textContent)).toBeGreaterThan(0)
-      expect(readings.some((r) => r.contagem > 0)).toBe(true)
+      expect(events.length).toBeGreaterThan(0)
     })
   })
 })

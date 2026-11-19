@@ -4,8 +4,7 @@ import { APPS_TOPIC } from '../apps/AppFleet'
 import type { Segment } from '../sensors/segments'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import type { AppName } from '../sim/types'
-import { FakeTransport } from '../telemetry/testing'
-import { telemetryTopic } from '../telemetry/TelemetryPublisher'
+import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { candidatesFor, evaluate, outOfReach, segmentTimeS, selectNotified, type DriverView, type Evaluation } from './DriverRerouter'
 import { Simulation } from './Simulation'
 
@@ -36,17 +35,7 @@ function setup(app: AppName | null) {
   const sim = new Simulation({ engine, transport, agentControl: true })
   sim.start()
   for (let t = TICK_MS; t < 10_000; t += TICK_MS) sim.tick()
-  const reading = {
-    sensorId: 'U99',
-    tipo: 'camera+radar',
-    ts: engine.getState().timeMs,
-    janelaS: 10,
-    contagem: 8,
-    velocidadeMediaKmh: 3,
-    ruidoPct: 0,
-    porTrecho: [{ trecho: JAMMED, contagem: 8, velocidadeMediaKmh: 3, comprimentoCobertoM: 140, cobertura: 1 }],
-  }
-  transport.deliver(telemetryTopic('U99'), JSON.stringify(reading))
+  deliverMetrics(transport, JAMMED, engine.getState().timeMs, { k: 8 / 0.14, v: 3, ocupacao: 8 })
   const car = engine.addCar({ path: ['I11>I12', JAMMED, 'I13>I14'], distance: 0, velocity: 0, app })
   sim.setActiveDiversion({ trecho: JAMMED, p: 1, mode: 'todos' })
   sim.tick()

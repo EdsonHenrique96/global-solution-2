@@ -5,6 +5,7 @@ import type { Incident } from './decision/IncidentLog'
 import { Simulation } from './decision/Simulation'
 import { AgentPanel } from './render/AgentPanel'
 import { AppPanel } from './render/AppPanel'
+import { CameraEventsPanel } from './render/CameraEventsPanel'
 import { CameraPanel } from './render/CameraPanel'
 import { CapacityPanel } from './render/CapacityPanel'
 import {
@@ -37,18 +38,17 @@ import {
   versusHourAgo,
 } from './render/levels'
 import { MetricsPanel } from './render/MetricsPanel'
-import { NoiseControl } from './render/NoiseControl'
 import { fusedStatus } from './render/roads'
 import { SegmentTooltip } from './render/SegmentTooltip'
 import { SimulationCanvas, type IncidentMode, type IncidentTarget } from './render/SimulationCanvas'
-import { TelemetryPanel } from './render/TelemetryPanel'
 import { segmentTooltip } from './render/tooltip'
 import { VolumeControl } from './render/VolumeControl'
+import { METRICS_FILTER } from './fusion/PlateMatcher'
+import { PAPEL_LABEL, pairOf } from './sensors/PlateCamera'
 import { pointOnSegment, segmentName } from './sensors/segments'
 import { SimulationEngine, TICK_MS, WORK_ZONE_KMH } from './sim/SimulationEngine'
 import type { Point } from './sim/types'
 import { createOfflineTransport, type TelemetryTransport } from './telemetry/transport'
-import { TELEMETRY_FILTER } from './telemetry/TelemetryPublisher'
 import './App.css'
 
 interface Props {
@@ -96,7 +96,6 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   const [agentView, setAgentView] = useState(() => agentSnapshot(agent))
   const { engine, capacity } = sim
   const [rate, setRate] = useState(() => engine.getRate())
-  const [noise, setNoise] = useState(() => engine.getNoise())
   const [selectedSegment, setSelectedSegment] = useState(FIRST_SEGMENT)
   const [estimates, setEstimates] = useState(() => capacity.snapshot())
   const [fused, setFused] = useState(() => capacity.fusion.state())
@@ -105,7 +104,6 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   const [diversionOn, setDiversionOn] = useState(() => sim.isDiversionEnabled())
   const [signalsOn, setSignalsOn] = useState(() => engine.getState().adaptiveSignals)
   const [hover, setHover] = useState<{ segmentId: string; x: number; y: number } | null>(null)
-  const [cameras, setCameras] = useState(() => engine.getState().cameras.map((c) => ({ ...c })))
   const [connection, setConnection] = useState(() => transport.status())
   const [tab, setTab] = useState<Tab>('mapa')
   const [layers, setLayers] = useState({ density: true, cameras: true, incidents: true })
@@ -116,12 +114,11 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   // re-reads what the simulation keeps (history, incidents, unit presence) on every tick
   const [, setFrame] = useState(0)
   const refresh = () => setFrame((f) => f + 1)
-  const refreshCameras = () => setCameras(engine.getState().cameras.map((c) => ({ ...c })))
 
   useEffect(() => {
     sim.start()
     // a message can change an estimate between ticks; refresh on each one too
-    const off = transport.subscribe(TELEMETRY_FILTER, () => {
+    const off = transport.subscribe(METRICS_FILTER, () => {
       setEstimates(capacity.snapshot())
       setFused(capacity.fusion.state())
     })
@@ -167,11 +164,6 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
     setRate(engine.getRate())
   }
 
-  const changeNoise = (next: number) => {
-    engine.setNoise(next)
-    setNoise(engine.getNoise())
-  }
-
   const toggleDiversion = () => {
     sim.setDiversionEnabled(!sim.isDiversionEnabled())
     setDiversionOn(sim.isDiversionEnabled())
@@ -206,10 +198,12 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   const mapIncidents: MapIncident[] = activeIncidents.map((i) => ({ incident: i, position: positionOf(i), place: placeOf(i), detail: detailOf(i) }))
   /** The first segment arriving at a corner. */
   const intoCorner = (id: string) => state.segments.find((s) => s.to === id)!.id
+  const cameras = state.cameras
+  const pairFor = (segmentId: string) => pairOf(cameras, segmentId)
+  /** The entry camera of the incident's segment pair (of any segment at the corner), or null. */
   const unitFor = (i: Incident): string | null => {
     const ids = i.intersectionId ? state.segments.filter((s) => s.to === i.intersectionId || s.from === i.intersectionId).map((s) => s.id) : [i.segmentId!]
-    const best = ids.flatMap((id) => engine.coverage.entries(id)).sort((a, b) => b.cobertura - a.cobertura)[0]
-    return best ? best.sensorId : null
+    return ids.map(pairFor).find((p) => p !== null)?.[0] ?? null
   }
   const endIncident = (i: Incident) => {
     if (i.refId === null) return
@@ -244,16 +238,16 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   const fit = fitTransform(state.network, size.width, size.height, view)
 
   // Indicators.
-  const lastReading = sim.unitLastReading
-  const units = cameras.map((c) => {
-    const nearest = state.network.intersections
-      .map((i) => ({ i, d: Math.hypot(i.position.x - c.position.x, i.position.y - c.position.y) }))
-      .sort((a, b) => a.d - b.d)[0]
-    return { id: c.id, position: c.position, online: unitOnline(lastReading[c.id], now), at: nearest ? nearest.i.nome : '' }
-  })
+  const lastStatus = sim.cameraLastStatus
+  const units = cameras.map((c) => ({
+    id: c.id,
+    position: c.position,
+    online: unitOnline(lastStatus[c.id], now),
+    at: `${PAPEL_LABEL[c.papel]} · ${segmentName(c.trecho)}`,
+  }))
   const camCard = camerasCard(
     cameras.map((c) => c.id),
-    lastReading,
+    lastStatus,
     now,
   )
   const incCard = incidentsCard(activeIncidents.map((i) => i.nivel))
@@ -354,7 +348,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
                     <SegmentTooltip
                       content={segmentTooltip(
                         hover.segmentId,
-                        engine.coverage.entries(hover.segmentId),
+                        pairFor(hover.segmentId),
                         capacity.fusion.state()[hover.segmentId],
                         fusedStatus(capacity.fusion.state()[hover.segmentId], now),
                         now,
@@ -405,6 +399,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
               </div>
               <SelectedRoad
                 reading={readings[selectedSegment]}
+                pair={pairFor(selectedSegment)}
                 history={sim.history.of(selectedSegment)}
                 nowMs={now}
                 onCameras={() => go('cameras')}
@@ -432,23 +427,8 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
 
         <div id="cameras" className="dash-section" hidden={tab !== 'cameras'}>
           <div className="panel-grid">
-            <CameraPanel
-              cameras={cameras}
-              selected={selectedUnit}
-              onChange={(id, change) => {
-                engine.updateCamera(id, change)
-                refreshCameras()
-              }}
-              onAdd={() => {
-                engine.addCamera()
-                refreshCameras()
-              }}
-              onRemove={(id) => {
-                engine.removeCamera(id)
-                refreshCameras()
-              }}
-            />
-            <TelemetryPanel transport={transport} sensorIds={cameras.map((c) => c.id)} />
+            <CameraPanel cameras={cameras} lastStatus={lastStatus} nowMs={now} selected={selectedUnit} />
+            <CameraEventsPanel transport={transport} />
           </div>
         </div>
 
@@ -462,7 +442,6 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
                 Carros na via: <strong data-testid="active-cars">{state.cars.length}</strong> · Gerados: <strong data-testid="spawned-total">{state.spawnedTotal}</strong>
               </p>
               <VolumeControl value={rate} onChange={changeRate} />
-              <NoiseControl value={noise} onChange={changeNoise} />
               <div className="toggles stack">
                 <button type="button" aria-pressed={diversionOn} onClick={toggleDiversion}>
                   Desvio parcial
@@ -495,7 +474,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
               estimate={estimates[selectedSegment]}
               status={fusedStatus(fused[selectedSegment], now)}
               fused={fused[selectedSegment]}
-              coverage={engine.coverage.entries(selectedSegment)}
+              pair={pairFor(selectedSegment)}
             />
             <IncidentHistory incidents={sim.incidents.history()} placeOf={placeOf} />
             <ExperimentsPanel />

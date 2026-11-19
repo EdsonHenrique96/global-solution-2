@@ -14,13 +14,13 @@ export function SegmentTooltip({ content, x, y }: Props) {
       <dl>
         <dt>Estado</dt>
         <dd data-testid="tooltip-estado">{content.estado}</dd>
-        <dt>Contagem (câmera)</dt>
+        <dt>No trecho agora</dt>
         <dd data-testid="tooltip-contagem">{content.contagem}</dd>
-        <dt>Velocidade (radar)</dt>
+        <dt>Velocidade (pareamento)</dt>
         <dd data-testid="tooltip-velocidade">{content.velocidade}</dd>
         <dt>Densidade</dt>
         <dd data-testid="tooltip-densidade">{content.densidade}</dd>
-        <dt>Unidade</dt>
+        <dt>Câmeras</dt>
         <dd data-testid="tooltip-unidade">{content.unidade}</dd>
         <dt>Confiança</dt>
         <dd data-testid="tooltip-confianca">{content.confianca}</dd>

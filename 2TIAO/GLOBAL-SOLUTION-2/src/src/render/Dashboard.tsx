@@ -124,7 +124,7 @@ export function StatCard({ label, value, unit, note, tone, alarm, size = 'md', t
   )
 }
 
-/** Below the map: the density levels and the unit icons. */
+/** Below the map: the density levels and the camera icons. */
 export function MapLegend() {
   return (
     <div className="map-foot">
@@ -156,7 +156,7 @@ export interface MapUnit {
   id: string
   position: Point
   online: boolean
-  /** Nearest corner's name. */
+  /** Its role and segment: "entrada · Al. Santos, R. da Consolação → R. Bela Cintra". */
   at: string
 }
 
@@ -194,13 +194,13 @@ const KIND_COLOR: Record<Incident['kind'], string> = {
   congestionamento: NIVEIS.intenso.color,
 }
 
-/** Unit icon border: online, offline (AD-054). */
+/** Camera icon border: online, offline (AD-054). */
 const UNIT_ON = '#7FB5FF'
 const UNIT_OFF = '#5B6676'
 
 const ago = (ms: number) => `há ${Math.max(0, Math.floor(ms / 60_000))} min`
 
-/** What sits on top of the canvas: a label per street, the unit icons and the incident markers with their notes. */
+/** What sits on top of the canvas: a label per street, the camera icons and the incident markers with their notes. */
 export function MapOverlay({ map, base, width, height, corners, streets, selected, onSelect, units, incidents, nowMs, showUnits, showIncidents }: OverlayProps) {
   const place = (p: Point): CSSProperties => {
     const q = map(p)
@@ -303,7 +303,7 @@ export function MapOverlay({ map, base, width, height, corners, streets, selecte
 interface IncidentsProps {
   incidents: readonly MapIncident[]
   nowMs: number
-  /** The unit covering the incident, or null. */
+  /** The camera covering the incident, or null. */
   unitFor: (incident: Incident) => string | null
   onSelect: (incident: Incident) => void
   onEnd: (incident: Incident) => void
@@ -450,14 +450,16 @@ const WINDOW_MS = 2 * 3_600_000
 
 interface SelectedProps {
   reading: SegmentReading
+  /** The segment's camera pair; null when it has none (estimado). */
+  pair: readonly [string, string] | null
   history: readonly HistoryPoint[]
   nowMs: number
   onCameras: () => void
   onSignals: () => void
 }
 
-/** The selected segment: level, occupancy, four figures and its last 2 h (AC 35-40). */
-export function SelectedRoad({ reading: r, history, nowMs, onCameras, onSignals }: SelectedProps) {
+/** The selected segment: level, occupancy, the pairing figures and its last 2 h (AC 35-40). */
+export function SelectedRoad({ reading: r, pair, history, nowMs, onCameras, onSignals }: SelectedProps) {
   const lv = NIVEIS[r.nivel]
   const speedPct = r.velocidade === null ? null : Math.round((r.velocidade / SPEED_LIMIT_KMH) * 100)
   const speedColor = speedPct === null ? undefined : speedPct < 40 ? NIVEIS.critico.color : speedPct < 70 ? NIVEIS.moderado.color : NIVEIS.livre.color
@@ -518,10 +520,30 @@ export function SelectedRoad({ reading: r, history, nowMs, onCameras, onSignals 
           </dd>
         </div>
         <div>
-          <dt>Velocidade média</dt>
+          <dt>Velocidade média (pareamento)</dt>
           <dd data-testid="selected-media" style={{ color: speedColor }}>
             {r.velocidade === null ? '—' : Math.round(r.velocidade)} <small>km/h{speedPct !== null && ` · ${speedPct}% do limite`}</small>
           </dd>
+        </div>
+        <div>
+          <dt>No trecho agora</dt>
+          <dd data-testid="selected-ocupacao">
+            {r.contagem === null ? '—' : r.contagem} <small>veíc</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Densidade</dt>
+          <dd data-testid="selected-densidade">
+            {r.densidade === null ? '—' : r.densidade.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} <small>veíc/km</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Pares no último minuto</dt>
+          <dd data-testid="selected-pares">{r.pares === null ? '—' : r.pares}</dd>
+        </div>
+        <div>
+          <dt>Câmeras do par</dt>
+          <dd data-testid="selected-par">{pair ? pair.join(' · ') : 'nenhuma (estimado)'}</dd>
         </div>
       </dl>
 

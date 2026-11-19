@@ -12,15 +12,11 @@
     "test:integration": "vitest --run --config vitest.integration.config.ts --reporter=verbose"
   },
   "dependencies": {
-    "@turf/along": "^7.4.0",
-    "@turf/bbox": "^7.4.0",
+    "@noble/hashes": "^2.4.0",
     "@turf/boolean-point-in-polygon": "^7.4.0",
     "@turf/helpers": "^7.4.0",
-    "@turf/length": "^7.4.0",
-    "@turf/line-split": "^7.4.0",
     "@turf/sector": "^7.4.0",
     "mqtt": "^5.16.1",
-    "rbush": "^4.0.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -28,7 +24,6 @@
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.19.2",
-    "@types/rbush": "^4.0.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",

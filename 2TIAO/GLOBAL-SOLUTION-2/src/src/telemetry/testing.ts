@@ -45,3 +45,31 @@ export class FakeTransport implements TelemetryTransport {
 
   close(): void {}
 }
+
+/**
+ * Delivers one segment's metrics as the plate matcher publishes them (door 2): density `k`
+ * (veh/km), pair speed `v` (km/h) and, unless given, the flow k x v in cars/min.
+ */
+export function deliverMetrics(
+  transport: FakeTransport,
+  trecho: string,
+  ts: number,
+  { k, v, fluxoVeicMin, ocupacao = 0, pares }: { k: number; v: number | null; fluxoVeicMin?: number; ocupacao?: number; pares?: number },
+): void {
+  transport.deliver(
+    `transito/vias/${trecho}/metricas`,
+    JSON.stringify({
+      trecho,
+      ts,
+      janelaS: 60,
+      fluxoVeicMin: fluxoVeicMin ?? (v === null ? 0 : (k * v) / 60),
+      velocidadeMediaKmh: v,
+      pares: pares ?? (v === null ? 0 : 1),
+      entraram: 0,
+      sairam: 0,
+      ocupacao,
+      densidadeVeicKm: k,
+      camerasPar: ['C99E', 'C99S'],
+    }),
+  )
+}

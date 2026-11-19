@@ -2,9 +2,10 @@
 import mqtt from 'mqtt'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CapacityService } from '../capacity/CapacityService'
+import { monitoredSegments, PlateMatcher } from '../fusion/PlateMatcher'
+import { CAMERA_STATUS_FILTER, EVENTS_FILTER, wirePlateCameras } from '../sensors/PlateCamera'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { createMqttTransport, type MqttTransport } from '../telemetry/MqttTransport'
-import { TELEMETRY_FILTER, wireTelemetry } from '../telemetry/TelemetryPublisher'
 
 const BROKER_WS = process.env.VITE_MQTT_URL ?? 'ws://localhost:9001'
 const BROKER_TCP = process.env.MQTT_TCP_URL ?? 'mqtt://localhost:1883'
@@ -28,13 +29,13 @@ function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
 
 describe('integration', () => {
   describe('mqtt', () => {
-    it('an external subscriber receives per-segment readings from the 3 cameras through Mosquitto', async () => {
+    it('an external subscriber receives the plate events and camera status through Mosquitto', async () => {
       const external = mqtt.connect(BROKER_TCP, { reconnectPeriod: 0 })
       open.push({ close: () => external.end(true) })
       const received: { topic: string; payload: Record<string, unknown> }[] = []
       external.on('message', (topic, buf) => received.push({ topic, payload: JSON.parse(buf.toString()) }))
       await new Promise<void>((resolve, reject) => {
-        external.once('connect', () => external.subscribe(TELEMETRY_FILTER, (err) => (err ? reject(err) : resolve())))
+        external.once('connect', () => external.subscribe([EVENTS_FILTER, CAMERA_STATUS_FILTER], (err) => (err ? reject(err) : resolve())))
         external.once('error', reject)
       })
 
@@ -43,57 +44,49 @@ describe('integration', () => {
       await waitFor(() => transport.status() === 'connected', 5000)
 
       const engine = new SimulationEngine({ ratePerMinute: 60 })
-      wireTelemetry(engine, transport)
-      for (let t = 0; t < 10_000; t += TICK_MS) engine.tick(TICK_MS)
+      wirePlateCameras(engine, transport)
+      for (let t = 0; t < 30_000; t += TICK_MS) engine.tick(TICK_MS)
 
-      await waitFor(() => received.length >= 3, 5000)
-      expect(received.map((m) => m.topic).sort()).toEqual([
-        'transito/sensores/C1/telemetria',
-        'transito/sensores/C2/telemetria',
-        'transito/sensores/C3/telemetria',
-      ])
-      for (const { topic, payload } of received) {
-        expect(topic).toBe(`transito/sensores/${payload.sensorId}/telemetria`)
-        expect(payload).toMatchObject({ tipo: 'fixo', ts: 10_000, janelaS: 10, ruidoPct: 10 })
-        expect(typeof payload.contagem).toBe('number')
-        const perSegment = payload.porTrecho as { trecho: string; cobertura: number }[]
-        expect(perSegment.length).toBeGreaterThan(0)
-        for (const t of perSegment) expect(t.cobertura).toBeGreaterThanOrEqual(0.3)
+      await waitFor(() => received.filter((m) => m.topic.endsWith('/status')).length >= 72, 5000)
+      const events = received.filter((m) => m.topic.endsWith('/eventos'))
+      expect(events.length).toBeGreaterThan(0)
+      for (const { topic, payload } of events) {
+        expect(topic).toBe(`transito/vias/${payload.trecho}/eventos`)
+        expect(Object.keys(payload).sort()).toEqual(['cameraId', 'classe', 'faixa', 'papel', 'placaHash', 'trecho', 'ts'])
+        expect(payload.placaHash).toMatch(/^[0-9a-f]{16}$/)
       }
-      const c2 = received.find((m) => m.payload.sensorId === 'C2')!.payload.porTrecho as { trecho: string }[]
-      expect(c2.map((t) => t.trecho)).toContain('central-I1-I2')
     })
 
-    it('the capacity service learns per segment from readings received through Mosquitto', async () => {
+    it('the capacity service learns per segment from the metrics received through Mosquitto', async () => {
       const publisherSide = createMqttTransport(BROKER_WS)
       const modelSide = createMqttTransport(BROKER_WS)
       open.push(publisherSide, modelSide)
       await waitFor(() => publisherSide.status() === 'connected' && modelSide.status() === 'connected', 5000)
 
-      const engine = new SimulationEngine({ ratePerMinute: 120, noisePct: 0 })
-      const service = new CapacityService(modelSide, () => engine.getState().timeMs)
+      const engine = new SimulationEngine({ ratePerMinute: 120 })
+      const now = () => engine.getState().timeMs
+      const service = new CapacityService(modelSide, now)
+      const matcher = new PlateMatcher(modelSide, now, monitoredSegments(engine.getState().cameras))
       service.start()
-      open.push({ close: () => service.stop() })
-      // let the subscription reach the broker before anything is published
+      matcher.start()
+      open.push({ close: () => service.stop() }, { close: () => matcher.stop() })
+      // let the subscriptions reach the broker before anything is published
       await new Promise((r) => setTimeout(r, 300))
-      wireTelemetry(engine, publisherSide)
+      wirePlateCameras(engine, publisherSide)
 
-      // 60 simulated seconds: cars reach the cameras from ~25 s on
-      for (let t = 0; t < 60_000; t += TICK_MS) engine.tick(TICK_MS)
-      await waitFor(() => service.snapshot()['central-I1-I2'].amostras.length > 0, 5000)
-
-      const central = service.snapshot()['central-I1-I2']
-      const covered = engine.coverage.entries('central-I1-I2')[0].cobertura * 400
-      const coveredM = Math.round(covered * 10) / 10
-      expect(central.estado).not.toBe('sem dados')
-      // a car can leave the cone before the window closes: count 0 with sampled speed is valid
-      for (const s of central.amostras) {
+      // 3 simulated minutes, a little real time per second so the events come back in between
+      for (let t = 0; t < 180_000; t += TICK_MS) {
+        engine.tick(TICK_MS)
+        matcher.tick()
+        if (t % 1_000 === 0) await new Promise((r) => setTimeout(r, 2))
+      }
+      await waitFor(() => service.snapshot()['I12>I13'].amostras.length > 0, 5000)
+      const fused = service.fusion.state()['I12>I13']
+      expect(fused.fontes.length === 0 || fused.fontes.join() === 'C02E,C02S').toBe(true)
+      for (const s of service.snapshot()['I12>I13'].amostras) {
         expect(s.k).toBeGreaterThanOrEqual(0)
         expect(s.q).toBeGreaterThanOrEqual(0)
-        // density is the count over the metres C2 sees: a whole number of cars per covered km
-        expect((s.k * coveredM) / 1000).toBeCloseTo(Math.round((s.k * coveredM) / 1000), 6)
       }
-      expect(central.amostras.some((s) => s.k > 0)).toBe(true)
     })
 
     it('MqttTransport reports disconnected when the broker is unreachable', async () => {
@@ -106,7 +99,7 @@ describe('integration', () => {
       expect(statuses).not.toContain('connected')
       // publishing while disconnected neither throws nor queues
       expect(() =>
-        transport.publish('transito/sensores/C1/telemetria', '{}', { qos: 0, retain: false }),
+        transport.publish('transito/vias/I11>I12/eventos', '{}', { qos: 0, retain: false }),
       ).not.toThrow()
     })
   })

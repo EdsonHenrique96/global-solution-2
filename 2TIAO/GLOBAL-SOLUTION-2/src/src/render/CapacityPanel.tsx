@@ -1,8 +1,7 @@
 import { SPEED_LIMIT_KMH, type Estimate, type RouteStatus } from '../capacity/CapacityModel'
 import type { FusedSegment } from '../fusion/FusionService'
-import type { CoverageEntry } from '../sensors/coverage'
 import { segmentName } from '../sensors/segments'
-import { coveringUnit, SEM_DADO } from './tooltip'
+import { pairLabel, SEM_DADO } from './tooltip'
 
 const W = 300
 const H = 180
@@ -14,14 +13,15 @@ interface Props {
   /** State as the operator sees it (fusedStatus); the estimate's own when absent. */
   status?: RouteStatus
   fused?: FusedSegment
-  coverage?: readonly CoverageEntry[]
+  /** The segment's camera pair; null without one. */
+  pair?: readonly [string, string] | null
 }
 
 const fmt = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
 const orNone = (v: number | null | undefined, unit: string) => (v === null || v === undefined ? SEM_DADO : `${fmt(v)} ${unit}`)
 
 /** The selected segment's metrics (AC 16) and its flow x density curve forming live. */
-export function CapacityPanel({ segmentId, estimate, status, fused, coverage = [] }: Props) {
+export function CapacityPanel({ segmentId, estimate, status, fused, pair = null }: Props) {
   const estado = status ?? estimate?.estado ?? 'sem dados'
   const known = estimate && estado !== 'sem dados'
   // share of the learned capacity in use: flow over capacity
@@ -62,7 +62,7 @@ export function CapacityPanel({ segmentId, estimate, status, fused, coverage = [
           <dd data-testid="capacity-capacidade">{estimate?.capacidade == null ? 'aprendendo' : `${fmt(estimate.capacidade)} veíc/h`}</dd>
         </div>
         <div>
-          <dt>Velocidade (radar)</dt>
+          <dt>Velocidade (pareamento)</dt>
           <dd data-testid="capacity-velocidade" className={pctLimite === null ? undefined : `estado ${estado.replace(' ', '-')}`}>
             {orNone(velocidade, 'km/h')}
           </dd>
@@ -73,7 +73,7 @@ export function CapacityPanel({ segmentId, estimate, status, fused, coverage = [
           <dd data-testid="capacity-folga">{estimate?.folga == null ? 'aprendendo' : `${fmt(estimate.folga)} veíc/h`}</dd>
         </div>
         <div>
-          <dt>Contagem (câmera)</dt>
+          <dt>No trecho agora</dt>
           <dd data-testid="capacity-contagem">{orNone(fused?.contagem, 'veíc')}</dd>
         </div>
         <div>
@@ -81,8 +81,8 @@ export function CapacityPanel({ segmentId, estimate, status, fused, coverage = [
           <dd data-testid="capacity-densidade">{orNone(fused?.densidade, 'veíc/km')}</dd>
         </div>
         <div className="wide">
-          <dt>Unidade</dt>
-          <dd data-testid="capacity-unidade">{coveringUnit(coverage)}</dd>
+          <dt>Câmeras</dt>
+          <dd data-testid="capacity-unidade">{pairLabel(pair)}</dd>
         </div>
       </dl>
 

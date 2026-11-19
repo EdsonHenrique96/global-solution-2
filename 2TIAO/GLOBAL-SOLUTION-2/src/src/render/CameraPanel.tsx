@@ -1,44 +1,39 @@
-import type { FixedCamera } from '../sensors/camera'
+import { PAPEL_LABEL, type PlateCamera } from '../sensors/PlateCamera'
+import { segmentName } from '../sensors/segments'
+import { unitOnline } from './levels'
 
 interface Props {
-  cameras: readonly FixedCamera[]
-  onChange: (id: string, change: Partial<Pick<FixedCamera, 'heading' | 'fov' | 'range'>>) => void
-  onAdd: () => void
-  onRemove: (id: string) => void
-  /** The unit "Ver câmera" opened this tab for. */
+  cameras: readonly PlateCamera[]
+  /** Simulated time of each camera's last status that came through the broker. */
+  lastStatus: Record<string, number>
+  nowMs: number
+  /** The camera "Ver câmera" opened this tab for. */
   selected?: string | null
 }
 
-/** The camera+radar units the operator configures: camera and radar turn together (AC 12). */
-export function CameraPanel({ cameras, onChange, onAdd, onRemove, selected }: Props) {
+/** The 24 plate cameras, fixed at the ends of their segments (AD-076): segment, role and status. */
+export function CameraPanel({ cameras, lastStatus, nowMs, selected }: Props) {
   return (
-    <section className="cameras" aria-label="Unidades câmera+radar">
-      <h2>Unidades câmera+radar</h2>
+    <section className="cameras card" aria-label="Câmeras de placa">
+      <div className="card-head">
+        <h2>Câmeras de placa</h2>
+        <span className="muted">{cameras.length} câmeras · entrada e saída de cada trecho monitorado</span>
+      </div>
       <ul>
-        {cameras.map((c) => (
-          <li key={c.id} data-testid={`camera-${c.id}`} aria-current={c.id === selected ? 'true' : undefined} className={c.id === selected ? 'selected' : undefined}>
-            <strong>{c.id}</strong>
-            <label>
-              Direção (°)
-              <input type="number" min={0} max={359} value={c.heading} onChange={(e) => onChange(c.id, { heading: Number(e.target.value) })} />
-            </label>
-            <label>
-              Ângulo câmera (°)
-              <input type="number" min={10} max={170} value={c.fov} onChange={(e) => onChange(c.id, { fov: Number(e.target.value) })} />
-            </label>
-            <label>
-              Alcance câmera (m)
-              <input type="number" min={20} max={500} value={c.range} onChange={(e) => onChange(c.id, { range: Number(e.target.value) })} />
-            </label>
-            <button type="button" onClick={() => onRemove(c.id)}>
-              Remover
-            </button>
-          </li>
-        ))}
+        {cameras.map((c) => {
+          const online = unitOnline(lastStatus[c.id], nowMs)
+          return (
+            <li key={c.id} data-testid={`camera-${c.id}`} aria-current={c.id === selected ? 'true' : undefined} className={c.id === selected ? 'selected' : undefined}>
+              <strong>{c.id}</strong>
+              <span data-testid="camera-trecho">{segmentName(c.trecho)}</span>
+              <span data-testid="camera-papel">{PAPEL_LABEL[c.papel]}</span>
+              <span data-testid="camera-status" className={`camera-status ${online ? 'on' : 'off'}`}>
+                {online ? 'online' : 'offline'}
+              </span>
+            </li>
+          )
+        })}
       </ul>
-      <button type="button" onClick={onAdd}>
-        Adicionar unidade
-      </button>
     </section>
   )
 }

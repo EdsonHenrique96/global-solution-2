@@ -1,6 +1,5 @@
 import type { RouteStatus } from '../capacity/CapacityModel'
 import type { FusedSegment } from '../fusion/FusionService'
-import type { CoverageEntry } from '../sensors/coverage'
 import { segmentName } from '../sensors/segments'
 
 export interface TooltipContent {
@@ -9,7 +8,7 @@ export interface TooltipContent {
   contagem: string
   velocidade: string
   densidade: string
-  /** The unit that covers it, or "estimado". */
+  /** The segment's camera pair, or "estimado". */
   unidade: string
   confianca: string
   idade: string
@@ -24,16 +23,15 @@ const fmt = (v: number, digits: number) =>
 
 const ALERT_NAMES: Record<string, string> = { acidente: 'Acidente' }
 
-/** "U02 (92%)" for the unit with the best camera coverage, or "estimado" when no unit covers it. */
-export function coveringUnit(coverage: readonly CoverageEntry[]): string {
-  const best = [...coverage].sort((a, b) => b.cobertura - a.cobertura)[0]
-  return best ? `${best.sensorId} (${Math.round(best.cobertura * 100)}%)` : 'estimado'
+/** "C02E · C02S" for a segment with a camera pair, or "estimado" without one. */
+export function pairLabel(pair: readonly [string, string] | null): string {
+  return pair ? pair.join(' · ') : 'estimado'
 }
 
 /** Everything the operator sees about one segment under the mouse (AC 15). */
 export function segmentTooltip(
   segmentId: string,
-  coverage: readonly CoverageEntry[],
+  pair: readonly [string, string] | null,
   fused: FusedSegment | undefined,
   status: RouteStatus,
   nowMs: number,
@@ -49,10 +47,10 @@ export function segmentTooltip(
     contagem: fused?.contagem != null ? `${fused.contagem} veíc` : SEM_DADO,
     velocidade: fused?.velocidadeMedia != null ? `${fmt(fused.velocidadeMedia, 1)} km/h` : SEM_DADO,
     densidade: fused?.densidade != null ? `${fmt(fused.densidade, 1)} veíc/km` : SEM_DADO,
-    unidade: coveringUnit(coverage),
+    unidade: pairLabel(pair),
     confianca: fmt(fused?.confianca ?? 0, 2),
     idade: fused?.atualizadoEm != null ? `${Math.max(0, Math.round((nowMs - fused.atualizadoEm) / 1000))} s` : SEM_DADO,
-    estimado: coverage.length === 0 || (fused?.estimado ?? false),
+    estimado: pair === null || (fused?.estimado ?? false),
     avisos,
   }
 }

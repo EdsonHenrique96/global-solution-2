@@ -2,10 +2,11 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { notificationTopic, type DriverNotification } from '../apps/AppNotifier'
+import { pairOf } from '../sensors/PlateCamera'
 import { pointOnSegment, segmentName } from '../sensors/segments'
 import { SimulationEngine } from '../sim/SimulationEngine'
 import type { Point } from '../sim/types'
-import { FakeTransport } from '../telemetry/testing'
+import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { DashboardHeader } from './Dashboard'
 import { clampView, fitTransform, gridCenter, gridOf, type MapView } from './draw'
 
@@ -56,7 +57,7 @@ const STREETS = ['Al. Santos', 'Al. Jaú', 'Al. Itu', 'Al. Franca', 'R. da Conso
 const LEVEL = { livre: '#3DBE7A', moderado: '#F5D04E', intenso: '#F59544', critico: '#F0565B', aprendendo: '#8A96A8', semDado: '#5B6676' }
 
 function setup({ cameras = false, connected = true, rate = 0 } = {}) {
-  const engine = new SimulationEngine({ ratePerMinute: rate, noisePct: 0, ...(cameras ? {} : { cameras: [] }) })
+  const engine = new SimulationEngine({ ratePerMinute: rate, ...(cameras ? {} : { cameras: [] }) })
   const transport = new FakeTransport(connected)
   render(<App engine={engine} transport={transport} />)
   return { engine, transport }
@@ -69,16 +70,10 @@ const advance = (ms: number) =>
 
 const tab = (name: string) => fireEvent.click(within(screen.getByRole('navigation', { name: 'Seções' })).getByRole('link', { name }))
 
+/** Each segment's metrics with `contagem` veh/km at `v` km/h (flow k × v). */
 const send = (transport: FakeTransport, ts: number, porTrecho: { trecho: string; contagem: number; v: number | null }[]) =>
   act(() => {
-    transport.deliver(
-      'transito/sensores/U99/telemetria',
-      JSON.stringify({
-        sensorId: 'U99',
-        ts,
-        porTrecho: porTrecho.map((p) => ({ trecho: p.trecho, contagem: p.contagem, velocidadeMediaKmh: p.v, comprimentoCobertoM: 1000, cobertura: 1 })),
-      }),
-    )
+    for (const p of porTrecho) deliverMetrics(transport, p.trecho, ts, { k: p.contagem, v: p.v })
   })
 
 /**
@@ -146,20 +141,19 @@ describe('operations dashboard', () => {
     expect(links[1]).toHaveAttribute('aria-current', 'page')
     expect(links[0]).not.toHaveAttribute('aria-current')
     expect(screen.queryByRole('region', { name: 'Mapa de tráfego' })).toBeNull()
-    expect(screen.getByRole('region', { name: 'Unidades câmera+radar' })).toBeInTheDocument()
-    expect(screen.getByRole('complementary', { name: 'Telemetria dos sensores' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Câmeras de placa' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Eventos das câmeras' })).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Agente' })).toBeNull()
 
     tab('Semáforos')
     expect(links[2]).toHaveAttribute('aria-current', 'page')
     const controls = screen.getByRole('group', { name: 'Controle da simulação' })
     expect(within(controls).getByRole('slider', { name: /carros por minuto/i })).toBeInTheDocument()
-    expect(within(controls).getByRole('slider', { name: /ruído da leitura/i })).toBeInTheDocument()
     expect(within(controls).getByRole('button', { name: 'Desvio parcial' })).toBeInTheDocument()
     expect(within(controls).getByRole('button', { name: 'Controle de semáforos' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Agente' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Apps de mapa' })).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Unidades câmera+radar' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Câmeras de placa' })).toBeNull()
 
     tab('Relatórios')
     expect(links[3]).toHaveAttribute('aria-current', 'page')
@@ -303,36 +297,24 @@ describe('operations dashboard', () => {
     expect(within(jau).getByTestId('street-atual')).toHaveStyle({ color: LEVEL.critico })
   })
 
-  it('C18 draws the 12 unit icons with their accessible names', () => {
-    const { engine } = setup({ cameras: true })
-    const icons = screen.getAllByRole('img', { name: /^U\d{2} · / })
-    expect(icons).toHaveLength(12)
-    for (const icon of icons) expect(icon.getAttribute('aria-label')).toMatch(/^U\d{2} · Al\. [^×]+ × R\. .+ · (online|offline)$/)
-    // each at its unit's position
-    const u = engine.getState().cameras[0]
-    const at = screenOf(engine, u.position)
-    const icon = screen.getByRole('img', { name: new RegExp(`^${u.id} · `) })
-    expect(near(parseFloat(icon.style.left), at.x) && near(parseFloat(icon.style.top), at.y)).toBe(true)
-  })
-
   it('C19 unit icons show online after a reading and offline without broker', () => {
     setup({ cameras: true, connected: true })
-    // the units publish one reading per 10 s window through the broker
+    // the cameras publish their status every 10 s through the broker
     advance(10_000)
-    expect(screen.getAllByRole('img', { name: / · online$/ })).toHaveLength(12)
+    expect(screen.getAllByRole('img', { name: / · online$/ })).toHaveLength(24)
     for (const icon of screen.getAllByRole('img', { name: / · online$/ })) expect(icon).toHaveStyle({ borderColor: '#7FB5FF' })
-    expect(screen.getByTestId('card-cameras')).toHaveTextContent('12 / 12')
+    expect(screen.getByTestId('card-cameras')).toHaveTextContent('24 / 24')
     expect(screen.getByTestId('card-cameras')).toHaveTextContent('todas enviando leitura')
     cleanupAndOffline()
   })
 
   it('C20 the cameras layer hides and shows the unit icons', () => {
     setup({ cameras: true })
-    expect(screen.getAllByRole('img', { name: /^U\d{2} · / })).toHaveLength(12)
+    expect(screen.getAllByRole('img', { name: /^C\d{2}[ES] · / })).toHaveLength(24)
     fireEvent.click(layer('Câmeras'))
-    expect(screen.queryAllByRole('img', { name: /^U\d{2} · / })).toHaveLength(0)
+    expect(screen.queryAllByRole('img', { name: /^C\d{2}[ES] · / })).toHaveLength(0)
     fireEvent.click(layer('Câmeras'))
-    expect(screen.getAllByRole('img', { name: /^U\d{2} · / })).toHaveLength(12)
+    expect(screen.getAllByRole('img', { name: /^C\d{2}[ES] · / })).toHaveLength(24)
   })
 
   it('C22 accident mode click creates a Colisão', () => {
@@ -508,8 +490,9 @@ describe('operations dashboard', () => {
   it('C30 Ver câmera opens Câmeras with the covering unit or is disabled', () => {
     const { engine } = setup({ cameras: true })
     const covered = 'I12>I13'
-    const best = [...engine.coverage.entries(covered)].sort((a, b) => b.cobertura - a.cobertura)[0].sensorId
-    const blind = engine.getState().segments.find((s) => engine.coverage.entries(s.id).length === 0)!.id
+    // the camera pair of the segment: its entry camera
+    const best = pairOf(engine.getState().cameras, covered)![0]
+    const blind = engine.getState().segments.find((s) => pairOf(engine.getState().cameras, s.id) === null)!.id
     const zBlind = engine.addWorkZone(blind)
     const z = engine.addWorkZone(covered)
     advance(100)
@@ -712,7 +695,7 @@ describe('operations dashboard', () => {
   it('C49 labels follow zoom and pan', () => {
     const { engine } = setup({ cameras: true })
     const label = () => screen.getByTestId('street-Al. Santos')
-    const icon = () => screen.getByRole('img', { name: /^U01 · / })
+    const icon = () => screen.getByRole('img', { name: /^C01E · / })
     const note = () => screen.getByRole('note')
     const pos = (el: HTMLElement) => ({ x: parseFloat(el.style.left), y: parseFloat(el.style.top) })
     const z = engine.addWorkZone('I33>I34')
@@ -729,7 +712,7 @@ describe('operations dashboard', () => {
     const zoomed = pos(label())
     const expected = screenOf(engine, labelAt, view)
     expect(near(zoomed.x, expected.x) && near(zoomed.y, expected.y)).toBe(true)
-    const unit = screenOf(engine, engine.getState().cameras.find((c) => c.id === 'U01')!.position, view)
+    const unit = screenOf(engine, engine.getState().cameras.find((c) => c.id === 'C01E')!.position, view)
     expect(near(pos(icon()).x, unit.x) && near(pos(icon()).y, unit.y)).toBe(true)
     const marker = screenOf(engine, markerAt, view)
     expect(near(pos(screen.getByTestId(`marker-obra:${z.id}`)).x, marker.x) && near(pos(screen.getByTestId(`marker-obra:${z.id}`)).y, marker.y)).toBe(true)
@@ -757,10 +740,10 @@ function cleanupAndOffline() {
   cleanup()
   setup({ cameras: true, connected: false })
   advance(30_000)
-  expect(screen.getAllByRole('img', { name: / · offline$/ })).toHaveLength(12)
+  expect(screen.getAllByRole('img', { name: / · offline$/ })).toHaveLength(24)
   for (const icon of screen.getAllByRole('img', { name: / · offline$/ })) expect(icon).toHaveStyle({ borderColor: '#5B6676' })
-  expect(screen.getByTestId('card-cameras')).toHaveTextContent('0 / 12')
-  expect(screen.getByTestId('card-cameras')).toHaveTextContent(/U\d{2} sem sinal há 0 min/)
+  expect(screen.getByTestId('card-cameras')).toHaveTextContent('0 / 24')
+  expect(screen.getByTestId('card-cameras')).toHaveTextContent(/C\d{2}[ES] sem sinal há 0 min/)
 }
 
 describe('map view', () => {

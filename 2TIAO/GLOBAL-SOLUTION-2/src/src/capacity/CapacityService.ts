@@ -6,7 +6,7 @@ import { CapacityModel, type Estimate } from './CapacityModel'
 
 /**
  * One capacity model per road segment (AD-022), fed by the fusion layer, which only reads the MQTT
- * subscription (AD-005): one chosen measurement per segment and window. `now` is the simulation
+ * subscription (AD-005): each segment's metrics from the plate pairs, once per recomputation. `now` is the simulation
  * clock, so staleness keeps counting while the broker is down.
  */
 export class CapacityService {
@@ -36,7 +36,7 @@ export class CapacityService {
     for (const m of this.fusion.flush()) {
       this.models
         .get(m.segmentId)
-        ?.observe({ contagem: m.contagem, velocidadeMediaKmh: m.velocidadeMediaKmh, comprimentoM: m.comprimentoCobertoM }, m.ts)
+        ?.observe({ densidadeVeicKm: m.densidadeVeicKm, velocidadeMediaKmh: m.velocidadeMediaKmh, fluxoVeicH: m.fluxoVeicMin * 60 }, m.ts)
     }
   }
 

@@ -4,7 +4,7 @@ import App from '../App'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { lightAt } from '../sim/trafficLight'
 import { fitTransform } from './draw'
-import type { Reading } from '../sensors/reader'
+import type { PlateEvent } from '../sensors/PlateCamera'
 import { FakeTransport } from '../telemetry/testing'
 import { SimulationCanvas } from './SimulationCanvas'
 
@@ -115,112 +115,31 @@ describe('render', () => {
     })
   })
 
-  describe('NoiseControl', () => {
-    it('next reading uses the new noise and carries ruidoPct', { timeout: 60_000 }, () => {
-      vi.useFakeTimers()
-      const engine = new SimulationEngine({ ratePerMinute: 120 })
-      const transport = new FakeTransport(true)
-      render(<App engine={engine} transport={transport} />)
-      fireEvent.click(screen.getByRole('link', { name: 'Semáforos' }))
-
-      const slider = screen.getByRole('slider', { name: /ruído da leitura/i })
-      expect(slider).toHaveValue('10')
-      expect(slider).toHaveAttribute('min', '0')
-      expect(slider).toHaveAttribute('max', '30')
-
-      // 40 s in, cars are already in front of the cameras
-      act(() => {
-        vi.advanceTimersByTime(40_000)
-      })
-      const readings = () => transport.published.filter((m) => m.topic.startsWith('transito/sensores/')).map((m) => JSON.parse(m.payload))
-      const before = readings()
-      expect(before).toHaveLength(4 * 12)
-      for (const p of before) expect(p.ruidoPct).toBe(10)
-
-      fireEvent.change(slider, { target: { value: '25' } })
-      expect(engine.getNoise()).toBe(25)
-      act(() => {
-        vi.advanceTimersByTime(10_000)
-      })
-      const after = readings().slice(4 * 12)
-      expect(after).toHaveLength(12)
-      for (const p of after) expect(p.ruidoPct).toBe(25)
-
-      // The same deterministic run with the noise set to 25 at 40 s produces exactly these
-      // readings; the run that stays at 10 does not.
-      const replay = (noiseAfter: number) => {
-        const twin = new SimulationEngine({ ratePerMinute: 120 })
-        const out: unknown[] = []
-        twin.onReading((r) => out.push(r))
-        for (let t = 0; t < 40_000; t += TICK_MS) twin.tick(TICK_MS)
-        twin.setNoise(noiseAfter)
-        out.length = 0
-        for (let t = 0; t < 10_000; t += TICK_MS) twin.tick(TICK_MS)
-        return out
-      }
-      expect(after.some((p) => p.contagem > 0)).toBe(true)
-      expect(after).toEqual(replay(25))
-      expect(after).not.toEqual(replay(10).map((r) => ({ ...(r as object), ruidoPct: 25 })))
-    })
-  })
-
-  describe('TelemetryPanel', () => {
-    it('shows the latest reading per sensor and the last 20 messages newest first', () => {
-      const transport = new FakeTransport(true)
-      render(<App engine={new SimulationEngine({ ratePerMinute: 0 })} transport={transport} />)
-      fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
-      const panel = screen.getByRole('complementary', { name: /telemetria/i })
-      expect(within(panel).getByText('MQTT conectado')).toBeInTheDocument()
-
-      const send = (sensorId: string, ts: number, contagem: number, velocidadeMediaKmh: number | null) =>
-        act(() => {
-          transport.deliver(
-            `transito/sensores/${sensorId}/telemetria`,
-            JSON.stringify({ sensorId, tipo: 'camera+radar', ts, janelaS: 10, contagem, velocidadeMediaKmh, ruidoPct: 10, porTrecho: [] }),
-          )
-        })
-
-      send('U01', 10_000, 3, 41.2)
-      send('U02', 10_000, 0, null)
-      send('U01', 20_000, 5, 22.5)
-      expect(within(panel).getByTestId('sensor-U01-contagem')).toHaveTextContent('5')
-      expect(within(panel).getByTestId('sensor-U01-velocidade')).toHaveTextContent('22.5')
-      expect(within(panel).getByTestId('sensor-U02-contagem')).toHaveTextContent('0')
-      expect(within(panel).getByTestId('sensor-U02-velocidade')).toHaveTextContent('—')
-
-      for (let i = 0; i < 25; i++) send('U03', 30_000 + i, i, 50)
-      const log = within(panel).getAllByTestId('telemetry-log-entry')
-      expect(log).toHaveLength(20)
-      expect(log[0]).toHaveTextContent('transito/sensores/U03/telemetria')
-      expect(log[0]).toHaveTextContent('"contagem":24')
-      expect(log[19]).toHaveTextContent('"contagem":5')
-      expect(within(panel).getByTestId('sensor-U03-contagem')).toHaveTextContent('24')
-    })
-
+  describe('CameraEventsPanel', () => {
     it('shows MQTT desconectado and no new readings while disconnected and the simulation keeps running', { timeout: 60_000 }, () => {
       vi.useFakeTimers()
       const transport = new FakeTransport(false)
       const engine = new SimulationEngine({ ratePerMinute: 60 })
-      const produced: Reading[] = []
-      engine.onReading((r) => produced.push(r))
+      const produced: PlateEvent[] = []
+      engine.onPlateEvent((e) => produced.push(e))
       render(<App engine={engine} transport={transport} />)
       fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
-      const panel = screen.getByRole('complementary', { name: /telemetria/i })
+      const panel = screen.getByRole('complementary', { name: 'Eventos das câmeras' })
 
       expect(within(panel).getByText('MQTT desconectado — tentando reconectar')).toBeInTheDocument()
       act(() => {
         vi.advanceTimersByTime(25_000)
       })
-      // simulation, lights and sensors keep going
+      // simulation, lights and cameras keep going
       const state = engine.getState()
       expect(state.timeMs).toBe(25_000)
       expect(state.spawnedTotal).toBeGreaterThan(0)
       const i11 = state.lights.find((l) => l.intersectionId === 'I11')!
       expect([i11.h, i11.v]).toEqual([lightAt('I11', 25_000).h, lightAt('I11', 25_000).v])
-      expect(produced.length).toBe(2 * 12)
+      expect(produced.length).toBeGreaterThan(0)
       // but nothing reaches the panel
-      expect(within(panel).queryAllByTestId('telemetry-log-entry')).toHaveLength(0)
-      expect(within(panel).getByTestId('sensor-U01-contagem')).toHaveTextContent('—')
+      expect(within(panel).queryAllByTestId('event-row')).toHaveLength(0)
+      expect(within(panel).getByText('Nenhum evento recebido.')).toBeInTheDocument()
 
       // a connection that drops mid-run shows the warning again
       act(() => transport.setConnected(true))
@@ -229,28 +148,32 @@ describe('render', () => {
       act(() => {
         vi.advanceTimersByTime(10_000)
       })
-      expect(within(panel).queryAllByTestId('telemetry-log-entry')).toHaveLength(0)
+      expect(within(panel).queryAllByTestId('event-row')).toHaveLength(0)
     })
 
     it('shows MQTT conectado and resumes readings when the connection returns', () => {
       vi.useFakeTimers()
       const transport = new FakeTransport(false)
-      render(<App engine={new SimulationEngine({ ratePerMinute: 30 })} transport={transport} />)
+      const engine = new SimulationEngine({ ratePerMinute: 120 })
+      const produced: PlateEvent[] = []
+      engine.onPlateEvent((e) => produced.push(e))
+      render(<App engine={engine} transport={transport} />)
       fireEvent.click(screen.getByRole('link', { name: 'Câmeras' }))
-      const panel = screen.getByRole('complementary', { name: /telemetria/i })
+      const panel = screen.getByRole('complementary', { name: 'Eventos das câmeras' })
       act(() => {
         vi.advanceTimersByTime(10_000)
       })
-      expect(within(panel).queryAllByTestId('telemetry-log-entry')).toHaveLength(0)
+      expect(within(panel).queryAllByTestId('event-row')).toHaveLength(0)
+      const before = produced.length
 
       act(() => transport.setConnected(true))
       expect(within(panel).getByText('MQTT conectado')).toBeInTheDocument()
       act(() => {
         vi.advanceTimersByTime(10_000)
       })
-      const log = within(panel).getAllByTestId('telemetry-log-entry')
-      expect(log).toHaveLength(12)
-      expect(within(panel).getByTestId('sensor-U01-contagem')).not.toHaveTextContent('—')
+      const resumed = produced.length - before
+      expect(resumed).toBeGreaterThan(0)
+      expect(within(panel).getAllByTestId('event-row')).toHaveLength(Math.min(20, resumed))
     })
   })
 })

@@ -3,8 +3,7 @@ import { APPS_TOPIC } from '../apps/AppFleet'
 import { Simulation } from '../decision/Simulation'
 import { sortRoads } from '../render/roads'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
-import { FakeTransport } from '../telemetry/testing'
-import { telemetryTopic } from '../telemetry/TelemetryPublisher'
+import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { AgentLog, LOG_SIZE } from './AgentLog'
 import { AgentRunner } from './AgentRunner'
 import { LlmUnavailable, type LlmResponse, type LlmTurn } from './llm'
@@ -29,7 +28,7 @@ function scripted(steps: LlmResponse[]): LlmTurn & { calls: number; seen: unknow
 
 function setup(llm: LlmTurn, rate = 0) {
   const transport = new FakeTransport(true)
-  const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: rate, noisePct: 0 }), transport, agentControl: true })
+  const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: rate }), transport, agentControl: true })
   sim.start()
   const runner = new AgentRunner({ sim, llm })
   return { sim, runner, transport }
@@ -116,17 +115,16 @@ describe('agent', () => {
     })
 
     it('sizes a proposed diversion like the rerouter and applies the policy', () => {
-      // no real units: only the injected reading measures the block
+      // no real cameras: only the injected metrics measure the block
       const transport = new FakeTransport(true)
       const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 0, cameras: [] }), transport, agentControl: true })
       sim.start()
       const runner = new AgentRunner({ sim, llm: scripted([]) })
       // the block crawls at 3 km/h with 8 cars on 140 m: flow 171 veh/h once learned
-      const reading = (ts: number) =>
-        JSON.stringify({ sensorId: 'U99', ts, porTrecho: [{ trecho: JAMMED, contagem: 8, velocidadeMediaKmh: 3, comprimentoCobertoM: 140, cobertura: 1 }] })
-      transport.deliver(telemetryTopic('U99'), reading(0))
+      const reading = (ts: number) => deliverMetrics(transport, JAMMED, ts, { k: 8 / 0.14, v: 3, ocupacao: 8 })
+      reading(0)
       for (let t = 0; t < 10_100; t += TICK_MS) sim.tick()
-      transport.deliver(telemetryTopic('U99'), reading(sim.engine.getState().timeMs))
+      reading(sim.engine.getState().timeMs)
       sim.engine.addCar({ path: ['I11>I12', JAMMED, 'I13>I14'], app: 'waze', velocity: 0 })
       const ctx = { sim, propose: (a: Parameters<typeof runner.applyProposal>[0]) => runner.applyProposal(a), explain: () => {} }
       const propose = (demand: number) => {

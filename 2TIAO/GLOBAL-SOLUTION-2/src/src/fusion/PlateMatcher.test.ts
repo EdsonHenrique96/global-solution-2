@@ -1,0 +1,203 @@
+import { describe, expect, it } from 'vitest'
+import { Simulation } from '../decision/Simulation'
+import { readSegment } from '../render/levels'
+import { DEFAULT_UNIT_BLOCKS } from '../sensors/camera'
+import { eventsTopic, type Papel } from '../sensors/PlateCamera'
+import { buildSegments } from '../sensors/segments'
+import { buildCityNetwork } from '../sim/cityNetwork'
+import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
+import { FakeTransport } from '../telemetry/testing'
+import { topicMatches } from '../telemetry/transport'
+import { FusionService } from './FusionService'
+import { METRICS_FILTER, metricsTopic, PlateMatcher, type SegmentMetrics } from './PlateMatcher'
+
+const METRIC_KEYS = ['camerasPar', 'densidadeVeicKm', 'entraram', 'fluxoVeicMin', 'janelaS', 'ocupacao', 'pares', 'sairam', 'trecho', 'ts', 'velocidadeMediaKmh']
+const MONITORED = DEFAULT_UNIT_BLOCKS.map(([a, b]) => `${a}>${b}`)
+
+/** A matcher over two 250 m segments, A and B, with a clock the test moves. */
+function bench() {
+  const transport = new FakeTransport(true)
+  const clock = { t: 0 }
+  const matcher = new PlateMatcher(transport, () => clock.t, [
+    { trecho: 'A', comprimentoM: 250, camerasPar: ['C01E', 'C01S'] },
+    { trecho: 'B', comprimentoM: 250, camerasPar: ['C02E', 'C02S'] },
+  ])
+  matcher.start()
+  const ev = (trecho: string, papel: Papel, placaHash: string, ts: number) =>
+    transport.deliver(eventsTopic(trecho), JSON.stringify({ cameraId: 'C01E', trecho, papel, placaHash, ts, faixa: 1, classe: 'carro' }))
+  /** Moves the clock and returns what the matcher published for `trecho` at that time, if anything. */
+  const at = (t: number, trecho = 'A'): SegmentMetrics | undefined => {
+    clock.t = t
+    matcher.tick()
+    const m = transport.published.filter((p) => p.topic === metricsTopic(trecho)).map((p) => JSON.parse(p.payload) as SegmentMetrics)
+    return m.filter((x) => x.ts === t).at(-1)
+  }
+  return { transport, matcher, ev, at }
+}
+
+describe('plate matcher', () => {
+  it('C12 pairs an exit with the pending entry of the same hash on the same segment', () => {
+    const { matcher, ev, at } = bench()
+    ev('A', 'entrada', 'h1', 0)
+    ev('A', 'saida', 'h1', 18_000)
+    expect(matcher.guarda('h1')).toBe(false)
+    let m = at(20_000)!
+    expect(m.pares).toBe(1)
+    expect(m.velocidadeMediaKmh).toBe(50)
+    // an exit with no pending entry: counted as an exit and in the flow, not in the speed
+    ev('A', 'saida', 'h2', 25_000)
+    m = at(30_000)!
+    expect(m.sairam).toBe(2)
+    expect(m.fluxoVeicMin).toBe(2)
+    expect(m.pares).toBe(1)
+    expect(m.velocidadeMediaKmh).toBe(50)
+    // in on A, out on B with the same hash: no pair
+    ev('A', 'entrada', 'h3', 31_000)
+    ev('B', 'saida', 'h3', 35_000)
+    const b = at(40_000, 'B')!
+    expect(b.pares).toBe(0)
+    expect(b.velocidadeMediaKmh).toBeNull()
+    expect(b.sairam).toBe(1)
+    expect(matcher.guarda('h3')).toBe(true)
+  })
+
+  it('C13 drops entries without exit after 10 minutes and keeps no hash', () => {
+    const { matcher, ev, at } = bench()
+    for (let i = 0; i < 100; i++) ev('A', 'entrada', `h${i}`, 0)
+    at(599_900)
+    expect(matcher.pendentes()).toBe(100)
+    at(600_000)
+    expect(matcher.pendentes()).toBe(0)
+    for (let i = 0; i < 100; i++) expect(matcher.guarda(`h${i}`)).toBe(false)
+    ev('A', 'entrada', 'p', 600_000)
+    expect(matcher.guarda('p')).toBe(true)
+    ev('A', 'saida', 'p', 605_000)
+    expect(matcher.guarda('p')).toBe(false)
+    expect(matcher.pendentes()).toBe(0)
+  })
+
+  it('C14 publishes the door 2 metrics of the 12 paired segments every 10 s', () => {
+    const transport = new FakeTransport(true)
+    const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 30 }), transport })
+    sim.start()
+    for (let t = 0; t < 30_000; t += TICK_MS) sim.tick()
+    const metrics = transport.published.filter((m) => topicMatches(METRICS_FILTER, m.topic))
+    expect(metrics).toHaveLength(36)
+    for (const ts of [10_000, 20_000, 30_000]) {
+      const at = metrics.map((m) => ({ ...m, body: JSON.parse(m.payload) as SegmentMetrics })).filter((m) => m.body.ts === ts)
+      expect(at.map((m) => m.body.trecho).sort()).toEqual([...MONITORED].sort())
+      for (const m of at) {
+        const n = String(MONITORED.indexOf(m.body.trecho) + 1).padStart(2, '0')
+        expect(m.topic).toBe(`transito/vias/${m.body.trecho}/metricas`)
+        expect(m.options).toEqual({ qos: 0, retain: true })
+        expect(Object.keys(m.body).sort()).toEqual(METRIC_KEYS)
+        expect(m.body.janelaS).toBe(60)
+        expect(m.body.camerasPar).toEqual([`C${n}E`, `C${n}S`])
+      }
+    }
+  })
+
+  it('C15 computes the one minute window metrics', () => {
+    // two pairs of 10 s and 30 s on 250 m: space mean 45 km/h, not the arithmetic 60
+    {
+      const { ev, at } = bench()
+      ev('A', 'entrada', 'x', 0)
+      ev('A', 'entrada', 'y', 0)
+      ev('A', 'saida', 'x', 10_000)
+      ev('A', 'saida', 'y', 30_000)
+      expect(at(30_000)!.velocidadeMediaKmh).toBe(45)
+    }
+    // a pair closed at 5 s counts at 60 s and not at 70 s
+    {
+      const { ev, at } = bench()
+      ev('A', 'entrada', 'p', 0)
+      ev('A', 'saida', 'p', 5_000)
+      expect(at(60_000)!.pares).toBe(1)
+      const later = at(70_000)!
+      expect(later.pares).toBe(0)
+      expect(later.velocidadeMediaKmh).toBeNull()
+    }
+    // 8 in, 3 out on 250 m: 5 inside, 20 veh/km; flow = exits in the last 60 s
+    {
+      const { ev, at } = bench()
+      for (let i = 0; i < 8; i++) ev('A', 'entrada', `e${i}`, 1_000)
+      ev('A', 'saida', 'e0', 5_000)
+      ev('A', 'saida', 'e1', 30_000)
+      ev('A', 'saida', 'e2', 65_000)
+      const m = at(70_000)!
+      expect(m.entraram).toBe(8)
+      expect(m.sairam).toBe(3)
+      expect(m.ocupacao).toBe(5)
+      expect(m.densidadeVeicKm).toBe(20)
+      expect(m.fluxoVeicMin).toBe(2)
+    }
+    // no pair: no speed; more exits than entries: never a negative occupancy
+    {
+      const { ev, at } = bench()
+      ev('A', 'entrada', 'only', 1_000)
+      expect(at(10_000)!.velocidadeMediaKmh).toBeNull()
+      ev('B', 'saida', 'q1', 11_000)
+      ev('B', 'saida', 'q2', 12_000)
+      const b = at(20_000, 'B')!
+      expect(b.ocupacao).toBe(0)
+      expect(b.densidadeVeicKm).toBe(0)
+    }
+  })
+
+  it('C18 while the broker is down no metrics reach the fusion and segments go sem dado', { timeout: 60_000 }, () => {
+    const transport = new FakeTransport(true)
+    const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 30 }), transport })
+    sim.start()
+    const run = (ms: number) => {
+      for (let t = 0; t < ms; t += TICK_MS) sim.tick()
+    }
+    const level = () => {
+      const t = sim.engine.getState().timeMs
+      return readSegment('I12>I13', sim.capacity.snapshot()['I12>I13'], sim.capacity.fusion.state()['I12>I13'], t).nivel
+    }
+    run(60_000)
+    expect(sim.capacity.fusion.state()['I12>I13'].atualizadoEm).toBe(60_000)
+    transport.setConnected(false)
+    const spawned = sim.engine.getState().spawnedTotal
+    run(20_000)
+    expect(sim.capacity.fusion.state()['I12>I13'].atualizadoEm).toBe(60_000)
+    expect(level()).not.toBe('sem dado')
+    run(100)
+    expect(level()).toBe('sem dado')
+    run(30_000)
+    expect(sim.capacity.fusion.state()['I12>I13'].atualizadoEm).toBe(60_000)
+    expect(sim.engine.getState().spawnedTotal).toBeGreaterThan(spawned)
+    transport.setConnected(true)
+    run(10_000)
+    expect(sim.capacity.fusion.state()['I12>I13'].atualizadoEm).toBe(120_000)
+    expect(level()).not.toBe('sem dado')
+  })
+
+  it('C20 ignores malformed events and metrics', () => {
+    const { transport, matcher, at } = bench()
+    const raw = (payload: string) => transport.deliver(eventsTopic('A'), payload)
+    raw('{not json')
+    raw(JSON.stringify({ trecho: 'A', papel: 'entrada', placaHash: 5, ts: 0 }))
+    raw(JSON.stringify({ trecho: 'A', papel: 'meio', placaHash: 'h', ts: 0 }))
+    raw(JSON.stringify({ trecho: 'A', papel: 'entrada', placaHash: 'h' }))
+    raw(JSON.stringify({ trecho: 'Z', papel: 'entrada', placaHash: 'h', ts: 0 }))
+    const m = at(10_000)!
+    expect(m.entraram).toBe(0)
+    expect(m.sairam).toBe(0)
+    expect(matcher.pendentes()).toBe(0)
+
+    const segments = buildSegments(buildCityNetwork())
+    const fusion = new FusionService(transport, () => 10_000, segments)
+    fusion.start()
+    const good = { trecho: 'I11>I12', ts: 10_000, janelaS: 60, fluxoVeicMin: 6, velocidadeMediaKmh: 45, pares: 2, entraram: 8, sairam: 3, ocupacao: 5, densidadeVeicKm: 20, camerasPar: ['C01E', 'C01S'] }
+    const send = (body: object) => transport.deliver(metricsTopic('I11>I12'), JSON.stringify(body))
+    send({ ...good, trecho: 'X1>X2' })
+    send({ ...good, densidadeVeicKm: '20' })
+    send({ ...good, velocidadeMediaKmh: 'rápido' })
+    send({ ...good, ts: 20_000 })
+    transport.deliver(metricsTopic('I11>I12'), '{oops')
+    expect(fusion.state()['I11>I12'].atualizadoEm).toBeNull()
+    send(good)
+    expect(fusion.state()['I11>I12'].atualizadoEm).toBe(10_000)
+  })
+})

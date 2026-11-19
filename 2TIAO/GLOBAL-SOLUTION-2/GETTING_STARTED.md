@@ -6,8 +6,8 @@ serve a ferramenta, o que ela faz e quais conceitos ela usa**.
 ## Propósito
 
 Painel de gestão de tráfego para o **operador da central de trânsito**. A ferramenta simula o
-trânsito de uma grade de 4×4 ruas reais dos Jardins, em São Paulo, mede a rede com unidades de
-câmera e radar e decide como agir quando há congestionamento: ajusta os semáforos e avisa **só
+trânsito de uma grade de 4×4 ruas reais dos Jardins, em São Paulo, mede a rede com pares de
+câmeras que leem placas e decide como agir quando há congestionamento: ajusta os semáforos e avisa **só
 uma parte** dos motoristas que usam app de mapa, sugerindo um caminho mais rápido.
 
 **Hipótese do TCC:** notificar apenas uma parcela calculada dos motoristas reduz o tempo médio de
@@ -22,7 +22,7 @@ O ciclo contínuo de monitoramento e gestão inteligente do tráfego:
 
 ```mermaid
 flowchart TD
-    coleta["<b>1. Coleta</b><br/>Unidades câmera + radar (IoT) medem contagem<br/>e velocidade por trecho via MQTT"]
+    coleta["<b>1. Coleta</b><br/>Câmeras de placa (IoT) publicam um evento<br/>por veículo, com a placa em hash, via MQTT"]
     monitora["<b>2. Monitoramento em tempo real</b><br/>Fusão dos dados por trecho: velocidade,<br/>fluxo, demanda e confiança no mapa"]
     detecta{"<b>3. Detecção</b><br/>Congestionamento, acidente<br/>ou rota saturada?"}
     decide["<b>4. Decisão inteligente</b><br/>Algoritmos calculam o desvio e os semáforos;<br/>o agente LLM orquestra e explica"]
@@ -48,11 +48,13 @@ Por dentro, cada ciclo passa por:
 1. A **simulação** move os carros pela grade de 4×4 esquinas (48 trechos, um por sentido de
    cada quarteirão). As viagens começam e terminam nas esquinas da borda, e cada esquina tem um
    semáforo de duas fases (alamedas e ruas).
-2. As **unidades câmera + radar** leem contagem (câmera) e velocidade (radar) por trecho, com
-   ruído, e publicam via **MQTT**.
+2. As **câmeras de placa** (uma na entrada e outra na saída de 12 trechos) publicam via **MQTT**
+   um evento por veículo com o hash da placa (HMAC-SHA-256 com sal que troca a cada hora; a placa
+   nunca sai da câmera). O **pareamento** junta entrada e saída do mesmo hash e publica, a cada
+   10 s, as métricas do último minuto: velocidade média, fluxo e veículos dentro do trecho.
 3. Os **apps de mapa** (Waze, Google Maps, Outros) publicam só agregados dos seus motoristas:
    quantos estão ativos e a demanda por trecho.
-4. A **fusão** junta leituras, alertas e demanda por trecho e calcula a confiança de cada estimativa.
+4. A **fusão** junta as métricas, alertas e demanda por trecho e calcula a confiança de cada estimativa.
 5. O **modelo de capacidade** aprende quanto cada trecho aguenta e calcula a densidade e a folga.
 6. A **decisão** ajusta os semáforos e, num trecho congestionado, escolhe quantos motoristas
    avisar. Só recebem o aviso os que usam app e têm um caminho pelo menos 10% mais rápido.
@@ -71,12 +73,12 @@ flowchart TB
 
     sistema["<b>Sistema de gestão de tráfego</b><br/>[Sistema de software]<br/>Monitora o trânsito em tempo real e<br/>decide desvios e semáforos adaptativos"]
 
-    cameras["<b>Unidades câmera + radar (IoT)</b><br/>[Sistema externo, simulado no MVP]<br/>Contagem e velocidade por trecho"]
+    cameras["<b>Câmeras de placa (IoT)</b><br/>[Sistema externo, simulado no MVP]<br/>Um evento por veículo, placa em hash"]
     apps["<b>Apps de navegação</b><br/>[Sistema externo, simulado no MVP]<br/>Waze, Google Maps e outros"]
     llm["<b>API da Anthropic</b><br/>[Sistema externo]<br/>LLM que orquestra e explica as decisões"]
 
     operador -- "Monitora e aprova ações<br/>[Navegador]" --> sistema
-    cameras -- "Envia leituras por trecho<br/>[MQTT]" --> sistema
+    cameras -- "Envia eventos por via<br/>[MQTT]" --> sistema
     sistema -- "Pede orquestração e explicação<br/>[HTTPS]" --> llm
     apps -- "Envia agregados dos motoristas ativos<br/>[MQTT]" --> sistema
     sistema -- "Envia aviso de desvio por app" --> apps
@@ -92,14 +94,14 @@ flowchart TB
 
 ## Arquitetura (C4, nível 2: containers)
 
-No MVP, as unidades câmera + radar e os apps de mapa são simulados dentro do painel.
+No MVP, as câmeras de placa e os apps de mapa são simulados dentro do painel.
 
 ```mermaid
 flowchart LR
     operador(["<b>Operador de tráfego</b><br/>[Pessoa]<br/>Acompanha o mapa, aprova<br/>ou rejeita as ações do agente"])
 
     subgraph sistema["Sistema de gestão de tráfego (simulação)"]
-        painel["<b>Painel</b><br/>[Container: React + Vite, navegador]<br/>Simulação (IDM, semáforos, incidentes),<br/>sensores, apps de mapa, fusão,<br/>modelo de capacidade, desvio,<br/>agente e métricas"]
+        painel["<b>Painel</b><br/>[Container: React + Vite, navegador]<br/>Simulação (IDM, semáforos, incidentes),<br/>câmeras de placa, pareamento, apps de mapa, fusão,<br/>modelo de capacidade, desvio,<br/>agente e métricas"]
         broker[("<b>Broker MQTT</b><br/>[Container: Mosquitto 2, Docker]<br/>MQTT :1883 · WebSocket :9001")]
         proxy["<b>Proxy do agente LLM</b><br/>[Container: Node.js 24 + TypeScript, Docker]<br/>POST /api/agente/turno<br/>:8787 · guarda a chave da API"]
     end
@@ -107,7 +109,7 @@ flowchart LR
     llm["<b>API da Anthropic</b><br/>[Sistema externo]<br/>Modelo claude-opus-5-5"]
 
     operador -- "Usa<br/>[HTTP, :5173]" --> painel
-    painel -- "Publica telemetria, alertas,<br/>agregados dos apps e avisos<br/>[MQTT sobre WebSocket]" --> broker
+    painel -- "Publica eventos de placa, métricas,<br/>alertas, agregados dos apps e avisos<br/>[MQTT sobre WebSocket]" --> broker
     broker -- "Entrega as mensagens assinadas<br/>[MQTT sobre WebSocket]" --> painel
     painel -- "Pede um turno do agente<br/>[HTTP/JSON, /api via Vite]" --> proxy
     proxy -- "Chama o modelo com as tools<br/>[HTTPS, SDK]" --> llm
@@ -124,7 +126,9 @@ Tópicos MQTT:
 
 | Tópico | Quem publica | Quem assina |
 | --- | --- | --- |
-| `transito/sensores/{id}/telemetria` | unidades câmera + radar (`TelemetryPublisher`) | fusão, painel de telemetria |
+| `transito/vias/{trecho}/eventos` | câmeras de placa (`PlateCamera`), um evento por veículo com o hash da placa | `PlateMatcher`, painel de eventos da aba Câmeras |
+| `transito/vias/{trecho}/metricas` | `PlateMatcher`, a cada 10 s, janela de 1 min (retido) | fusão, painel |
+| `transito/cameras/{id}/status` | câmeras de placa, a cada 10 s | `Simulation` (câmeras online) |
 | `transito/alertas` | `AlertPublisher` | fusão |
 | `transito/apps/ativos` | apps de mapa (`AppFleet`), a cada 10 s | fusão (demanda por trecho), painel dos apps |
 | `transito/notificacoes/{app}` | `AppNotifier` (`waze`, `google-maps`, `outros`) | painel dos apps, `Simulation` |
@@ -140,8 +144,10 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
 - Trechos coloridos pela densidade (fluxo ÷ capacidade aprendida): livre, moderado, intenso ou
   crítico. Trechos sem capacidade ainda aparecem como "aprendendo"; sem leitura há 20 s, "sem dado".
 - Um rótulo por rua com o pior trecho dela, em carros/min.
-- Ícones das câmeras (online ou offline) e marcadores de incidentes com nota.
-- Ao clicar numa via: detalhes do trecho e o fluxo e a velocidade das últimas 2 h.
+- Ícones das 24 câmeras nas pontas dos seus trechos (online ou offline; fixas, não se arrastam) e
+  marcadores de incidentes com nota.
+- Ao clicar numa via: velocidade média do pareamento, fluxo, veículos no trecho, densidade, pares
+  do último minuto, as câmeras do par e o fluxo e a velocidade das últimas 2 h.
 - Ranking das ruas mais saturadas, cards com métricas reais e lista de incidentes ativos.
 - Os carros são simulados, mas não aparecem no mapa: o foco são as métricas.
 
@@ -153,12 +159,11 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
 - Congestionamentos com desvio ativo também entram no log de incidentes, com histórico.
 
 ### Câmeras
-- Adicionar, remover e ajustar posição, direção, ângulo e alcance das unidades. A cobertura se
-  recalcula na hora.
-- Status da telemetria MQTT por unidade.
+- As 24 câmeras de placa (`C01E`..`C12S`) com trecho, papel (entrada ou saída) e online/offline.
+- Os últimos 20 eventos (hora, câmera, trecho e os 6 primeiros caracteres do hash) e o status MQTT.
 
 ### Semáforos (controle da operação)
-- Volume de carros, ruído das leituras, **Desvio parcial** e **Controle de semáforos**
+- Volume de carros, **Desvio parcial** e **Controle de semáforos**
   (adaptativo) liga/desliga.
 - Agente: log com a explicação de cada decisão e cards para aprovar ou rejeitar ações grandes.
 - **Modo sem LLM:** sem chave de API ou com a API fora do ar, as mesmas regras rodam com
@@ -182,13 +187,14 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
 | --- | --- |
 | **Grade** | 4 alamedas (Santos, Jaú, Itu, Franca) × 4 ruas (Consolação, Bela Cintra, Haddock Lobo, Augusta), com as 16 esquinas tiradas do OpenStreetMap. |
 | **Trecho** | Um quarteirão num sentido, entre duas esquinas (são 48, com id como `I12>I13`). É a unidade de decisão: capacidade, estado e desvio são por trecho. |
-| **Unidade câmera + radar** | Poste com uma câmera, que conta os carros no seu cone (posição, direção, ângulo e alcance), e um radar de feixe estreito (12°, 150 m) na mesma direção, que mede a velocidade com metade do ruído. Começam 12 unidades; metade dos trechos fica sem câmera. |
-| **Cobertura** | Fração do trecho dentro do cone de uma câmera. Abaixo de 0,3, a câmera não mede o trecho. |
-| **Janela** | Período de 10 s em que a câmera agrega as leituras antes de publicar. |
-| **MQTT** | Protocolo de mensagens IoT. As unidades e os apps publicam no broker Mosquitto; a fusão assina os tópicos. |
-| **Fusão** | Junta unidades, alertas e demanda num estado único por trecho. Se duas câmeras veem o mesmo trecho, vale a de maior cobertura. Alertas a menos de 50 m viram um só. |
+| **Par de câmeras de placa** | Duas câmeras fixas num trecho: `C<n>E` no início e `C<n>S` na linha de retenção. Cada uma lê a placa de cada veículo que cruza a sua linha (leitura perfeita na simulação) e publica só o hash. São 12 pares (24 câmeras); os outros 36 trechos ficam sem par. |
+| **Hash da placa** | Primeiros 16 hex de HMAC-SHA-256(sal, placa). O sal troca a cada hora simulada e é igual em todas as câmeras; assim a mesma placa se pareia na hora e não se rastreia pelo dia (LGPD). |
+| **Pareamento** | A saída de um hash com a entrada pendente do mesmo hash no mesmo trecho vira um par: tempo de viagem e velocidade. Entrada sem saída é descartada em 10 min. |
+| **Janela** | 1 minuto, recalculado a cada 10 s: fluxo = saídas no último minuto; velocidade = média espacial dos pares (comprimento × pares ÷ soma dos tempos); ocupação = entraram − saíram; densidade = ocupação ÷ km entre as câmeras. |
+| **MQTT** | Protocolo de mensagens IoT. As câmeras e os apps publicam no broker Mosquitto; o pareamento e a fusão assinam os tópicos. |
+| **Fusão** | Junta métricas dos pares, alertas e demanda num estado único por trecho. Alertas a menos de 50 m viram um só. |
 | **Estimado** | Trecho sem câmera no momento: usa a última medição e fica marcado como "estimado". |
-| **Confiança** | Quanto confiar na estimativa: sobe com a cobertura e cai com a idade do dado. |
+| **Confiança** | Quanto confiar na estimativa: 1 com métricas recentes, cai com a idade do dado. |
 | **Apps de mapa** | 60% dos motoristas usam um app (Waze 40%, Google Maps 50%, Outros 10%). A cada 10 s, os apps publicam só agregados: motoristas ativos por app e por trecho e a demanda por trecho no último minuto, escalada para todos os motoristas (LGPD: a fusão nunca vê viagens ou posições). |
 | **Diagrama fundamental** | Relação entre fluxo (q), densidade (k) e velocidade (v) do tráfego: q = k × v. |
 | **Capacidade** | Fluxo máximo do trecho. É aprendido online pelo modelo de Greenshields (a velocidade cai em linha reta com a densidade) com mínimos quadrados recursivos (RLS): q_max = v_f × k_j / 4. |
@@ -196,7 +202,7 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
 | **Densidade** | O que o mapa mostra: fluxo ÷ capacidade. **Livre** < 50%, **moderado** 50-74%, **intenso** 75-89%, **crítico** ≥ 90% ou velocidade abaixo de metade do limite. |
 | **Folga** | Capacidade − fluxo atual. É o que o caminho alternativo ainda absorve. |
 | **Desvio parcial** | N = min(excesso do trecho congestionado, folga × 0,8) e p = min(N ÷ demanda, 50%). A cada janela, avisa no máximo p × candidatos, os de maior ganho primeiro. Candidato é quem usa app e ainda vai passar pelo trecho; só recebe o aviso se o caminho alternativo levar no máximo 90% do tempo atual. "Notificar todos" avisa todos os que passam nesse teste. |
-| **Fora do alcance** | Carros no trecho congestionado sem app (contagem da câmera − motoristas dos apps): o sistema não consegue avisá-los. |
+| **Fora do alcance** | Carros no trecho congestionado sem app (veículos no trecho − motoristas dos apps): o sistema não consegue avisá-los. |
 | **Histerese** | Evita o liga-desliga: o desvio só começa depois de 5 janelas seguidas de congestionamento (50 s), só para depois de 2 janelas a 35 km/h ou mais e nunca muda menos de 30 s depois da última mudança. |
 | **Semáforo** | Cada esquina alterna duas fases: alamedas e ruas. No modo fixo, 20 s de verde e 3 s de amarelo por fase, com uma onda verde de 10 s por quarteirão. |
 | **Semáforo adaptativo coordenado** | Em cada esquina, o verde de uma fase = 20 s + 2 × (fila da fase − fila média das duas fases), limitado a 15-30 s e calculado quando a fase começa. |
@@ -211,7 +217,7 @@ normalizar após o acidente e saturação da rota alternativa (% da capacidade).
 
 ## Tecnologias
 
-- **Frontend e simulação:** React, TypeScript, Vite e Canvas; Turf.js e rbush para a geometria.
+- **Frontend e simulação:** React, TypeScript, Vite e Canvas; Turf.js para o campo de visão das câmeras; `@noble/hashes` para o HMAC-SHA-256 da placa.
 - **Movimento dos carros:** Intelligent Driver Model (IDM).
 - **IoT:** MQTT com o broker Mosquitto (Docker).
 - **LLM:** API da Anthropic com tool calling, por um proxy Node em `server/` (container Docker) que guarda a chave.
@@ -222,10 +228,10 @@ normalizar após o acidente e saturação da rota alternativa (% da capacidade).
 | Pasta | Conteúdo |
 | --- | --- |
 | `sim/` | Grade da cidade, grafo, motor da simulação, IDM, semáforos, incidentes (acidente, obra, intermitente) |
-| `sensors/` | Trechos, unidades câmera + radar, índice de cobertura, leitura por janela |
+| `sensors/` | Trechos, câmeras de placa (cruzamento de linha, eventos, status), placas e hash |
 | `telemetry/` | Transporte MQTT |
 | `apps/` | Apps de mapa: sorteio do app, agregados dos motoristas ativos, avisos por app |
-| `fusion/` | Estado fundido, confiança, alertas |
+| `fusion/` | Pareamento de placas e métricas por trecho, estado fundido, confiança, alertas |
 | `capacity/` | Modelo de capacidade (Greenshields + RLS) |
 | `decision/` | Desvio parcial (histerese), escolha de quem avisar, log de incidentes, histórico por trecho, métricas |
 | `agent/` | Agente LLM, ferramentas, política de autonomia, fila de aprovação, log |

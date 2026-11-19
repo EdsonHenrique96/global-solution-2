@@ -8,11 +8,12 @@ export const MIN_SAMPLES = 5
 export const STALE_AFTER_MS = 20_000
 export const MAX_PLOTTED = 200
 
-/** One segment's slice of a camera+radar reading, as it arrives in the payload. */
+/** One segment's metrics from the plate pairs (door 2): density, pair speed and measured flow. */
 export interface ViaInput {
-  contagem: number
+  densidadeVeicKm: number
   velocidadeMediaKmh: number | null
-  comprimentoM: number
+  /** Measured flow, veh/h. */
+  fluxoVeicH: number
 }
 
 export interface Sample {
@@ -63,10 +64,10 @@ export class CapacityModel {
   }
 
   observe(input: ViaInput, ts: number): void {
-    if (!(input.comprimentoM > 0)) return
-    const k = input.contagem / ((input.comprimentoM / 1000) * LANES)
+    const k = input.densidadeVeicKm / LANES
     const v = input.velocidadeMediaKmh
-    const q = v === null ? 0 : k * v
+    const q = input.fluxoVeicH
+    if (!Number.isFinite(k) || !Number.isFinite(q)) return
     // a reading that arrives late still trains the fit, but never rewinds the current state
     if (this.last === null || ts >= this.last.ts) this.last = { k, v, q, ts }
     if (v === null) return

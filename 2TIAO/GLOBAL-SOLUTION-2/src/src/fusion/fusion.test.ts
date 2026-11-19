@@ -8,20 +8,29 @@ import { buildCityNetwork } from '../sim/cityNetwork'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
 import { ALERTS_TOPIC, wireAlerts } from './AlertPublisher'
-import { agedConfidence, baseConfidence } from './confidence'
+import { agedConfidence } from './confidence'
 import { FusionService } from './FusionService'
+import { METRICS_FILTER, metricsTopic } from './PlateMatcher'
 
 const segments = buildSegments(buildCityNetwork())
 const SANTOS = segments.find((x) => x.id === 'I12>I13')!
-const sensorMsg = (sensorId: string, ts: number, porTrecho: unknown[]) =>
-  JSON.stringify({ sensorId, tipo: 'camera+radar', ts, janelaS: 10, contagem: 0, velocidadeMediaKmh: null, ruidoPct: 0, porTrecho })
-const seg = (trecho: string, contagem: number, velocidadeMediaKmh: number | null, comprimentoCobertoM: number, cobertura: number) => ({
-  trecho,
-  contagem,
-  velocidadeMediaKmh,
-  comprimentoCobertoM,
-  cobertura,
-})
+/** A segment's metrics as the plate matcher publishes them (door 2). */
+const metrics = (trecho: string, ts: number, m: { k: number; v: number | null; fluxo?: number; ocupacao?: number; pares?: number }) =>
+  JSON.stringify({
+    trecho,
+    ts,
+    janelaS: 60,
+    fluxoVeicMin: m.fluxo ?? 0,
+    velocidadeMediaKmh: m.v,
+    pares: m.pares ?? 0,
+    entraram: 0,
+    sairam: 0,
+    ocupacao: m.ocupacao ?? 0,
+    densidadeVeicKm: m.k,
+    camerasPar: ['C02E', 'C02S'],
+  })
+const deliverMetrics = (transport: FakeTransport, trecho: string, ts: number, m: Parameters<typeof metrics>[2]) =>
+  transport.deliver(metricsTopic(trecho), metrics(trecho, ts, m))
 const alertAt = (id: number, d: number, ts: number, ativo = true) => {
   const p = pointOnSegment(SANTOS, d)
   return alertMsg(id, p.x, p.y, ts, ativo)
@@ -45,36 +54,16 @@ describe('fusion', () => {
       expect(Object.keys(state).sort()).toEqual(segments.map((s) => s.id).sort())
       for (const s of Object.values(state)) {
         expect(Object.keys(s).sort()).toEqual(
-          ['alertas', 'atualizadoEm', 'confianca', 'contagem', 'demandaOD', 'densidade', 'estimado', 'fontes', 'velocidadeMedia'].sort(),
+          ['alertas', 'atualizadoEm', 'confianca', 'contagem', 'demandaOD', 'densidade', 'estimado', 'fluxoVeicMin', 'fontes', 'pares', 'velocidadeMedia'].sort(),
         )
-        expect(s).toMatchObject({ contagem: null, densidade: null, velocidadeMedia: null, alertas: [], demandaOD: null, fontes: [], confianca: 0, atualizadoEm: null, estimado: false })
-      }
-    })
-
-    it('takes count and speed from the sensor with the highest coverage', () => {
-      const now = { t: 10_000 }
-      const { transport, fusion } = setup(now)
-      // A (0.5) arrives after B (0.9) in one order and before it in the other: B wins both times
-      for (const order of [['A', 'B'], ['B', 'A']]) {
-        const msgs: Record<string, string> = {
-          A: sensorMsg('A', now.t, [seg('I12>I13', 10, 20, 200, 0.5)]),
-          B: sensorMsg('B', now.t, [seg('I12>I13', 4, 40, 360, 0.9)]),
-        }
-        for (const id of order) transport.deliver(`transito/sensores/${id}/telemetria`, msgs[id])
-        const s = fusion.state()['I12>I13']
-        expect(s.densidade).toBeCloseTo(4 / 0.36, 6)
-        expect(s.velocidadeMedia).toBe(40)
-        expect(s.fontes.sort()).toEqual(['A', 'B'])
-        expect(s.confianca).toBe(1)
-        expect(s.estimado).toBe(false)
-        now.t += 10_000
+        expect(s).toMatchObject({ contagem: null, densidade: null, velocidadeMedia: null, fluxoVeicMin: null, pares: null, alertas: [], demandaOD: null, fontes: [], confianca: 0, atualizadoEm: null, estimado: false })
       }
     })
 
     it('keeps the last estimate as estimated when sensors go quiet', () => {
       const now = { t: 10_000 }
       const { transport, fusion } = setup(now)
-      transport.deliver('transito/sensores/U02/telemetria', sensorMsg('U02', 10_000, [seg('I12>I13', 4, 40, 200, 0.5)]))
+      deliverMetrics(transport, 'I12>I13', 10_000, { k: 20, v: 40 })
       now.t = 20_000 // one window later: still fresh
       expect(fusion.state()['I12>I13'].estimado).toBe(false)
       now.t = 20_100 // more than one window without a reading
@@ -89,11 +78,32 @@ describe('fusion', () => {
     })
   })
 
+  describe('metrics', () => {
+    it('C16 fuses a segment from its metrics with the pair as sources', () => {
+      const now = { t: 10_000 }
+      const { transport, fusion } = setup(now)
+      transport.deliver(
+        metricsTopic('I11>I12'),
+        JSON.stringify({ trecho: 'I11>I12', ts: 10_000, janelaS: 60, fluxoVeicMin: 6, velocidadeMediaKmh: 45, pares: 2, entraram: 8, sairam: 3, ocupacao: 5, densidadeVeicKm: 20, camerasPar: ['C01E', 'C01S'] }),
+      )
+      expect(fusion.state()['I11>I12']).toMatchObject({
+        fontes: ['C01E', 'C01S'],
+        estimado: false,
+        velocidadeMedia: 45,
+        densidade: 20,
+        fluxoVeicMin: 6,
+        contagem: 5,
+        pares: 2,
+        atualizadoEm: 10_000,
+        confianca: 1,
+      })
+      now.t = 40_000
+      expect(fusion.state()['I11>I12']).toMatchObject({ fontes: [], estimado: true, velocidadeMedia: 45, densidade: 20, atualizadoEm: 10_000 })
+    })
+  })
+
   describe('confidence', () => {
-    it('scales with coverage and decays with age to a floor', () => {
-      expect(baseConfidence(0.9)).toBe(1)
-      expect(baseConfidence(0.8)).toBe(1)
-      expect(baseConfidence(0.4)).toBeCloseTo(0.5, 9)
+    it('decays with age to a floor', () => {
       expect(agedConfidence(1, 0)).toBe(1)
       expect(agedConfidence(1, 10_000)).toBe(1)
       expect(agedConfidence(1, 70_000)).toBeCloseTo(0.5, 9)
@@ -103,14 +113,12 @@ describe('fusion', () => {
       // and in the fused state
       const now = { t: 10_000 }
       const { transport, fusion } = setup(now)
-      transport.deliver('transito/sensores/U02/telemetria', sensorMsg('U02', 10_000, [seg('I12>I13', 4, 40, 320, 0.8)]))
+      deliverMetrics(transport, 'I12>I13', 10_000, { k: 20, v: 40 })
       expect(fusion.state()['I12>I13'].confianca).toBe(1)
       now.t = 80_000
       expect(fusion.state()['I12>I13'].confianca).toBeCloseTo(0.5, 9)
       now.t = 310_000
       expect(fusion.state()['I12>I13'].confianca).toBe(0.2)
-      transport.deliver('transito/sensores/U09/telemetria', sensorMsg('U09', 310_000, [seg('I23>I24', 1, 40, 166, 0.4)]))
-      expect(fusion.state()['I23>I24'].confianca).toBeCloseTo(0.5, 9)
     })
   })
 
@@ -197,13 +205,13 @@ describe('fusion', () => {
       // the fusion module never imports the simulation engine
       for (const f of ['FusionService.ts', 'confidence.ts']) {
         const src = readFileSync(`${process.cwd()}/src/fusion/${f}`, "utf8")
-        expect(src, f).not.toMatch(/sim\/SimulationEngine|CarState|\.cars\b/)
+        expect(src, f).not.toMatch(/sim\/SimulationEngine|CarState|\.cars\b|placaHash|EVENTS_FILTER/)
       }
       // and every message on the topics it reads has only aggregate fields
       const transport = new FakeTransport(true)
       const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: 30 }), transport })
       const payloads: { topic: string; body: Record<string, unknown> }[] = []
-      for (const filter of ['transito/sensores/+/telemetria', ALERTS_TOPIC, APPS_TOPIC]) {
+      for (const filter of [METRICS_FILTER, ALERTS_TOPIC, APPS_TOPIC]) {
         transport.subscribe(filter, (topic, p) => payloads.push({ topic, body: JSON.parse(p) }))
       }
       sim.start()
@@ -212,15 +220,13 @@ describe('fusion', () => {
         sim.tick()
       }
       sim.stop()
-      expect(payloads.some((p) => p.topic.startsWith('transito/sensores/'))).toBe(true)
+      expect(payloads.some((p) => p.topic.endsWith('/metricas'))).toBe(true)
       expect(payloads.some((p) => p.topic === ALERTS_TOPIC)).toBe(true)
       expect(payloads.some((p) => p.topic === APPS_TOPIC)).toBe(true)
       for (const { topic, body } of payloads) {
-        if (topic.startsWith('transito/sensores/')) {
-          expect(Object.keys(body)).toEqual(['sensorId', 'tipo', 'ts', 'janelaS', 'contagem', 'velocidadeMediaKmh', 'ruidoPct', 'porTrecho'])
-          for (const t of body.porTrecho as Record<string, unknown>[]) {
-            expect(Object.keys(t)).toEqual(['trecho', 'contagem', 'fonteContagem', 'velocidadeMediaKmh', 'fonteVelocidade', 'amostrasRadar', 'comprimentoCobertoM', 'cobertura'])
-          }
+        if (topic.endsWith('/metricas')) {
+          // aggregates of the last minute: no plate hash, no car
+          expect(Object.keys(body)).toEqual(['trecho', 'ts', 'janelaS', 'fluxoVeicMin', 'velocidadeMediaKmh', 'pares', 'entraram', 'sairam', 'ocupacao', 'densidadeVeicKm', 'camerasPar'])
         } else if (topic === ALERTS_TOPIC) {
           expect(Object.keys(body)).toEqual(['id', 'tipo', 'x', 'y', 'ts', 'fonte', 'ativo'])
           expect(body.fonte).toBe('operador')
@@ -234,34 +240,29 @@ describe('fusion', () => {
   })
 
   describe('capacity', () => {
-    it('learns one chosen measurement per segment and window', () => {
+    it('learns each metrics publication once', () => {
       const now = { t: 10_000 }
       const transport = new FakeTransport(true)
       const service = new CapacityService(transport, () => now.t, segments)
       service.start()
-      // two cameras on the same segment in the same window, with a snapshot in between (the page
-      // refreshes on every message): one sample, from the 0.9 one
-      transport.deliver('transito/sensores/A/telemetria', sensorMsg('A', 10_000, [seg('I12>I13', 10, 20, 200, 0.5)]))
-      expect(service.snapshot()['I12>I13'].amostras).toHaveLength(0) // window still open
-      transport.deliver('transito/sensores/B/telemetria', sensorMsg('B', 10_000, [seg('I12>I13', 4, 40, 360, 0.9)]))
-      now.t = 20_000 // the window closes
+      deliverMetrics(transport, 'I12>I13', 10_000, { k: 11, v: 40, fluxo: 7 })
       let s = service.snapshot()['I12>I13']
       expect(s.amostras).toHaveLength(1)
       expect(s.velocidade).toBe(40)
-      expect(s.densidade).toBeCloseTo(4 / 0.36, 6)
-      // asking again does not add the same window twice
+      expect(s.densidade).toBe(11)
+      // asking again does not add the same publication twice, nor does a repeat of it
       service.snapshot()
+      deliverMetrics(transport, 'I12>I13', 10_000, { k: 11, v: 40, fluxo: 7 })
       expect(service.snapshot()['I12>I13'].amostras).toHaveLength(1)
-      // a newer window closes the previous one even before 10 s pass
-      transport.deliver('transito/sensores/B/telemetria', sensorMsg('B', 20_000, [seg('I12>I13', 6, 30, 360, 0.9)]))
-      transport.deliver('transito/sensores/B/telemetria', sensorMsg('B', 30_000, [seg('I12>I13', 8, 25, 360, 0.9)]))
-      expect(service.snapshot()['I12>I13'].amostras).toHaveLength(2)
-      // a quiet segment: estimated, no new sample beyond the closed windows, last state kept
-      now.t = 45_000
+      now.t = 30_000
+      deliverMetrics(transport, 'I12>I13', 20_000, { k: 15, v: 30, fluxo: 8 })
+      deliverMetrics(transport, 'I12>I13', 30_000, { k: 20, v: 25, fluxo: 8 })
+      expect(service.snapshot()['I12>I13'].amostras).toHaveLength(3)
+      // a quiet segment: estimated, no new sample, last state kept
+      now.t = 47_000
       s = service.snapshot()['I12>I13']
       expect(s.amostras).toHaveLength(3)
-      now.t = 47_000
-      expect(service.snapshot()['I12>I13'].amostras).toHaveLength(3)
+      expect(s.velocidade).toBe(25)
       expect(service.fusion.state()['I12>I13'].estimado).toBe(true)
     })
   })

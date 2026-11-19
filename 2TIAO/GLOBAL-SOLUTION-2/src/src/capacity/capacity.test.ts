@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import { metricsTopic } from '../fusion/PlateMatcher'
 import { FakeTransport } from '../telemetry/testing'
 import { CapacityModel } from './CapacityModel'
 import { CapacityService } from './CapacityService'
 
-const entry = (contagem: number, velocidadeMediaKmh: number | null, comprimentoM = 1000) => ({
-  contagem,
-  velocidadeMediaKmh,
-  comprimentoM,
-})
+/** `contagem` cars on `comprimentoM` metres at `v` km/h, as density and flow (q = k v). */
+const entry = (contagem: number, velocidadeMediaKmh: number | null, comprimentoM = 1000) => {
+  const densidadeVeicKm = contagem / (comprimentoM / 1000)
+  return { densidadeVeicKm, velocidadeMediaKmh, fluxoVeicH: velocidadeMediaKmh === null ? 0 : densidadeVeicKm * velocidadeMediaKmh }
+}
 
 /** Feeds samples that lie exactly on v = 50 (1 - k / 100), k = 5, 10, ..., 100 (20 samples). */
 function trainedModel(): CapacityModel {
@@ -19,8 +20,9 @@ function trainedModel(): CapacityModel {
   return model
 }
 
-function message(sensorId: string, ts: number, porTrecho: unknown[]) {
-  return JSON.stringify({ sensorId, tipo: 'camera+radar', ts, janelaS: 10, contagem: 0, velocidadeMediaKmh: null, ruidoPct: 0, porTrecho })
+/** A segment's metrics (door 2): density `k`, pair speed `v` and `fluxo` exits per minute. */
+function metrics(trecho: string, ts: number, k: number, v: number | null, fluxo = v === null ? 0 : (k * v) / 60) {
+  return JSON.stringify({ trecho, ts, janelaS: 60, fluxoVeicMin: fluxo, velocidadeMediaKmh: v, pares: v === null ? 0 : 1, entraram: 0, sairam: 0, ocupacao: 0, densidadeVeicKm: k, camerasPar: ['C02E', 'C02S'] })
 }
 
 describe('capacity', () => {
@@ -108,7 +110,24 @@ describe('capacity', () => {
   })
 
   describe('CapacityService', () => {
-    const topic = (id: string) => `transito/sensores/${id}/telemetria`
+    it('C17 learns capacity from the metrics density and speed and shows the measured flow', () => {
+      const transport = new FakeTransport(true)
+      let now = 0
+      const service = new CapacityService(transport, () => now)
+      service.start()
+      const ks = [10, 20, 30, 40, 50, 60, 70, 80]
+      ks.forEach((k, i) => {
+        now = (i + 1) * 10_000
+        // the flow published is the measured one, here 7 cars/min whatever k and v
+        transport.deliver(metricsTopic('I11>I12'), metrics('I11>I12', now, k, 50 * (1 - k / 100), 7))
+      })
+      const s = service.snapshot()['I11>I12']
+      expect(s.capacidade!).toBeCloseTo(1250, 0)
+      expect(s.densidade).toBe(80)
+      expect(s.velocidade).toBeCloseTo(10, 9)
+      expect(s.fluxo).toBe(420)
+      expect(s.amostras).toHaveLength(8)
+    })
 
     it('marks a route sem dados after 20 s without readings and keeps its model', () => {
       // per segment now (AD-022): the claim holds for each segment's model
@@ -121,13 +140,10 @@ describe('capacity', () => {
       for (let i = 1; i <= 20; i++) {
         const k = 5 * i
         now = i * 10_000
-        transport.deliver(
-          topic('U02'),
-          message('U02', now, [{ trecho: 'I12>I13', contagem: k, velocidadeMediaKmh: 50 * (1 - k / 100), comprimentoCobertoM: 1000, cobertura: 1 }]),
-        )
+        transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', now, k, 50 * (1 - k / 100)))
       }
       expect(service.snapshot()['I12>I13'].estado).toBe('congestionado')
-      now = 220_000 // the last (200 s) window has closed: all 20 samples in
+      now = 220_000 // 20 s after the last (200 s) publication: all 20 samples in
       expect(service.snapshot()['I12>I13'].estado).toBe('congestionado')
       const capacity = service.snapshot()['I12>I13'].capacidade
       expect(capacity).not.toBeNull()
@@ -137,11 +153,11 @@ describe('capacity', () => {
       expect(stale.capacidade).toBe(capacity)
       expect(stale.amostras).toHaveLength(20)
 
-      // a late, older reading does not rewind the validity
+      // a late, older publication does not rewind the validity
       now = 230_000
-      transport.deliver(topic('U02'), message('U02', 230_000, [{ trecho: 'I12>I13', contagem: 10, velocidadeMediaKmh: 45, comprimentoCobertoM: 1000, cobertura: 1 }]))
-      transport.deliver(topic('U09'), message('U09', 5_000, [{ trecho: 'I12>I13', contagem: 80, velocidadeMediaKmh: 10, comprimentoCobertoM: 1000, cobertura: 1 }]))
-      now = 240_000 // the 230 s window closes and reaches the model
+      transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', 230_000, 10, 45))
+      transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', 5_000, 80, 10))
+      now = 240_000
       expect(service.snapshot()['I12>I13'].estado).toBe('fluindo')
       expect(service.snapshot()['I12>I13'].velocidade).toBe(45)
     })
@@ -151,15 +167,13 @@ describe('capacity', () => {
       let now = 10_000
       const service = new CapacityService(transport, () => now)
       service.start()
-      const send = () =>
-        transport.deliver(topic('U02'), message('U02', 10_000, [{ trecho: 'I12>I13', contagem: 2, velocidadeMediaKmh: 40, comprimentoCobertoM: 220, cobertura: 0.55 }]))
+      const send = () => transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', 10_000, 9.1, 40))
       send()
       expect(service.snapshot()['I12>I13'].amostras).toHaveLength(0)
       now = 20_000
       expect(service.snapshot()['I12>I13'].amostras).toHaveLength(0)
       transport.setConnected(true)
-      send() // the 10 s window, received now that the broker is back
-      // received at 20 s, the 10 s window is already closed and reaches the model
+      send() // the 10 s publication, received now that the broker is back
       expect(service.snapshot()['I12>I13'].amostras).toHaveLength(1)
       expect(service.snapshot()['I12>I13'].estado).toBe('fluindo')
       transport.setConnected(false)
@@ -170,36 +184,28 @@ describe('capacity', () => {
   })
 
   describe('segments', () => {
-    const topic = (id: string) => `transito/sensores/${id}/telemetria`
-
-    it('learns per segment from porTrecho entries', () => {
+    it('learns per segment from each segment metrics', () => {
       const transport = new FakeTransport(true)
-      let now = 10_000
+      const now = 10_000
       const service = new CapacityService(transport, () => now)
       service.start()
-      transport.deliver(
-        topic('U02'),
-        message('U02', 10_000, [
-          // 2 cars on the 220 m the camera sees, 1 lane -> k 9.09 veh/km; at 40 km/h q 363.6 veh/h
-          { trecho: 'I12>I13', contagem: 2, velocidadeMediaKmh: 40, comprimentoCobertoM: 220, cobertura: 0.55 },
-          { trecho: 'I13>I14', contagem: 0, velocidadeMediaKmh: null, comprimentoCobertoM: 50, cobertura: 0.42 },
-        ]),
-      )
-      now = 20_000 // the window closes and reaches the models
+      // 9.09 veh/km at 40 km/h, 6 cars/min measured -> 360 veh/h
+      transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', 10_000, 9.09, 40, 6))
+      transport.deliver(metricsTopic('I13>I14'), metrics('I13>I14', 10_000, 0, null))
       const s = service.snapshot()
       expect(Object.keys(s)).toHaveLength(48)
       expect(s['I12>I13'].densidade).toBeCloseTo(9.09, 2)
       expect(s['I12>I13'].velocidade).toBe(40)
-      expect(s['I12>I13'].fluxo).toBeCloseTo(363.6, 1)
+      expect(s['I12>I13'].fluxo).toBe(360)
       expect(s['I12>I13'].amostras).toHaveLength(1)
       expect(s['I13>I14'].densidade).toBe(0)
       expect(s['I13>I14'].amostras).toHaveLength(0)
       expect(s['I13>I14'].estado).toBe('fluindo')
-      // a segment no sensor reports stays without data
+      // a segment with no metrics stays without data
       expect(s['I11>I12'].estado).toBe('sem dados')
       expect(s['I23>I24'].estado).toBe('sem dados')
-      // old route-based messages (porVia) are ignored
-      transport.deliver(topic('U02'), JSON.stringify({ ts: 10_000, porVia: [{ via: 'central', contagem: 9, velocidadeMediaKmh: 9, comprimentoM: 220 }] }))
+      // old telemetry messages are ignored
+      transport.deliver('transito/sensores/U02/telemetria', JSON.stringify({ sensorId: 'U02', ts: 10_000, porTrecho: [{ trecho: 'I12>I13', contagem: 9, velocidadeMediaKmh: 9, comprimentoCobertoM: 220, cobertura: 1 }] }))
       expect(service.snapshot()['I12>I13'].amostras).toHaveLength(1)
     })
   })

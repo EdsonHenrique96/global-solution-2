@@ -1,8 +1,8 @@
 import type { Segment } from '../sensors/segments'
-import { TELEMETRY_FILTER } from '../telemetry/TelemetryPublisher'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { ALERTS_TOPIC } from './AlertPublisher'
-import { agedConfidence, baseConfidence, FRESH_MS } from './confidence'
+import { agedConfidence, FRESH_MS } from './confidence'
+import { METRICS_FILTER } from './PlateMatcher'
 import { APPS_TOPIC } from '../apps/AppFleet'
 
 export const ALERT_MERGE_M = 50
@@ -22,43 +22,43 @@ export interface FusedAlert {
 
 /** The fused view of one road segment (spec item 4). */
 export interface FusedSegment {
-  /** Cars the camera counted in the last window (computer vision). */
+  /** Cars inside the segment now: entered minus left (RF12). */
   contagem: number | null
+  /** veh/km */
   densidade: number | null
+  /** Space mean speed of the last minute's plate pairs, km/h; null without a pair. */
   velocidadeMedia: number | null
+  /** Exits in the last minute. */
+  fluxoVeicMin: number | null
+  /** Plate pairs closed in the last minute. */
+  pares: number | null
   alertas: FusedAlert[]
   /** Demand from the drivers with a map app, scaled to all drivers, veh/h; null when unknown (AD-038). */
   demandaOD: number | null
-  /** Sensors behind the current values; empty when estimated. */
+  /** The camera pair behind the current values; empty when estimated. */
   fontes: string[]
   confianca: number
   atualizadoEm: number | null
   estimado: boolean
 }
 
-/** One sensor measurement the fusion picked for a segment and window. */
+/** One segment's metrics, as the capacity model learns from them. */
 export interface ChosenMeasurement {
   segmentId: string
   ts: number
-  contagem: number
+  densidadeVeicKm: number
   velocidadeMediaKmh: number | null
-  comprimentoCobertoM: number
-  cobertura: number
+  fluxoVeicMin: number
 }
 
-interface Reading {
-  sensorId: string
-  contagem: number
-  velocidadeMediaKmh: number | null
-  comprimentoCobertoM: number
-  cobertura: number
-}
-
-interface SegmentWindow {
+interface Metrics {
   ts: number
-  best: Reading
-  sources: Set<string>
-  delivered: boolean
+  ocupacao: number
+  densidadeVeicKm: number
+  velocidadeMediaKmh: number | null
+  fluxoVeicMin: number
+  pares: number
+  camerasPar: string[]
 }
 
 function distanceToPolyline(x: number, y: number, points: Segment['points']): number {
@@ -76,16 +76,16 @@ function distanceToPolyline(x: number, y: number, points: Segment['points']): nu
 }
 
 /**
- * Fuses, per road segment, what arrives on the broker: sensor readings (highest coverage wins
- * within a window), operator alerts (deduplicated) and the demand the map apps report. It only ever sees
- * aggregate messages - never the simulation or individual cars (LGPD).
+ * Fuses, per road segment, what arrives on the broker: the plate matcher's metrics (door 2),
+ * operator alerts (deduplicated) and the demand the map apps report. It only ever sees aggregate
+ * messages - never the simulation, individual cars or plate hashes (LGPD).
  */
 export class FusionService {
   private readonly transport: TelemetryTransport
   private readonly now: () => number
   private readonly segments: readonly Segment[]
-  private readonly windows = new Map<string, SegmentWindow>()
-  /** Windows replaced by a newer one before they were handed to the capacity model. */
+  private readonly latest = new Map<string, Metrics>()
+  /** Metrics not yet handed to the capacity model. */
   private pending: ChosenMeasurement[] = []
   private readonly alerts = new Map<string, FusedAlert[]>()
   private readonly demand = new Map<string, number | null>()
@@ -100,7 +100,7 @@ export class FusionService {
   start(): void {
     if (this.offs.length) return
     this.offs = [
-      this.transport.subscribe(TELEMETRY_FILTER, (_t, p) => this.onReading(p)),
+      this.transport.subscribe(METRICS_FILTER, (_t, p) => this.onMetrics(p)),
       this.transport.subscribe(ALERTS_TOPIC, (_t, p) => this.onAlert(p)),
       this.transport.subscribe(APPS_TOPIC, (_t, p) => this.onDemand(p)),
     ]
@@ -120,24 +120,20 @@ export class FusionService {
     }
   }
 
-  private onReading(payload: string): void {
+  private onMetrics(payload: string): void {
     const msg = FusionService.parse(payload)
-    if (!msg || typeof msg.ts !== 'number' || typeof msg.sensorId !== 'string' || !Array.isArray(msg.porTrecho)) return
-    for (const entry of msg.porTrecho as Record<string, unknown>[]) {
-      const { trecho, contagem, velocidadeMediaKmh, comprimentoCobertoM, cobertura } = entry ?? {}
-      if (typeof trecho !== 'string' || !this.segments.some((s) => s.id === trecho)) continue
-      if (typeof contagem !== 'number' || typeof comprimentoCobertoM !== 'number' || typeof cobertura !== 'number') continue
-      if (velocidadeMediaKmh !== null && typeof velocidadeMediaKmh !== 'number') continue
-      const reading: Reading = { sensorId: msg.sensorId, contagem, velocidadeMediaKmh, comprimentoCobertoM, cobertura }
-      const w = this.windows.get(trecho)
-      if (!w || msg.ts > w.ts) {
-        if (w && !w.delivered) this.pending.push({ segmentId: trecho, ts: w.ts, ...w.best })
-        this.windows.set(trecho, { ts: msg.ts, best: reading, sources: new Set([msg.sensorId]), delivered: false })
-      } else if (msg.ts === w.ts) {
-        w.sources.add(msg.sensorId)
-        if (reading.cobertura > w.best.cobertura) w.best = reading
-      }
-    }
+    if (!msg || typeof msg.trecho !== 'string' || !this.segments.some((s) => s.id === msg.trecho)) return
+    const { ts, ocupacao, densidadeVeicKm, velocidadeMediaKmh, fluxoVeicMin, pares, camerasPar } = msg
+    const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+    if (!num(ts) || !num(ocupacao) || !num(densidadeVeicKm) || !num(fluxoVeicMin) || !num(pares)) return
+    if (velocidadeMediaKmh !== null && !num(velocidadeMediaKmh)) return
+    if (!Array.isArray(camerasPar) || !camerasPar.every((c) => typeof c === 'string')) return
+    // a retained message from an earlier run can carry a time this run has not reached
+    if (ts > this.now()) return
+    const current = this.latest.get(msg.trecho)
+    if (current && ts <= current.ts) return
+    this.latest.set(msg.trecho, { ts, ocupacao, densidadeVeicKm, velocidadeMediaKmh, fluxoVeicMin, pares, camerasPar: [...camerasPar] })
+    this.pending.push({ segmentId: msg.trecho, ts, densidadeVeicKm, velocidadeMediaKmh, fluxoVeicMin })
   }
 
   private onAlert(payload: string): void {
@@ -189,20 +185,10 @@ export class FusionService {
     }
   }
 
-  /**
-   * Measurements not yet handed to the capacity model: one per segment and window, and only for
-   * closed windows - a newer window arrived, or a whole window (10 s) has passed - so a better
-   * reading of the same window that arrives later is never lost.
-   */
+  /** Metrics not yet handed to the capacity model, each publication once. */
   flush(): ChosenMeasurement[] {
-    const out: ChosenMeasurement[] = this.pending
+    const out = this.pending
     this.pending = []
-    const now = this.now()
-    for (const [segmentId, w] of this.windows) {
-      if (w.delivered || now < w.ts + FRESH_MS) continue
-      w.delivered = true
-      out.push({ segmentId, ts: w.ts, ...w.best })
-    }
     return out
   }
 
@@ -210,20 +196,22 @@ export class FusionService {
     const now = this.now()
     return Object.fromEntries(
       this.segments.map((s): [string, FusedSegment] => {
-        const w = this.windows.get(s.id)
-        const fresh = w !== undefined && now - w.ts <= FRESH_MS
+        const m = this.latest.get(s.id)
+        const fresh = m !== undefined && now - m.ts <= FRESH_MS
         return [
           s.id,
           {
-            contagem: w ? w.best.contagem : null,
-            densidade: w ? w.best.contagem / ((w.best.comprimentoCobertoM / 1000) * s.lanes) : null,
-            velocidadeMedia: w ? w.best.velocidadeMediaKmh : null,
-            alertas: (this.alerts.get(s.id) ?? []).map((a) => ({ ...a, ids: [...a.ids], membros: a.membros.map((m) => ({ ...m })) })),
+            contagem: m ? m.ocupacao : null,
+            densidade: m ? m.densidadeVeicKm : null,
+            velocidadeMedia: m ? m.velocidadeMediaKmh : null,
+            fluxoVeicMin: m ? m.fluxoVeicMin : null,
+            pares: m ? m.pares : null,
+            alertas: (this.alerts.get(s.id) ?? []).map((a) => ({ ...a, ids: [...a.ids], membros: a.membros.map((x) => ({ ...x })) })),
             demandaOD: this.demand.get(s.id) ?? null,
-            fontes: fresh ? [...w.sources].sort() : [],
-            confianca: w ? agedConfidence(baseConfidence(w.best.cobertura), now - w.ts) : 0,
-            atualizadoEm: w ? w.ts : null,
-            estimado: w !== undefined && !fresh,
+            fontes: fresh ? [...m.camerasPar] : [],
+            confianca: m ? agedConfidence(1, now - m.ts) : 0,
+            atualizadoEm: m ? m.ts : null,
+            estimado: m !== undefined && !fresh,
           },
         ]
       }),

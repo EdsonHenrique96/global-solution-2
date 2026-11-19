@@ -3,7 +3,6 @@ import { pointOnSegment } from '../sensors/segments'
 import type { SimulationEngine } from '../sim/SimulationEngine'
 import {
   BLOCKAGE_PICK_PX,
-  cameraGrabRadius,
   clampView,
   CORNER_PICK_PX,
   distanceToSegment,
@@ -45,8 +44,8 @@ const CLICK_SLOP_PX = 4
 
 /**
  * Fills its container with a canvas and redraws the simulation on every animation frame.
- * A camera+radar unit can be dragged with the mouse; it is dropped where the button is released.
- * Zoomed in, dragging the map moves the view.
+ * The cameras are fixed (AD-076): a press on one is a press on the map. Zoomed in, dragging the
+ * map moves the view.
  */
 export function SimulationCanvas(props: Props) {
   const { engine } = props
@@ -167,20 +166,6 @@ export function SimulationCanvas(props: Props) {
       else pickSegment(fit, point)
     }
 
-    let dragging: string | null = null
-    const onMove = (e: MouseEvent) => {
-      if (!dragging) return
-      engine.moveCamera(dragging, toNetwork(e).point)
-      draw()
-    }
-    const onUp = (e: MouseEvent) => {
-      onMove(e)
-      dragging = null
-      canvas.style.cursor = ''
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-
     // Zoomed in: a press on the map either clicks (released in place) or drags the view.
     let pan: { x: number; y: number; moved: boolean; start: MouseEvent } | null = null
     const onPanMove = (e: MouseEvent) => {
@@ -210,21 +195,6 @@ export function SimulationCanvas(props: Props) {
 
     const onDown = (e: MouseEvent) => {
       if (e.button !== 0) return
-      const { fit, point } = toNetwork(e)
-      const grab = cameraGrabRadius(fit.scale) / (fit.scale || 1)
-      const hit = engine
-        .getState()
-        .cameras.map((d) => ({ d, dist: Math.hypot(d.position.x - point.x, d.position.y - point.y) }))
-        .filter(({ dist }) => dist <= grab)
-        .sort((a, b) => a.dist - b.dist)[0]
-      if (hit) {
-        e.preventDefault()
-        dragging = hit.d.id
-        canvas.style.cursor = 'grabbing'
-        window.addEventListener('mousemove', onMove)
-        window.addEventListener('mouseup', onUp)
-        return
-      }
       if ((currentView()?.zoom ?? 1) > 1) {
         e.preventDefault()
         pan = { x: e.clientX, y: e.clientY, moved: false, start: e }
@@ -244,7 +214,7 @@ export function SimulationCanvas(props: Props) {
 
     const onHover = (e: MouseEvent) => {
       const report = propsRef.current.onHoverSegment
-      if (!report || dragging || pan) return
+      if (!report || pan) return
       const { fit, point } = toNetwork(e)
       const segment = nearestSegment(fit, point)
       const rect = canvas.getBoundingClientRect()
@@ -260,8 +230,6 @@ export function SimulationCanvas(props: Props) {
     frame = requestAnimationFrame(loop)
     return () => {
       window.removeEventListener('resize', resize)
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
       window.removeEventListener('mousemove', onPanMove)
       window.removeEventListener('mouseup', onPanUp)
       canvas.removeEventListener('mousedown', onDown)

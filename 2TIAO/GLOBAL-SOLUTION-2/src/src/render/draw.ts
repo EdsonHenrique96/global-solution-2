@@ -215,11 +215,6 @@ export function distanceToSegment(p: Point, a: Point, b: Point): number {
 /** Screen radius (px) within which a click hits an accident marker. */
 export const BLOCKAGE_PICK_PX = 14
 
-/** Screen radius (px) within which a press grabs a unit. */
-export function cameraGrabRadius(scale: number): number {
-  return Math.max(15, 12 * scale)
-}
-
 const unit = (a: Point, b: Point) => {
   const len = Math.hypot(b.x - a.x, b.y - a.y) || 1
   return { x: (b.x - a.x) / len, y: (b.y - a.y) / len }
