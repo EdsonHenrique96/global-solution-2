@@ -60,6 +60,7 @@ Fora do Docker, o proxy escuta em `127.0.0.1:8787`.
 | --- | --- | --- |
 | `VITE_MQTT_URL` | `src` | `ws://localhost:9001` |
 | `ANTHROPIC_API_KEY` | `server` | sem padrão (sem ela, o painel usa o modo sem LLM) |
+| `ANTHROPIC_AUTH_TOKEN` | `server` | alternativa à chave, só fora do Docker (o `docker-compose.yml` repassa apenas `ANTHROPIC_API_KEY`) |
 | `PORT` | `server` | `8787` |
 | `HOST` | `server` | `127.0.0.1` (no container, `0.0.0.0`) |
 

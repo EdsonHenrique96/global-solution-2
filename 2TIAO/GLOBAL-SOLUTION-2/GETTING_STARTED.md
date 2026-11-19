@@ -6,9 +6,9 @@ serve a ferramenta, o que ela faz e quais conceitos ela usa**.
 ## Propósito
 
 Painel de gestão de tráfego para o **operador da central de trânsito**. A ferramenta simula o
-trânsito de um bairro, mede a rede com câmeras fixas e decide como agir quando há
-congestionamento: ajusta os semáforos e desvia **só uma parte** dos motoristas para uma rota
-alternativa.
+trânsito de uma grade de 4×4 ruas reais dos Jardins, em São Paulo, mede a rede com unidades de
+câmera e radar e decide como agir quando há congestionamento: ajusta os semáforos e avisa **só
+uma parte** dos motoristas que usam app de mapa, sugerindo um caminho mais rápido.
 
 **Hipótese do TCC:** notificar apenas uma parcela calculada dos motoristas reduz o tempo médio de
 viagem e as emissões de CO₂ mais do que notificar todos ou não fazer nada.
@@ -22,14 +22,14 @@ O ciclo contínuo de monitoramento e gestão inteligente do tráfego:
 
 ```mermaid
 flowchart TD
-    coleta["<b>1. Coleta</b><br/>Câmeras fixas (IoT) medem contagem<br/>e velocidade por trecho via MQTT"]
+    coleta["<b>1. Coleta</b><br/>Unidades câmera + radar (IoT) medem contagem<br/>e velocidade por trecho via MQTT"]
     monitora["<b>2. Monitoramento em tempo real</b><br/>Fusão dos dados por trecho: velocidade,<br/>fluxo, demanda e confiança no mapa"]
     detecta{"<b>3. Detecção</b><br/>Congestionamento, acidente<br/>ou rota saturada?"}
     decide["<b>4. Decisão inteligente</b><br/>Algoritmos calculam o desvio e os semáforos;<br/>o agente LLM orquestra e explica"]
     supervisao{"<b>5. Supervisão humana</b><br/>Ação de baixo impacto?"}
     operador["Operador aprova<br/>ou rejeita no painel"]
     atua["<b>6. Gestão do tráfego</b><br/>Aplica desvio e semáforos adaptativos"]
-    comunica["<b>7. Comunicação</b><br/>Notifica motoristas<br/>com a rota alternativa"]
+    comunica["<b>7. Comunicação</b><br/>Avisa, pelo app de mapa, os motoristas<br/>com um caminho ≥ 10% mais rápido"]
     avalia["<b>8. Avaliação</b><br/>Métricas de tempo de viagem,<br/>fila e emissões"]
 
     coleta --> monitora --> detecta
@@ -45,12 +45,18 @@ flowchart TD
 
 Por dentro, cada ciclo passa por:
 
-1. A **simulação** move os carros pela malha (origem → 3 rotas → destino, 4 semáforos).
-2. As **câmeras fixas** leem contagem e velocidade por trecho, com ruído, e publicam via **MQTT**.
-3. A **fusão** junta as leituras por trecho e calcula a confiança de cada estimativa.
-4. O **modelo de capacidade** aprende quanto cada trecho aguenta e calcula a folga.
-5. A **decisão** ajusta semáforos e calcula quantos carros desviar.
-6. O **agente LLM** aciona essas decisões por ferramentas e explica cada uma num log. Ações acima
+1. A **simulação** move os carros pela grade de 4×4 esquinas (48 trechos, um por sentido de
+   cada quarteirão). As viagens começam e terminam nas esquinas da borda, e cada esquina tem um
+   semáforo de duas fases (alamedas e ruas).
+2. As **unidades câmera + radar** leem contagem (câmera) e velocidade (radar) por trecho, com
+   ruído, e publicam via **MQTT**.
+3. Os **apps de mapa** (Waze, Google Maps, Outros) publicam só agregados dos seus motoristas:
+   quantos estão ativos e a demanda por trecho.
+4. A **fusão** junta leituras, alertas e demanda por trecho e calcula a confiança de cada estimativa.
+5. O **modelo de capacidade** aprende quanto cada trecho aguenta e calcula a densidade e a folga.
+6. A **decisão** ajusta os semáforos e, num trecho congestionado, escolhe quantos motoristas
+   avisar. Só recebem o aviso os que usam app e têm um caminho pelo menos 10% mais rápido.
+7. O **agente LLM** aciona essas decisões por ferramentas e explica cada uma num log. Ações acima
    dos limites esperam a aprovação do operador.
 
 Os números vêm sempre dos algoritmos determinísticos. O LLM não calcula nada: ele orquestra e
@@ -60,20 +66,21 @@ explica.
 
 ```mermaid
 flowchart TB
-    operador(["<b>Operador da central de trânsito</b><br/>[Pessoa]<br/>Monitora a rede, cria acidentes,<br/>ajusta câmeras e aprova ações grandes"])
+    operador(["<b>Operador da central de trânsito</b><br/>[Pessoa]<br/>Monitora a rede, cria incidentes,<br/>ajusta câmeras e aprova ações grandes"])
     motorista(["<b>Motorista</b><br/>[Pessoa]<br/>Cidadão beneficiado: recebe<br/>a rota alternativa"])
 
     sistema["<b>Sistema de gestão de tráfego</b><br/>[Sistema de software]<br/>Monitora o trânsito em tempo real e<br/>decide desvios e semáforos adaptativos"]
 
-    cameras["<b>Câmeras fixas (IoT)</b><br/>[Sistema externo, simulado no MVP]<br/>Contagem e velocidade por trecho"]
-    apps["<b>Apps de navegação</b><br/>[Sistema externo, simulado no MVP]<br/>Waze, Google Maps etc."]
+    cameras["<b>Unidades câmera + radar (IoT)</b><br/>[Sistema externo, simulado no MVP]<br/>Contagem e velocidade por trecho"]
+    apps["<b>Apps de navegação</b><br/>[Sistema externo, simulado no MVP]<br/>Waze, Google Maps e outros"]
     llm["<b>API da Anthropic</b><br/>[Sistema externo]<br/>LLM que orquestra e explica as decisões"]
 
     operador -- "Monitora e aprova ações<br/>[Navegador]" --> sistema
     cameras -- "Envia leituras por trecho<br/>[MQTT]" --> sistema
     sistema -- "Pede orquestração e explicação<br/>[HTTPS]" --> llm
-    sistema -- "Envia notificação de desvio" --> apps
-    apps -- "Mostra a rota alternativa" --> motorista
+    apps -- "Envia agregados dos motoristas ativos<br/>[MQTT]" --> sistema
+    sistema -- "Envia aviso de desvio por app" --> apps
+    apps -- "Mostra o caminho sugerido" --> motorista
 
     classDef person fill:#08427b,stroke:#052e56,color:#fff
     classDef system fill:#1168bd,stroke:#0b4884,color:#fff
@@ -85,14 +92,14 @@ flowchart TB
 
 ## Arquitetura (C4, nível 2: containers)
 
-No MVP, as câmeras e a notificação aos motoristas são simuladas dentro do painel.
+No MVP, as unidades câmera + radar e os apps de mapa são simulados dentro do painel.
 
 ```mermaid
 flowchart LR
     operador(["<b>Operador de tráfego</b><br/>[Pessoa]<br/>Acompanha o mapa, aprova<br/>ou rejeita as ações do agente"])
 
     subgraph sistema["Sistema de gestão de tráfego (simulação)"]
-        painel["<b>Painel</b><br/>[Container: React + Vite, navegador]<br/>Simulação (IDM, semáforos), sensores,<br/>fusão, modelo de capacidade,<br/>desvio, agente e métricas"]
+        painel["<b>Painel</b><br/>[Container: React + Vite, navegador]<br/>Simulação (IDM, semáforos, incidentes),<br/>sensores, apps de mapa, fusão,<br/>modelo de capacidade, desvio,<br/>agente e métricas"]
         broker[("<b>Broker MQTT</b><br/>[Container: Mosquitto 2, Docker]<br/>MQTT :1883 · WebSocket :9001")]
         proxy["<b>Proxy do agente LLM</b><br/>[Container: Node.js 24 + TypeScript, Docker]<br/>POST /api/agente/turno<br/>:8787 · guarda a chave da API"]
     end
@@ -100,7 +107,7 @@ flowchart LR
     llm["<b>API da Anthropic</b><br/>[Sistema externo]<br/>Modelo claude-opus-5-5"]
 
     operador -- "Usa<br/>[HTTP, :5173]" --> painel
-    painel -- "Publica telemetria, alertas,<br/>demanda OD e notificações<br/>[MQTT sobre WebSocket]" --> broker
+    painel -- "Publica telemetria, alertas,<br/>agregados dos apps e avisos<br/>[MQTT sobre WebSocket]" --> broker
     broker -- "Entrega as mensagens assinadas<br/>[MQTT sobre WebSocket]" --> painel
     painel -- "Pede um turno do agente<br/>[HTTP/JSON, /api via Vite]" --> proxy
     proxy -- "Chama o modelo com as tools<br/>[HTTPS, SDK]" --> llm
@@ -117,68 +124,82 @@ Tópicos MQTT:
 
 | Tópico | Quem publica | Quem assina |
 | --- | --- | --- |
-| `transito/sensores/{id}/telemetria` | sensores simulados (`TelemetryPublisher`) | fusão, painel de telemetria |
+| `transito/sensores/{id}/telemetria` | unidades câmera + radar (`TelemetryPublisher`) | fusão, painel de telemetria |
 | `transito/alertas` | `AlertPublisher` | fusão |
-| `transito/demanda/od` | `OdAggregator` | fusão |
-| `transito/notificacoes` | agente (`AgentRunner`) | motoristas (simulado) |
+| `transito/apps/ativos` | apps de mapa (`AppFleet`), a cada 10 s | fusão (demanda por trecho), painel dos apps |
+| `transito/notificacoes/{app}` | `AppNotifier` (`waze`, `google-maps`, `outros`) | painel dos apps, `Simulation` |
 
 O broker e o proxy são opcionais: sem o broker, o transporte fica offline; sem o proxy ou sem a chave, o agente usa as regras locais ("modo sem LLM").
 
 ## Funcionalidades
 
-### Mapa
-- Trechos coloridos pelo estado: fluindo, carregado ou congestionado.
-- Camada **Cobertura**: cones das câmeras e trechos coloridos pela % coberta; os descobertos ficam
-  destacados.
-- Tooltip por trecho: sensores, fontes, confiança, idade do dado, alertas e demanda.
+O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Relatórios**.
+
+### Mapa ao vivo
+- Camadas que ligam e desligam: **Densidade**, **Câmeras** e **Incidentes**. Zoom e arrasto.
+- Trechos coloridos pela densidade (fluxo ÷ capacidade aprendida): livre, moderado, intenso ou
+  crítico. Trechos sem capacidade ainda aparecem como "aprendendo"; sem leitura há 20 s, "sem dado".
+- Um rótulo por rua com o pior trecho dela, em carros/min.
+- Ícones das câmeras (online ou offline) e marcadores de incidentes com nota.
+- Ao clicar numa via: detalhes do trecho e o fluxo e a velocidade das últimas 2 h.
+- Ranking das ruas mais saturadas, cards com métricas reais e lista de incidentes ativos.
 - Os carros são simulados, mas não aparecem no mapa: o foco são as métricas.
 
-### Ações do operador
-- **Acidente:** ativar o modo e clicar numa via cria um bloqueio (2 min por padrão).
-- **Câmeras:** adicionar, remover e ajustar posição, direção, ângulo e alcance. A cobertura se
+### Incidentes (criados no mapa)
+- **Acidente:** clicar numa via bloqueia o trecho (2 min por padrão); clicar no bloqueio libera.
+- **Obra:** limita o trecho a 20 km/h por 10 min.
+- **Semáforo intermitente:** a esquina fica em amarelo piscante por 10 min, e os carros passam
+  em revezamento.
+- Congestionamentos com desvio ativo também entram no log de incidentes, com histórico.
+
+### Câmeras
+- Adicionar, remover e ajustar posição, direção, ângulo e alcance das unidades. A cobertura se
   recalcula na hora.
-- **Semáforo adaptativo:** botão para ligar e desligar.
-- **Aprovação:** aprovar ou rejeitar os cards de ação do agente.
-- **Ruído:** ajustar o ruído da leitura das câmeras.
+- Status da telemetria MQTT por unidade.
 
-### Métricas em tempo real
-- Tempo médio de viagem, fila total, % desviado e gráfico dos últimos 10 min.
-- Curva de capacidade do trecho selecionado.
-- Status da telemetria MQTT.
-
-### Agente
-- Log com a explicação de cada decisão.
-- Cards de aprovação para ações grandes.
-- Notificação simulada ao motorista, no app de mapa que ele já usa (Waze, Google Maps etc.).
+### Semáforos (controle da operação)
+- Volume de carros, ruído das leituras, **Desvio parcial** e **Controle de semáforos**
+  (adaptativo) liga/desliga.
+- Agente: log com a explicação de cada decisão e cards para aprovar ou rejeitar ações grandes.
 - **Modo sem LLM:** sem chave de API ou com a API fora do ar, as mesmas regras rodam com
   explicações por modelo de texto.
+- Painel dos apps: motoristas ativos por app, avisos enviados e motoristas fora do alcance
+  (no trecho, mas sem app).
 
-### Experimentos
-- Roda 3 cenários com o mesmo acidente e a mesma demanda: **sem sistema**, **notificar todos** e
-  **desvio parcial**.
-- Repetições com semente (resultado reproduzível) e escolha da duração do acidente e da demanda.
-- Mostra média e desvio-padrão, um gráfico comparativo e exporta **CSV** para o TCC.
+### Relatórios
+- Tempo médio de viagem, fila total, % desviado e gráfico dos últimos 10 min.
+- Curva de capacidade do trecho selecionado.
+- Histórico de incidentes.
+- **Experimentos:** roda 3 cenários com o mesmo acidente (trecho `I12>I13`, aos 5 min de uma
+  rodada de 15 min) e a mesma demanda: **sem sistema**, **notificar todos** e **desvio parcial**.
+  Repetições com semente (resultado reproduzível), duração do acidente (2 ou 5 min) e demanda
+  (10-20 carros/min). Mostra média e desvio-padrão, um gráfico comparativo e exporta **CSV** para
+  o TCC.
 
 ## Conceitos
 
 | Conceito | O que é |
 | --- | --- |
-| **Trecho** | Pedaço de via entre dois nós da malha (são 11). É a unidade de decisão: capacidade, estado e desvio são por trecho. |
-| **Câmera fixa** | Sensor com campo de visão em cone (posição, direção, ângulo e alcance). Só conta carros dentro do cone. |
+| **Grade** | 4 alamedas (Santos, Jaú, Itu, Franca) × 4 ruas (Consolação, Bela Cintra, Haddock Lobo, Augusta), com as 16 esquinas tiradas do OpenStreetMap. |
+| **Trecho** | Um quarteirão num sentido, entre duas esquinas (são 48, com id como `I12>I13`). É a unidade de decisão: capacidade, estado e desvio são por trecho. |
+| **Unidade câmera + radar** | Poste com uma câmera, que conta os carros no seu cone (posição, direção, ângulo e alcance), e um radar de feixe estreito (12°, 150 m) na mesma direção, que mede a velocidade com metade do ruído. Começam 12 unidades; metade dos trechos fica sem câmera. |
 | **Cobertura** | Fração do trecho dentro do cone de uma câmera. Abaixo de 0,3, a câmera não mede o trecho. |
 | **Janela** | Período de 10 s em que a câmera agrega as leituras antes de publicar. |
-| **MQTT** | Protocolo de mensagens IoT. As câmeras publicam no broker Mosquitto; a fusão assina os tópicos. |
-| **Fusão** | Junta câmeras, alertas e demanda num estado único por trecho. Se duas câmeras veem o mesmo trecho, vale a de maior cobertura. Alertas a menos de 50 m viram um só. |
+| **MQTT** | Protocolo de mensagens IoT. As unidades e os apps publicam no broker Mosquitto; a fusão assina os tópicos. |
+| **Fusão** | Junta unidades, alertas e demanda num estado único por trecho. Se duas câmeras veem o mesmo trecho, vale a de maior cobertura. Alertas a menos de 50 m viram um só. |
 | **Estimado** | Trecho sem câmera no momento: usa a última medição e fica marcado como "estimado". |
 | **Confiança** | Quanto confiar na estimativa: sobe com a cobertura e cai com a idade do dado. |
-| **Demanda OD** | Viagens agregadas de origem para destino, publicadas a cada 60 s. Células com menos de 5 viagens são descartadas (LGPD: a fusão nunca vê carros individuais). |
+| **Apps de mapa** | 60% dos motoristas usam um app (Waze 40%, Google Maps 50%, Outros 10%). A cada 10 s, os apps publicam só agregados: motoristas ativos por app e por trecho e a demanda por trecho no último minuto, escalada para todos os motoristas (LGPD: a fusão nunca vê viagens ou posições). |
 | **Diagrama fundamental** | Relação entre fluxo (q), densidade (k) e velocidade (v) do tráfego: q = k × v. |
 | **Capacidade** | Fluxo máximo do trecho. É aprendido online pelo modelo de Greenshields (a velocidade cai em linha reta com a densidade) com mínimos quadrados recursivos (RLS): q_max = v_f × k_j / 4. |
-| **Estado** | Velocidade média ÷ velocidade regulamentar: **fluindo** ≥ 80%, **carregado** 50-80%, **congestionado** < 50%. |
-| **Folga** | Capacidade − fluxo atual. É o que a rota alternativa ainda absorve. |
-| **Desvio parcial** | Desvia N = min(excesso da rota congestionada, folga da alternativa × fator de segurança) carros. Só os que ainda não entraram na rota são desviados. |
-| **Histerese** | Evita o liga-desliga: o desvio só começa depois de 5 janelas seguidas de congestionamento (50 s) e só para abaixo de um limite mais baixo. |
-| **Semáforo adaptativo coordenado** | Verde = 20 s + 2 × (fila da aproximação − fila média), limitado a 15-30 s. O vermelho vai até o próximo início do ciclo de 43 s, com pelo menos 10 s, para manter a onda verde. |
+| **Estado** | Velocidade média ÷ velocidade regulamentar: **fluindo** ≥ 80%, **carregado** 50-80%, **congestionado** < 50%. É o que a decisão usa. |
+| **Densidade** | O que o mapa mostra: fluxo ÷ capacidade. **Livre** < 50%, **moderado** 50-74%, **intenso** 75-89%, **crítico** ≥ 90% ou velocidade abaixo de metade do limite. |
+| **Folga** | Capacidade − fluxo atual. É o que o caminho alternativo ainda absorve. |
+| **Desvio parcial** | N = min(excesso do trecho congestionado, folga × 0,8) e p = min(N ÷ demanda, 50%). A cada janela, avisa no máximo p × candidatos, os de maior ganho primeiro. Candidato é quem usa app e ainda vai passar pelo trecho; só recebe o aviso se o caminho alternativo levar no máximo 90% do tempo atual. "Notificar todos" avisa todos os que passam nesse teste. |
+| **Fora do alcance** | Carros no trecho congestionado sem app (contagem da câmera − motoristas dos apps): o sistema não consegue avisá-los. |
+| **Histerese** | Evita o liga-desliga: o desvio só começa depois de 5 janelas seguidas de congestionamento (50 s), só para depois de 2 janelas a 35 km/h ou mais e nunca muda menos de 30 s depois da última mudança. |
+| **Semáforo** | Cada esquina alterna duas fases: alamedas e ruas. No modo fixo, 20 s de verde e 3 s de amarelo por fase, com uma onda verde de 10 s por quarteirão. |
+| **Semáforo adaptativo coordenado** | Em cada esquina, o verde de uma fase = 20 s + 2 × (fila da fase − fila média das duas fases), limitado a 15-30 s e calculado quando a fase começa. |
 | **Autonomia** | Desvio de até 30% dos carros e verde de 20 ± 10 s são aplicados direto. Acima disso, a ação vira um card para o operador aprovar. |
 | **Emissão de CO₂** | Por carro, a cada tick: em movimento, g/km conforme a velocidade; parado, g/s de marcha lenta. |
 | **Semente** | Número que fixa a aleatoriedade das chegadas. Mesma semente = mesma rodada, o que permite comparar cenários de forma justa. |
@@ -200,15 +221,16 @@ normalizar após o acidente e saturação da rota alternativa (% da capacidade).
 
 | Pasta | Conteúdo |
 | --- | --- |
-| `sim/` | Motor da simulação, IDM, semáforos, acidentes |
-| `sensors/` | Trechos, câmeras, índice de cobertura, leitura por janela |
+| `sim/` | Grade da cidade, grafo, motor da simulação, IDM, semáforos, incidentes (acidente, obra, intermitente) |
+| `sensors/` | Trechos, unidades câmera + radar, índice de cobertura, leitura por janela |
 | `telemetry/` | Transporte MQTT |
-| `fusion/` | Estado fundido, confiança, alertas, demanda OD |
+| `apps/` | Apps de mapa: sorteio do app, agregados dos motoristas ativos, avisos por app |
+| `fusion/` | Estado fundido, confiança, alertas |
 | `capacity/` | Modelo de capacidade (Greenshields + RLS) |
-| `decision/` | Desvio parcial, métricas |
-| `agent/` | Agente LLM, política de autonomia, fila de aprovação, log |
+| `decision/` | Desvio parcial (histerese), escolha de quem avisar, log de incidentes, histórico por trecho, métricas |
+| `agent/` | Agente LLM, ferramentas, política de autonomia, fila de aprovação, log |
 | `experiments/` | Cenários, emissão de CO₂, CSV |
-| `render/` | Mapa e painéis |
+| `render/` | Painel (abas), mapa, níveis de densidade, rótulos e painéis |
 
 ## Fora do MVP
 
