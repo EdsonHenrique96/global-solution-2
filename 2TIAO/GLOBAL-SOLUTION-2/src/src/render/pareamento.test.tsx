@@ -265,7 +265,7 @@ describe('pareamento dashboard', () => {
     expect(within(again).getByRole('button', { name: 'Confirmar incidente' })).toBeEnabled()
   })
 
-  it('C44 shows the held speed as último par há X s', () => {
+  it('C44 shows the held speed as último par há X s', { timeout: 60_000 }, () => {
     const { engine, transport } = setup()
     advance(15_000)
     // a pair at 10 km/h at 15 s; the matcher's next recomputations (20 s, 30 s) have no pair

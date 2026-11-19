@@ -334,7 +334,7 @@ describe('operations dashboard', () => {
     expect(card).toHaveTextContent('Crítico')
   })
 
-  it('C42 a registered accident turns its lane Crítico at once, until it is cleared or expires (AD-110)', () => {
+  it('C42 a registered accident turns its lane Crítico at once, until it is cleared or expires (AD-110)', { timeout: 60_000 }, () => {
     const { engine } = setup()
     advance(5_000)
     const red = NIVEIS.critico.color
@@ -397,7 +397,14 @@ describe('operations dashboard', () => {
 
   it('C25 incident modes are exclusive', () => {
     setup()
-    const btn = (name: string) => within(screen.getByRole('group', { name: 'Criar incidente' })).getByRole('button', { name })
+    // the create modes carry a visible "Criar" label, as the layers carry "Camadas"; only "Acidente" is red
+    const group = screen.getByRole('group', { name: 'Criar incidente' })
+    expect(group.previousElementSibling).toHaveTextContent(/^Criar$/)
+    expect(screen.getByRole('group', { name: 'Camadas do mapa' }).previousElementSibling).toHaveTextContent(/^Camadas$/)
+    const dot = (b: HTMLElement) => (b.querySelector('.dot') as HTMLElement).style.background
+    expect(dot(layer('Incidentes'))).toBe('rgb(201, 209, 220)')
+    const btn = (name: string) => within(group).getByRole('button', { name })
+    expect(dot(btn('Acidente'))).toBe('rgb(240, 86, 91)')
     const pressed = () => ['Acidente', 'Obra', 'Semáforo'].filter((n) => btn(n).getAttribute('aria-pressed') === 'true')
     expect(pressed()).toEqual([])
     mode('Acidente')

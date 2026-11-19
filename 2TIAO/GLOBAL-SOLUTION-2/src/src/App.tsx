@@ -73,6 +73,9 @@ function agentSnapshot(agent: AgentRunner) {
 /** The segment shown first: Al. Santos, R. Bela Cintra → R. Haddock Lobo. */
 const FIRST_SEGMENT = 'I12>I13'
 
+/** The incidents layer's dot: a neutral light grey, so it does not read as the red "Acidente" mode. */
+export const LAYER_INCIDENTS_DOT = '#C9D1DC'
+
 const MODES: readonly { id: IncidentMode; label: string; color: string }[] = [
   { id: 'acidente', label: 'Acidente', color: NIVEIS.critico.color },
   { id: 'obra', label: 'Obra', color: NIVEIS.intenso.color },
@@ -170,7 +173,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   // one level per segment, the simulation's own, for the map, the ranking, the tooltip, the selected
   // road and the decision alike (AD-082) - a confirmed incident (AD-104) or a registered accident
   // (AD-110) shows as Crítico here too
-  const readings = sim.readings()
+  const readings = sim.readingsFrom(estimates, fused, now)
   const readingList = Object.values(readings)
   const streets = streetRows(state.segments, readings)
   // the map shows "Em verificação" while a warning is open (AD-100); the decision reads the level
@@ -309,7 +312,8 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
                         [
                           ['density', 'Densidade', NIVEIS.intenso.color],
                           ['cameras', 'Câmeras', '#7FB5FF'],
-                          ['incidents', 'Incidentes', NIVEIS.critico.color],
+                          // neutral: red belongs to "Acidente", which creates one
+                          ['incidents', 'Incidentes', LAYER_INCIDENTS_DOT],
                         ] as const
                       ).map(([key, label, dot]) => (
                         <button key={key} type="button" aria-pressed={layers[key]} onClick={() => setLayers((l) => ({ ...l, [key]: !l[key] }))}>
@@ -319,6 +323,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
                       ))}
                     </div>
                     <span className="divider" />
+                    <span className="muted">Criar</span>
                     <div className="toggles" role="group" aria-label="Criar incidente">
                       {MODES.map((m) => (
                         <button key={m.id} type="button" className="mode" aria-pressed={mode === m.id} onClick={() => setMode((cur) => (cur === m.id ? null : m.id))}>

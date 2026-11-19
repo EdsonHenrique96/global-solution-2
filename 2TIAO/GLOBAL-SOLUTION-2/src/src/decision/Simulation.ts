@@ -1,6 +1,8 @@
 import { AppFleet } from '../apps/AppFleet'
 import { AppNotifier, NOTIFICATIONS_FILTER } from '../apps/AppNotifier'
+import type { Estimate } from '../capacity/CapacityModel'
 import { CapacityService } from '../capacity/CapacityService'
+import type { FusedSegment } from '../fusion/FusionService'
 import { wireAlerts } from '../fusion/AlertPublisher'
 import { monitoredSegments, PlateMatcher } from '../fusion/PlateMatcher'
 import { CAMERA_STATUS_FILTER, wirePlateCameras } from '../sensors/PlateCamera'
@@ -219,9 +221,15 @@ export class Simulation {
 
   /** Every segment's reading and level now, by the one classifier (AD-082). */
   readings(): Record<string, SegmentReading> {
-    const t = this.engine.getState().timeMs
-    const estimates = this.capacity.snapshot()
-    const fused = this.capacity.fusion.state()
+    return this.readingsFrom(this.capacity.snapshot(), this.capacity.fusion.state(), this.engine.getState().timeMs)
+  }
+
+  /**
+   * The same as readings(), from estimates and fused state the caller already holds (the panel keeps
+   * them per render): the classifier's level with the confirmed incidents (AD-104) and the
+   * registered accidents (AD-110) as Crítico.
+   */
+  readingsFrom(estimates: Record<string, Estimate>, fused: Record<string, FusedSegment>, t: number): Record<string, SegmentReading> {
     const accidents = this.reportedAccidents()
     return Object.fromEntries(
       this.capacity.segments.map((s) => {
