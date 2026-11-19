@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { NIVEL_ORDER, readSegment, type Nivel } from '../render/levels'
+import { eventsTopic, type PlateEvent } from '../sensors/PlateCamera'
 import { DEFAULT_RATE_PER_MINUTE, QUEUE_SPEED_MS, SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
 import { Simulation } from './Simulation'
@@ -108,6 +109,34 @@ describe('v1 demo', () => {
     // the diversion never reads the warning: the controller only gets levels and capacity figures
     const src = (await import('node:fs')).readFileSync(`${process.cwd()}/src/decision/DiversionController.ts`, 'utf8')
     expect(src).not.toMatch(/possivelIncidente|anomal/)
+  })
+
+  it('C38 a full block warns within 70 s of the first stuck car', { timeout: 300_000 }, () => {
+    // the seeds measured when AD-097 was decided: 67.1, 68.9 and 66.8 s
+    for (const seed of [1001, 1002, 1003]) {
+    const transport = new FakeTransport(true)
+    const sim = new Simulation({ engine: new SimulationEngine({ ratePerMinute: DEFAULT_RATE_PER_MINUTE, seed }), transport })
+    sim.start()
+    const id = 'I12>I13'
+    const entries: { hash: string; ts: number }[] = []
+    const exitAt = new Map<string, number>()
+    transport.subscribe(eventsTopic(id), (_t, payload) => {
+      const e = JSON.parse(payload) as PlateEvent
+      if (e.papel === 'entrada') entries.push({ hash: e.placaHash, ts: e.ts })
+      else exitAt.set(e.placaHash, e.ts)
+    })
+    for (let t = 0; t < FIFTEEN_MIN; t += TICK_MS) sim.tick()
+    const block = sim.engine.addBlockage(id, sim.engine.segment(id)!.length / 2, 120_000)
+    let warned: number | null = null
+    while (sim.engine.getState().timeMs < block.endsAtMs + 60_000) {
+      sim.tick()
+      if (warned === null && sim.capacity.fusion.state()[id].possivelIncidente) warned = sim.engine.getState().timeMs
+    }
+    // the first stuck car: the first to enter after the block that leaves only once it is lifted
+    const stuck = entries.find((e) => e.ts >= FIFTEEN_MIN && (exitAt.get(e.hash) ?? Infinity) >= block.endsAtMs)!
+    expect(warned, `seed ${seed}`).not.toBeNull()
+    expect(warned! - stuck.ts, `seed ${seed}`).toBeLessThanOrEqual(70_000)
+    }
   })
 
   it('C40 low traffic still shows speed flow density and a level', { timeout: 180_000 }, () => {
