@@ -20,17 +20,20 @@ import {
   versusHourAgo,
   type SegmentReading,
 } from './levels'
+import { ruleClassifier } from '../capacity/SegmentClassifier'
 
 const NOW = 100_000
 
 const estimate = (fluxo: number, capacidade: number | null): Estimate => ({
-  estado: 'fluindo',
+  semDados: false,
   densidade: 10,
   velocidade: 40,
   fluxo,
   vf: null,
   kj: null,
-  capacidade,
+  // a segment with data always has a capacity now (AD-087); null stands for an absent one, which the classifier still handles
+  capacidade: capacidade as number,
+  capacidadeFonte: 'configurada',
   folga: null,
   amostras: [],
 })
@@ -41,6 +44,7 @@ const fused = (velocidadeMedia: number | null, atualizadoEm: number | null = NOW
   velocidadeMedia,
   fluxoVeicMin: null,
   pares: null,
+  possivelIncidente: false,
   alertas: [],
   demandaOD: null,
   fontes: ['C01E', 'C01S'],
@@ -79,14 +83,21 @@ describe('levels', () => {
     expect(readSegment('I11>I12', estimate(882, 1800), fused(45), NOW)).toMatchObject({ nivel: 'livre', pct: 49 })
   })
 
-  it('C8 a slow segment is critical whatever its pct', () => {
-    expect(nivelOf(20, 24)).toBe('critico')
-    expect(nivelOf(20, 25)).toBe('livre')
-    expect(nivelOf(80, 24)).toBe('critico')
-    expect(readSegment('I11>I12', estimate(360, 1800), fused(24), NOW)).toMatchObject({ nivel: 'critico', pct: 20 })
+  it('C32 classifies critical below 15 km/h', () => {
+    expect(nivelOf(20, 14)).toBe('critico')
+    expect(nivelOf(20, 15)).toBe('livre')
+    expect(nivelOf(80, 14)).toBe('critico')
+    expect(nivelOf(92, 40)).toBe('critico')
+    // the same through the one classifier the map, the panels and the diversion use (AD-082)
+    expect(ruleClassifier.classify({ fluxo: 360, capacidade: 1800, velocidade: 14, densidade: 10 })).toBe('critico')
+    expect(ruleClassifier.classify({ fluxo: 360, capacidade: 1800, velocidade: 15, densidade: 10 })).toBe('livre')
+    expect(ruleClassifier.classify({ fluxo: 1440, capacidade: 1800, velocidade: 14, densidade: 10 })).toBe('critico')
+    expect(ruleClassifier.classify({ fluxo: 1656, capacidade: 1800, velocidade: 40, densidade: 10 })).toBe('critico')
+    expect(readSegment('I11>I12', estimate(360, 1800), fused(14), NOW)).toMatchObject({ nivel: 'critico', pct: 20 })
+    expect(readSegment('I11>I12', estimate(360, 1800), fused(15), NOW)).toMatchObject({ nivel: 'livre', pct: 20 })
     // also while the capacity is still being learned
-    expect(readSegment('I11>I12', estimate(360, null), fused(24), NOW)).toMatchObject({ nivel: 'critico', pct: null })
-    expect(readSegment('I11>I12', estimate(360, null), fused(25), NOW)).toMatchObject({ nivel: 'aprendendo', pct: null })
+    expect(readSegment('I11>I12', estimate(360, null), fused(14), NOW)).toMatchObject({ nivel: 'critico', pct: null })
+    expect(readSegment('I11>I12', estimate(360, null), fused(15), NOW)).toMatchObject({ nivel: 'aprendendo', pct: null })
   })
 
   it('C9 learning and no data', () => {

@@ -5,7 +5,8 @@ import { wireAlerts } from '../fusion/AlertPublisher'
 import { monitoredSegments, PlateMatcher } from '../fusion/PlateMatcher'
 import { CAMERA_STATUS_FILTER, wirePlateCameras } from '../sensors/PlateCamera'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
-import { averageSpeed, readSegment } from '../render/levels'
+import { ruleClassifier, type SegmentClassifier } from '../capacity/SegmentClassifier'
+import { averageSpeed, readSegment, type SegmentReading } from '../render/levels'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { DiversionController, diversionSize, type DiversionState } from './DiversionController'
 import { candidatesFor, evaluate, outOfReach, selectNotified, type Evaluation } from './DriverRerouter'
@@ -25,6 +26,8 @@ interface Options {
   agentControl?: boolean
   /** 'parcial' notifies at most ceil(p x candidates); 'todos' every driver with a faster alternative. */
   diversionMode?: DiversionMode
+  /** The one state rule (AD-082); V2 swaps in the K-means here. */
+  classifier?: SegmentClassifier
 }
 
 /** A diversion being applied: every 10 s window, the drivers heading into `trecho` are evaluated. */
@@ -70,8 +73,11 @@ export class Simulation {
 
   readonly agentControl: boolean
   readonly diversionMode: DiversionMode
+  /** Classifies every segment for the map, the panels and the diversion alike (AD-082). */
+  readonly classifier: SegmentClassifier
 
-  constructor({ engine, transport, agentControl = false, diversionMode = 'parcial' }: Options) {
+  constructor({ engine, transport, agentControl = false, diversionMode = 'parcial', classifier = ruleClassifier }: Options) {
+    this.classifier = classifier
     this.agentControl = agentControl
     this.diversionMode = diversionMode
     this.engine = engine ?? new SimulationEngine()
@@ -148,15 +154,23 @@ export class Simulation {
     this.refreshIncidents()
   }
 
+  /** Every segment's reading and level now, by the one classifier (AD-082). */
+  readings(): Record<string, SegmentReading> {
+    const t = this.engine.getState().timeMs
+    const estimates = this.capacity.snapshot()
+    const fused = this.capacity.fusion.state()
+    return Object.fromEntries(this.capacity.segments.map((s) => [s.id, readSegment(s.id, estimates[s.id], fused[s.id], t, this.classifier)]))
+  }
+
   /** Brings the incident log up to date now (after the operator ends one by hand). */
   refreshIncidents(): void {
-    this.incidents.update(this.engine.getState(), this.diversion)
+    const fused = this.capacity.fusion.state()
+    const anomalies = Object.keys(fused).filter((id) => fused[id].possivelIncidente)
+    this.incidents.update(this.engine.getState(), this.diversion, anomalies)
   }
 
   private recordHistory(t: number): void {
-    const estimates = this.capacity.snapshot()
-    const fused = this.capacity.fusion.state()
-    const readings = this.capacity.segments.map((s) => readSegment(s.id, estimates[s.id], fused[s.id], t))
+    const readings = Object.values(this.readings())
     const travel = this.engine.travelStats().lastMinuteAvgS
     this.history.record(
       t,
@@ -198,7 +212,10 @@ export class Simulation {
   }
 
   private decide(): void {
-    const jammed = this.controller.evaluate(this.engine.getState().timeMs, this.capacity.snapshot())
+    const estimates = this.capacity.snapshot()
+    const levels = this.readings()
+    const views = Object.fromEntries(Object.entries(estimates).map(([id, e]) => [id, { ...e, nivel: levels[id].nivel }]))
+    const jammed = this.controller.evaluate(this.engine.getState().timeMs, views)
     const sizing = typeof jammed === 'string' && jammed !== 'desligado' ? this.sizing(jammed) : null
     if (!this.agentControl) {
       this.active = sizing ? { trecho: jammed as string, p: this.diversionMode === 'todos' ? 1 : sizing.p, mode: this.diversionMode } : null

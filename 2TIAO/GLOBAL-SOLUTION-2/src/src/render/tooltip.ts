@@ -1,6 +1,7 @@
-import type { RouteStatus } from '../capacity/CapacityModel'
+import type { Nivel } from '../capacity/SegmentClassifier'
 import type { FusedSegment } from '../fusion/FusionService'
 import { segmentName } from '../sensors/segments'
+import { NIVEIS } from './levels'
 
 export interface TooltipContent {
   nome: string
@@ -33,17 +34,17 @@ export function segmentTooltip(
   segmentId: string,
   pair: readonly [string, string] | null,
   fused: FusedSegment | undefined,
-  status: RouteStatus,
+  /** The segment's level (AD-082), the same the map paints. */
+  nivel: Nivel,
   nowMs: number,
   /** The segment the diversion is steering drivers away from. */
   jammed: string | null = null,
 ): TooltipContent {
   const avisos = [...new Set((fused?.alertas ?? []).map((a) => ALERT_NAMES[a.tipo] ?? a.tipo))]
   if (jammed === segmentId) avisos.push('Congestionamento persistente: motoristas com app sendo desviados')
-  const estado = status
   return {
     nome: segmentName(segmentId),
-    estado: estado === 'sem dados' ? SEM_DADO : estado,
+    estado: NIVEIS[nivel].label,
     contagem: fused?.contagem != null ? `${fused.contagem} veíc` : SEM_DADO,
     velocidade: fused?.velocidadeMedia != null ? `${fmt(fused.velocidadeMedia, 1)} km/h` : SEM_DADO,
     densidade: fused?.densidade != null ? `${fmt(fused.densidade, 1)} veíc/km` : SEM_DADO,

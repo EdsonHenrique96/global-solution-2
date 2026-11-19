@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { metricsTopic } from '../fusion/PlateMatcher'
 import { FakeTransport } from '../telemetry/testing'
-import { CapacityModel } from './CapacityModel'
+import { lightAt, phaseFor } from '../sim/trafficLight'
+import { SimulationEngine, STOP_LINE_M, TICK_MS } from '../sim/SimulationEngine'
+import { CapacityModel, CONFIGURED_CAPACITY_VEH_H, SATURATION_FLOW_VEH_H } from './CapacityModel'
 import { CapacityService } from './CapacityService'
 
 /** `contagem` cars on `comprimentoM` metres at `v` km/h, as density and flow (q = k v). */
@@ -10,12 +12,12 @@ const entry = (contagem: number, velocidadeMediaKmh: number | null, comprimentoM
   return { densidadeVeicKm, velocidadeMediaKmh, fluxoVeicH: velocidadeMediaKmh === null ? 0 : densidadeVeicKm * velocidadeMediaKmh }
 }
 
-/** Feeds samples that lie exactly on v = 50 (1 - k / 100), k = 5, 10, ..., 100 (20 samples). */
+/** Feeds samples that lie exactly on v = 50 (1 - k / 100), k = 3, 6, ..., 90 (30 samples, AD-087). */
 function trainedModel(): CapacityModel {
   const model = new CapacityModel()
-  for (let i = 1; i <= 20; i++) {
-    const k = 5 * i
-    model.observe(entry(k, 50 * (1 - k / 100)), i * 10_000)
+  for (let i = 1; i <= 30; i++) {
+    const k = 3 * i
+    model.observe(entry(k, 50 * (1 - k / 100)), i * 6_000)
   }
   return model
 }
@@ -37,53 +39,60 @@ describe('capacity', () => {
       expect(est.capacidade!).toBeLessThanOrEqual(1265)
     })
 
-    it('leaves capacity and slack undefined below 5 samples or with a non-negative slope', () => {
+    it('C39 starts from the configured capacity and learns only after 30 valid samples', () => {
+      expect(CONFIGURED_CAPACITY_VEH_H).toBeCloseTo((SATURATION_FLOW_VEH_H * 20) / 46, 9)
+      expect(CONFIGURED_CAPACITY_VEH_H).toBeCloseTo(843.5, 0)
+      // from the start, before any sample
+      const fresh = new CapacityModel()
+      expect(fresh.estimate(0)).toMatchObject({ capacidade: CONFIGURED_CAPACITY_VEH_H, capacidadeFonte: 'configurada' })
+      // 5 exact samples: still the configured one
       const few = new CapacityModel()
-      for (let i = 1; i <= 4; i++) few.observe(entry(5 * i, 50 * (1 - (5 * i) / 100)), i * 10_000)
-      expect(few.estimate(40_000).capacidade).toBeNull()
-      expect(few.estimate(40_000).folga).toBeNull()
-      // the fifth sample makes it estimable
-      few.observe(entry(25, 37.5), 50_000)
-      expect(few.estimate(50_000).capacidade).not.toBeNull()
-
-      // speed rising with density: slope >= 0, no capacity however many samples
+      for (let i = 1; i <= 5; i++) few.observe(entry(5 * i, 50 * (1 - (5 * i) / 100)), i * 10_000)
+      expect(few.estimate(50_000)).toMatchObject({ capacidade: CONFIGURED_CAPACITY_VEH_H, capacidadeFonte: 'configurada' })
+      expect(few.estimate(50_000).folga).toBeCloseTo(CONFIGURED_CAPACITY_VEH_H - few.estimate(50_000).fluxo, 9)
+      // 29 valid samples: configured; the 30th makes it the learned one
+      const learning = new CapacityModel()
+      for (let i = 1; i <= 29; i++) learning.observe(entry(3 * i, 50 * (1 - (3 * i) / 100)), i * 10_000)
+      expect(learning.estimate(290_000).capacidadeFonte).toBe('configurada')
+      learning.observe(entry(90, 5), 300_000)
+      expect(learning.estimate(300_000).capacidadeFonte).toBe('aprendida')
+      expect(learning.estimate(300_000).capacidade).toBeCloseTo(1250, -1)
+      // an invalid fit (speed rising with density: kj <= 0) keeps the configured one however many samples
       const rising = new CapacityModel()
-      for (let i = 1; i <= 10; i++) rising.observe(entry(i, 20 + i), i * 10_000)
-      expect(rising.estimate(100_000).capacidade).toBeNull()
-      expect(rising.estimate(100_000).folga).toBeNull()
-
-      // flat speed: slope 0, still undefined
+      for (let i = 1; i <= 40; i++) rising.observe(entry(i, 20 + i), i * 10_000)
+      expect(rising.estimate(400_000)).toMatchObject({ capacidade: CONFIGURED_CAPACITY_VEH_H, capacidadeFonte: 'configurada', kj: null })
+      // flat speed: slope 0, still the configured one
       const flat = new CapacityModel()
-      for (let i = 1; i <= 10; i++) flat.observe(entry(i, 50), i * 10_000)
-      expect(flat.estimate(100_000).capacidade).toBeNull()
-
+      for (let i = 1; i <= 40; i++) flat.observe(entry(i, 50), i * 10_000)
+      expect(flat.estimate(400_000).capacidadeFonte).toBe('configurada')
       // readings without speed do not count as fit samples
       const empty = new CapacityModel()
-      for (let i = 1; i <= 10; i++) empty.observe(entry(0, null), i * 10_000)
-      expect(empty.estimate(100_000).capacidade).toBeNull()
-      expect(empty.estimate(100_000).amostras).toHaveLength(0)
+      for (let i = 1; i <= 40; i++) empty.observe(entry(0, null), i * 10_000)
+      expect(empty.estimate(400_000).capacidadeFonte).toBe('configurada')
+      expect(empty.estimate(400_000).amostras).toHaveLength(0)
     })
 
-    it('classifies state at 40 39.9 25 and 24.9 km/h and an empty road as flowing', () => {
-      const cases: [number, number | null, string][] = [
-        [2, 40, 'fluindo'],
-        [2, 39.9, 'carregado'],
-        [2, 25, 'carregado'],
-        [2, 24.9, 'congestionado'],
-        [0, null, 'fluindo'],
-        [3, 60, 'fluindo'],
-        [5, 0, 'congestionado'],
-      ]
-      for (const [contagem, v, estado] of cases) {
-        const model = new CapacityModel()
-        model.observe(entry(contagem, v, 220), 10_000)
-        expect(model.estimate(10_000).estado, `v=${v}`).toBe(estado)
+    it('C39 the configured saturation flow matches the measured queue discharge', () => {
+      // 12 cars standing 7 m apart at a red stop line; at green, the steady headway of cars 5 to 12
+      const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
+      const red = () => phaseFor(lightAt('I12', engine.getState().timeMs), 'H') === 'vermelho'
+      while (!red()) engine.tick(TICK_MS)
+      const line = engine.segment('I11>I12')!.length - STOP_LINE_M
+      const cars = Array.from({ length: 12 }, (_, k) => engine.addCar({ path: ['I11>I12', 'I12>I13'], distance: line - k * 7, velocity: 0 }))
+      while (red()) engine.tick(TICK_MS)
+      const green = engine.getState().timeMs
+      const crossed = new Map<number, number>()
+      for (let i = 0; i < 300; i++) {
+        engine.tick(TICK_MS)
+        for (const c of cars) {
+          const s = engine.getState().cars.find((x) => x.id === c.id)
+          if (!crossed.has(c.id) && (!s || s.seg > 0 || s.distance > line)) crossed.set(c.id, engine.getState().timeMs - green)
+        }
       }
-      // the latest reading decides
-      const model = new CapacityModel()
-      model.observe(entry(2, 20, 220), 10_000)
-      model.observe(entry(2, 45, 220), 20_000)
-      expect(model.estimate(20_000).estado).toBe('fluindo')
+      const t = cars.map((c) => crossed.get(c.id)!)
+      const headwayS = (t[11] - t[4]) / 7 / 1000
+      const measured = 3600 / headwayS
+      expect(Math.abs(measured - SATURATION_FLOW_VEH_H) / SATURATION_FLOW_VEH_H).toBeLessThanOrEqual(0.05)
     })
 
     it('computes slack as capacity minus current flow negative when over', () => {
@@ -115,7 +124,8 @@ describe('capacity', () => {
       let now = 0
       const service = new CapacityService(transport, () => now)
       service.start()
-      const ks = [10, 20, 30, 40, 50, 60, 70, 80]
+      // 30 samples: the learned capacity replaces the configured one (AD-087)
+      const ks = Array.from({ length: 30 }, (_, i) => 3 * (i + 1))
       ks.forEach((k, i) => {
         now = (i + 1) * 10_000
         // the flow published is the measured one, here 7 cars/min whatever k and v
@@ -123,10 +133,11 @@ describe('capacity', () => {
       })
       const s = service.snapshot()['I11>I12']
       expect(s.capacidade!).toBeCloseTo(1250, 0)
-      expect(s.densidade).toBe(80)
-      expect(s.velocidade).toBeCloseTo(10, 9)
+      expect(s.capacidadeFonte).toBe('aprendida')
+      expect(s.densidade).toBe(90)
+      expect(s.velocidade).toBeCloseTo(5, 9)
       expect(s.fluxo).toBe(420)
-      expect(s.amostras).toHaveLength(8)
+      expect(s.amostras).toHaveLength(30)
     })
 
     it('marks a route sem dados after 20 s without readings and keeps its model', () => {
@@ -135,21 +146,21 @@ describe('capacity', () => {
       let now = 0
       const service = new CapacityService(transport, () => now)
       service.start()
-      expect(service.snapshot()['I12>I13'].estado).toBe('sem dados') // never received
+      expect(service.snapshot()['I12>I13'].semDados).toBe(true) // never received
 
       for (let i = 1; i <= 20; i++) {
         const k = 5 * i
         now = i * 10_000
         transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', now, k, 50 * (1 - k / 100)))
       }
-      expect(service.snapshot()['I12>I13'].estado).toBe('congestionado')
+      expect(service.snapshot()['I12>I13'].semDados).toBe(false)
       now = 220_000 // 20 s after the last (200 s) publication: all 20 samples in
-      expect(service.snapshot()['I12>I13'].estado).toBe('congestionado')
+      expect(service.snapshot()['I12>I13'].semDados).toBe(false)
       const capacity = service.snapshot()['I12>I13'].capacidade
       expect(capacity).not.toBeNull()
       now = 220_100
       const stale = service.snapshot()['I12>I13']
-      expect(stale.estado).toBe('sem dados')
+      expect(stale.semDados).toBe(true)
       expect(stale.capacidade).toBe(capacity)
       expect(stale.amostras).toHaveLength(20)
 
@@ -158,7 +169,7 @@ describe('capacity', () => {
       transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', 230_000, 10, 45))
       transport.deliver(metricsTopic('I12>I13'), metrics('I12>I13', 5_000, 80, 10))
       now = 240_000
-      expect(service.snapshot()['I12>I13'].estado).toBe('fluindo')
+      expect(service.snapshot()['I12>I13'].semDados).toBe(false)
       expect(service.snapshot()['I12>I13'].velocidade).toBe(45)
     })
 
@@ -175,7 +186,7 @@ describe('capacity', () => {
       transport.setConnected(true)
       send() // the 10 s publication, received now that the broker is back
       expect(service.snapshot()['I12>I13'].amostras).toHaveLength(1)
-      expect(service.snapshot()['I12>I13'].estado).toBe('fluindo')
+      expect(service.snapshot()['I12>I13'].semDados).toBe(false)
       transport.setConnected(false)
       send()
       now = 40_000
@@ -200,10 +211,10 @@ describe('capacity', () => {
       expect(s['I12>I13'].amostras).toHaveLength(1)
       expect(s['I13>I14'].densidade).toBe(0)
       expect(s['I13>I14'].amostras).toHaveLength(0)
-      expect(s['I13>I14'].estado).toBe('fluindo')
+      expect(s['I13>I14'].semDados).toBe(false)
       // a segment with no metrics stays without data
-      expect(s['I11>I12'].estado).toBe('sem dados')
-      expect(s['I23>I24'].estado).toBe('sem dados')
+      expect(s['I11>I12'].semDados).toBe(true)
+      expect(s['I23>I24'].semDados).toBe(true)
       // old telemetry messages are ignored
       transport.deliver('transito/sensores/U02/telemetria', JSON.stringify({ sensorId: 'U02', ts: 10_000, porTrecho: [{ trecho: 'I12>I13', contagem: 9, velocidadeMediaKmh: 9, comprimentoCobertoM: 220, cobertura: 1 }] }))
       expect(service.snapshot()['I12>I13'].amostras).toHaveLength(1)

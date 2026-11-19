@@ -1,15 +1,15 @@
-import type { RouteStatus } from '../capacity/CapacityModel'
+import type { Nivel } from '../capacity/SegmentClassifier'
 
 export const SAFETY_FACTOR = 0.8
 export const MAX_DIVERSION = 0.5
-export const START_WINDOWS = 5
+/** The diversion starts in the recomputation the segment turns Crítico (AD-090). */
+export const START_WINDOWS = 1
 export const STOP_WINDOWS = 2
-export const STOP_SPEED_KMH = 35
 export const MIN_CHANGE_INTERVAL_MS = 30_000
 
-/** What the decision needs to know about a segment (from the capacity model). */
+/** What the decision needs to know about a segment: its level (AD-082) and capacity figures. */
 export interface RouteView {
-  estado: RouteStatus
+  nivel: Nivel
   velocidade: number | null
   /** Current flow, veh/h. */
   fluxo: number
@@ -43,9 +43,9 @@ export function diversionSize(demandA: number, flowA: number, slackB: number): {
 }
 
 /**
- * When to divert, with hysteresis, evaluated once per 10 s window: starts when a segment is
- * congested for 5 windows - longer than a light cycle, AD-018 - and stops when it is back at
- * 35 km/h or more for 2 windows, never changing within 30 s of the last change. Who is told and
+ * When to divert, with hysteresis, evaluated once per 10 s recomputation: starts in the
+ * recomputation a segment turns Crítico (AD-090, AD-082) and stops when it is out of Crítico, with
+ * data, for 2 (AD-086), never changing within 30 s of the last change. Who is told and
  * where to go is the DriverRerouter's job.
  */
 export class DiversionController {
@@ -71,15 +71,14 @@ export class DiversionController {
   /** The jammed segment, or null. */
   evaluate(nowMs: number, segments: Record<string, RouteView>): string | null | 'desligado' {
     for (const [id, r] of Object.entries(segments)) {
-      this.congested.set(id, r.estado === 'congestionado' ? (this.congested.get(id) ?? 0) + 1 : 0)
+      this.congested.set(id, r.nivel === 'critico' ? (this.congested.get(id) ?? 0) + 1 : 0)
     }
     if (!this.enabled) return 'desligado'
     const canChange = nowMs - this.lastChangeMs >= MIN_CHANGE_INTERVAL_MS
 
     if (this.active) {
       const a = segments[this.active]
-      const v = a?.velocidade
-      this.recovered = a && (v === null || v >= STOP_SPEED_KMH) && a.estado !== 'sem dados' ? this.recovered + 1 : 0
+      this.recovered = a && a.nivel !== 'critico' && a.nivel !== 'sem dado' ? this.recovered + 1 : 0
       if (this.recovered >= STOP_WINDOWS && canChange) {
         this.active = null
         this.recovered = 0

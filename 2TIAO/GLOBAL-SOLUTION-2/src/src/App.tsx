@@ -38,7 +38,6 @@ import {
   versusHourAgo,
 } from './render/levels'
 import { MetricsPanel } from './render/MetricsPanel'
-import { fusedStatus } from './render/roads'
 import { SegmentTooltip } from './render/SegmentTooltip'
 import { SimulationCanvas, type IncidentMode, type IncidentTarget } from './render/SimulationCanvas'
 import { segmentTooltip } from './render/tooltip'
@@ -149,15 +148,13 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
   const segById = new Map(state.segments.map((s) => [s.id, s]))
   const corners: Record<string, Point> = Object.fromEntries(state.network.intersections.map((i) => [i.id, i.position]))
   const cornerName = (id: string) => state.network.intersections.find((i) => i.id === id)?.nome ?? id
-  const readings = Object.fromEntries(state.segments.map((s) => [s.id, readSegment(s.id, estimates[s.id], fused[s.id], now)]))
+  // one level per segment, by the simulation's classifier, for the map, the ranking, the tooltip
+  // and the selected road alike (AD-082)
+  const readings = Object.fromEntries(state.segments.map((s) => [s.id, readSegment(s.id, estimates[s.id], fused[s.id], now, sim.classifier)]))
   const readingList = Object.values(readings)
   const streets = streetRows(state.segments, readings)
-  const levelsNow = () => {
-    const t = engine.getState().timeMs
-    const est = capacity.snapshot()
-    const f = capacity.fusion.state()
-    return Object.fromEntries(engine.getState().segments.map((s) => [s.id, readSegment(s.id, est[s.id], f[s.id], t).nivel]))
-  }
+  const levelMap = Object.fromEntries(readingList.map((r) => [r.id, r.nivel]))
+  const levelsNow = () => levelMap
 
   const changeRate = (next: number) => {
     engine.setRate(next)
@@ -190,6 +187,8 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
         return `Velocidade reduzida a ${WORK_ZONE_KMH} km/h · até ${hhmm(i.endsAtMs ?? now)}`
       case 'semaforo':
         return `Amarelo piscante · normaliza às ${hhmm(i.endsAtMs ?? now)}`
+      case 'possivel-incidente':
+        return 'Anomalia: carros que entraram não saíram no tempo esperado · aguarda confirmação'
       default:
         return `Desvio ativo · ${diversion.status === 'ativo' ? diversion.notificados : 0} motoristas notificados`
     }
@@ -350,7 +349,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
                         hover.segmentId,
                         pairFor(hover.segmentId),
                         capacity.fusion.state()[hover.segmentId],
-                        fusedStatus(capacity.fusion.state()[hover.segmentId], now),
+                        readings[hover.segmentId].nivel,
                         now,
                         jammed,
                       )}
@@ -472,7 +471,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm }: Prop
             <CapacityPanel
               segmentId={selectedSegment}
               estimate={estimates[selectedSegment]}
-              status={fusedStatus(fused[selectedSegment], now)}
+              nivel={readings[selectedSegment].nivel}
               fused={fused[selectedSegment]}
               pair={pairFor(selectedSegment)}
             />

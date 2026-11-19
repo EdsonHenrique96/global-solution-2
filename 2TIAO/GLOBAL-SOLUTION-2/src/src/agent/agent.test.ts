@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { APPS_TOPIC } from '../apps/AppFleet'
 import { Simulation } from '../decision/Simulation'
-import { sortRoads } from '../render/roads'
+import { compareSaturation } from '../render/levels'
 import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { AgentLog, LOG_SIZE } from './AgentLog'
@@ -97,8 +97,7 @@ describe('agent', () => {
       const state = JSON.parse(executeTool('estado_rede', {}, ctx).content)
       expect(Object.keys(state).sort()).toEqual(['alertas', 'desvio', 'filas', 'metricas', 'motoristasComApp', 'pioresTrechos', 'tempoS'])
       expect(state.pioresTrechos).toHaveLength(WORST_SEGMENTS)
-      const estimates = sim.capacity.snapshot()
-      const worst = sortRoads(sim.capacity.segments.map((s) => ({ id: s.id, estado: estimates[s.id].estado, velocidade: estimates[s.id].velocidade })))
+      const worst = Object.values(sim.readings()).sort(compareSaturation)
       expect(state.pioresTrechos.map((t: { trecho: string }) => t.trecho)).toEqual(worst.slice(0, WORST_SEGMENTS).map((r) => r.id))
       expect(Object.keys(state.filas)).toHaveLength(16)
       expect(state.filas.I11).toEqual({ H: expect.any(Number), V: expect.any(Number) })

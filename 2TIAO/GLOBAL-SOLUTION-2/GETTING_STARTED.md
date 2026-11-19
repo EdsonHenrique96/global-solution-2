@@ -128,6 +128,7 @@ Tópicos MQTT:
 | --- | --- | --- |
 | `transito/vias/{trecho}/eventos` | câmeras de placa (`PlateCamera`), um evento por veículo com o hash da placa | `PlateMatcher`, painel de eventos da aba Câmeras |
 | `transito/vias/{trecho}/metricas` | `PlateMatcher`, a cada 10 s, janela de 1 min (retido) | fusão, painel |
+| `transito/vias/{trecho}/anomalia` | `PlateMatcher`, quando o aviso "Possível incidente" abre ou fecha (retido) | fusão, log de incidentes |
 | `transito/cameras/{id}/status` | câmeras de placa, a cada 10 s | `Simulation` (câmeras online) |
 | `transito/alertas` | `AlertPublisher` | fusão |
 | `transito/apps/ativos` | apps de mapa (`AppFleet`), a cada 10 s | fusão (demanda por trecho), painel dos apps |
@@ -197,13 +198,13 @@ O painel tem quatro abas: **Mapa ao vivo**, **Câmeras**, **Semáforos** e **Rel
 | **Confiança** | Quanto confiar na estimativa: 1 com métricas recentes, cai com a idade do dado. |
 | **Apps de mapa** | 60% dos motoristas usam um app (Waze 40%, Google Maps 50%, Outros 10%). A cada 10 s, os apps publicam só agregados: motoristas ativos por app e por trecho e a demanda por trecho no último minuto, escalada para todos os motoristas (LGPD: a fusão nunca vê viagens ou posições). |
 | **Diagrama fundamental** | Relação entre fluxo (q), densidade (k) e velocidade (v) do tráfego: q = k × v. |
-| **Capacidade** | Fluxo máximo do trecho. É aprendido online pelo modelo de Greenshields (a velocidade cai em linha reta com a densidade) com mínimos quadrados recursivos (RLS): q_max = v_f × k_j / 4. |
-| **Estado** | Velocidade média ÷ velocidade regulamentar: **fluindo** ≥ 80%, **carregado** 50-80%, **congestionado** < 50%. É o que a decisão usa. |
-| **Densidade** | O que o mapa mostra: fluxo ÷ capacidade. **Livre** < 50%, **moderado** 50-74%, **intenso** 75-89%, **crítico** ≥ 90% ou velocidade abaixo de metade do limite. |
+| **Capacidade** | Fluxo máximo do trecho. Começa configurada: vazão de saturação da faixa (1 940 veíc/h, medida na arrancada) × verde ÷ ciclo ≈ 844 veíc/h. Depois de 30 amostras com ajuste válido, passa a ser a aprendida pelo modelo de Greenshields (a velocidade cai em linha reta com a densidade) com mínimos quadrados recursivos (RLS): q_max = v_f × k_j / 4. |
+| **Nível** | Uma regra só para o mapa, os painéis e o desvio: fluxo ÷ capacidade. **Livre** < 50%, **moderado** 50-74%, **intenso** 75-89%, **crítico** ≥ 90% ou velocidade pareada abaixo de 15 km/h. Fica atrás da interface `SegmentClassifier` (o K-means da V2 entra por ela). |
+| **Possível incidente** | Aviso de anomalia: entre os carros que entraram nos últimos 2 min e já deviam ter saído (3× a travessia mediana, no mínimo 30 s), pelo menos 80% não saíram e são pelo menos 3. Não muda o nível nem dispara o desvio; precisa ser confirmado. |
 | **Folga** | Capacidade − fluxo atual. É o que o caminho alternativo ainda absorve. |
 | **Desvio parcial** | N = min(excesso do trecho congestionado, folga × 0,8) e p = min(N ÷ demanda, 50%). A cada janela, avisa no máximo p × candidatos, os de maior ganho primeiro. Candidato é quem usa app e ainda vai passar pelo trecho; só recebe o aviso se o caminho alternativo levar no máximo 90% do tempo atual. "Notificar todos" avisa todos os que passam nesse teste. |
 | **Fora do alcance** | Carros no trecho congestionado sem app (veículos no trecho − motoristas dos apps): o sistema não consegue avisá-los. |
-| **Histerese** | Evita o liga-desliga: o desvio só começa depois de 5 janelas seguidas de congestionamento (50 s), só para depois de 2 janelas a 35 km/h ou mais e nunca muda menos de 30 s depois da última mudança. |
+| **Histerese** | O desvio começa no recálculo em que o trecho fica crítico, só para depois de 2 recálculos seguidos fora de crítico e nunca muda menos de 30 s depois da última mudança. |
 | **Semáforo** | Cada esquina alterna duas fases: alamedas e ruas. No modo fixo, 20 s de verde e 3 s de amarelo por fase, com uma onda verde de 10 s por quarteirão. |
 | **Semáforo adaptativo coordenado** | Em cada esquina, o verde de uma fase = 20 s + 2 × (fila da fase − fila média das duas fases), limitado a 15-30 s e calculado quando a fase começa. |
 | **Autonomia** | Desvio de até 30% dos carros e verde de 20 ± 10 s são aplicados direto. Acima disso, a ação vira um card para o operador aprovar. |

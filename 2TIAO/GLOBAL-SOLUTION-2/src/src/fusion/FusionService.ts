@@ -2,8 +2,11 @@ import type { Segment } from '../sensors/segments'
 import type { TelemetryTransport } from '../telemetry/transport'
 import { ALERTS_TOPIC } from './AlertPublisher'
 import { agedConfidence, FRESH_MS } from './confidence'
-import { METRICS_FILTER } from './PlateMatcher'
+import { ANOMALY_FILTER, METRICS_FILTER } from './PlateMatcher'
 import { APPS_TOPIC } from '../apps/AppFleet'
+
+/** Without a pair in the last minute, the last measured pair speed is shown for up to 5 min (AC 24). */
+export const SPEED_HOLD_MS = 300_000
 
 export const ALERT_MERGE_M = 50
 export const ALERT_MERGE_MS = 60_000
@@ -26,12 +29,14 @@ export interface FusedSegment {
   contagem: number | null
   /** veh/km */
   densidade: number | null
-  /** Space mean speed of the last minute's plate pairs, km/h; null without a pair. */
+  /** Space mean speed of the last minute's plate pairs, km/h; without a pair, the last measured one up to 5 min old; else null. */
   velocidadeMedia: number | null
   /** Exits in the last minute. */
   fluxoVeicMin: number | null
   /** Plate pairs closed in the last minute. */
   pares: number | null
+  /** "Possível incidente": most cars that entered did not leave in time (AD-091); never a level. */
+  possivelIncidente: boolean
   alertas: FusedAlert[]
   /** Demand from the drivers with a map app, scaled to all drivers, veh/h; null when unknown (AD-038). */
   demandaOD: number | null
@@ -89,6 +94,9 @@ export class FusionService {
   private pending: ChosenMeasurement[] = []
   private readonly alerts = new Map<string, FusedAlert[]>()
   private readonly demand = new Map<string, number | null>()
+  private readonly anomalies = new Map<string, { ts: number; ativo: boolean }>()
+  /** Each segment's last measured pair speed: a sparse segment still shows one (AC 24). */
+  private readonly lastSpeed = new Map<string, { v: number; ts: number }>()
   private offs: (() => void)[] = []
 
   constructor(transport: TelemetryTransport, now: () => number, segments: readonly Segment[]) {
@@ -101,6 +109,7 @@ export class FusionService {
     if (this.offs.length) return
     this.offs = [
       this.transport.subscribe(METRICS_FILTER, (_t, p) => this.onMetrics(p)),
+      this.transport.subscribe(ANOMALY_FILTER, (_t, p) => this.onAnomaly(p)),
       this.transport.subscribe(ALERTS_TOPIC, (_t, p) => this.onAlert(p)),
       this.transport.subscribe(APPS_TOPIC, (_t, p) => this.onDemand(p)),
     ]
@@ -133,7 +142,22 @@ export class FusionService {
     const current = this.latest.get(msg.trecho)
     if (current && ts <= current.ts) return
     this.latest.set(msg.trecho, { ts, ocupacao, densidadeVeicKm, velocidadeMediaKmh, fluxoVeicMin, pares, camerasPar: [...camerasPar] })
+    if (velocidadeMediaKmh !== null) this.lastSpeed.set(msg.trecho, { v: velocidadeMediaKmh, ts })
     this.pending.push({ segmentId: msg.trecho, ts, densidadeVeicKm, velocidadeMediaKmh, fluxoVeicMin })
+  }
+
+  private heldSpeed(segmentId: string, at: number): number | null {
+    const last = this.lastSpeed.get(segmentId)
+    return last && at - last.ts <= SPEED_HOLD_MS ? last.v : null
+  }
+
+  private onAnomaly(payload: string): void {
+    const msg = FusionService.parse(payload)
+    if (!msg || typeof msg.trecho !== 'string' || !this.segments.some((s) => s.id === msg.trecho)) return
+    if (typeof msg.ts !== 'number' || typeof msg.ativo !== 'boolean' || msg.ts > this.now()) return
+    const current = this.anomalies.get(msg.trecho)
+    if (current && msg.ts < current.ts) return
+    this.anomalies.set(msg.trecho, { ts: msg.ts, ativo: msg.ativo })
   }
 
   private onAlert(payload: string): void {
@@ -203,9 +227,10 @@ export class FusionService {
           {
             contagem: m ? m.ocupacao : null,
             densidade: m ? m.densidadeVeicKm : null,
-            velocidadeMedia: m ? m.velocidadeMediaKmh : null,
+            velocidadeMedia: m ? (m.velocidadeMediaKmh ?? this.heldSpeed(s.id, m.ts)) : null,
             fluxoVeicMin: m ? m.fluxoVeicMin : null,
             pares: m ? m.pares : null,
+            possivelIncidente: this.anomalies.get(s.id)?.ativo ?? false,
             alertas: (this.alerts.get(s.id) ?? []).map((a) => ({ ...a, ids: [...a.ids], membros: a.membros.map((x) => ({ ...x })) })),
             demandaOD: this.demand.get(s.id) ?? null,
             fontes: fresh ? [...m.camerasPar] : [],

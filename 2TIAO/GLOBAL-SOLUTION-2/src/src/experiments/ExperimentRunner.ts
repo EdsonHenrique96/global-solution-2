@@ -1,17 +1,19 @@
 import { Simulation } from '../decision/Simulation'
-import { SimulationEngine, TICK_MS, type Arrival } from '../sim/SimulationEngine'
+import { DEFAULT_RATE_PER_MINUTE, SimulationEngine, TICK_MS, type Arrival } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
 
 export const SCENARIOS = ['sem-sistema', 'notificar-todos', 'desvio-parcial'] as const
 export type Scenario = (typeof SCENARIOS)[number]
 
-export const RUN_MS = 900_000
-export const RATE_PER_MINUTE = 15
+/** 25 simulated minutes: the accident's queue has time to settle at the default demand (AD-085). */
+export const RUN_MS = 1_500_000
+export const RATE_PER_MINUTE = DEFAULT_RATE_PER_MINUTE
 /** Al. Santos, R. Bela Cintra → R. Haddock Lobo, in the middle of the block (AC 31). */
 export const ACCIDENT = { segmentId: 'I12>I13', startMs: 300_000 } as const
 export const ACCIDENT_MINUTES = [2, 5] as const
-export const DEMAND_MIN = 10
-export const DEMAND_MAX = 20
+/** From the default demand (AD-081) to its double, as in the V1 demonstration. */
+export const DEMAND_MIN = DEFAULT_RATE_PER_MINUTE
+export const DEMAND_MAX = 2 * DEFAULT_RATE_PER_MINUTE
 
 /** What the operator chooses before a run (semaforo-coordenado AC 4). */
 export interface ExperimentParams {
@@ -20,8 +22,8 @@ export interface ExperimentParams {
 }
 export const DEFAULT_PARAMS: ExperimentParams = { acidenteMin: 2, demanda: RATE_PER_MINUTE }
 
-/** Demand kept within 10-20 cars/min. */
-export const clampDemand = (n: number) => Math.min(DEMAND_MAX, Math.max(DEMAND_MIN, Math.round(Number.isFinite(n) ? n : 15)))
+/** Demand kept within DEMAND_MIN-DEMAND_MAX cars/min. */
+export const clampDemand = (n: number) => Math.min(DEMAND_MAX, Math.max(DEMAND_MIN, Math.round(Number.isFinite(n) ? n : RATE_PER_MINUTE)))
 const NORMAL_HOLD_S = 30
 
 export interface RunMetrics {
@@ -85,7 +87,7 @@ export function* scenarioSteps(
     if (timeMs % 1000 === 0) queueBySecond.push(engine.queueTotal())
     if (timeMs % 10_000 === 0) {
       for (const [id, e] of Object.entries(sim.capacity.snapshot())) {
-        if (id !== ACCIDENT.segmentId && e.estado !== 'sem dados') altFlowMax[id] = Math.max(altFlowMax[id] ?? 0, e.fluxo)
+        if (id !== ACCIDENT.segmentId && !e.semDados) altFlowMax[id] = Math.max(altFlowMax[id] ?? 0, e.fluxo)
       }
     }
     if (tick % chunkTicks === 0) yield tick / total

@@ -1,10 +1,10 @@
-import { SPEED_LIMIT_KMH, STALE_AFTER_MS, type Estimate } from '../capacity/CapacityModel'
+import { STALE_AFTER_MS, type Estimate } from '../capacity/CapacityModel'
+import { nivelOf, ruleClassifier, type Nivel, type SegmentClassifier } from '../capacity/SegmentClassifier'
 import type { FusedSegment } from '../fusion/FusionService'
 import type { Segment } from '../sensors/segments'
 import { ALAMEDAS, RUAS } from '../sim/cityNetwork'
 
-/** Density level of a segment on the map (AD-047). */
-export type Nivel = 'livre' | 'moderado' | 'intenso' | 'critico' | 'aprendendo' | 'sem dado'
+export { nivelOf, type Nivel }
 
 export const NIVEIS: Record<Nivel, { label: string; color: string; bg: string; range?: string }> = {
   livre: { label: 'Livre', color: '#3DBE7A', bg: 'rgba(61,190,122,0.14)', range: '< 50%' },
@@ -20,15 +20,6 @@ export const NIVEL_ORDER: readonly Nivel[] = ['critico', 'intenso', 'moderado', 
 
 /** The colour every lane takes with the density layer off. */
 export const NEUTRAL_LANE = '#3A4656'
-
-/** pct = round(fluxo ÷ capacidade × 100) -> level; below half the limit the segment is critical (AD-047). */
-export function nivelOf(pct: number, velocidade: number | null): Nivel {
-  if (velocidade !== null && velocidade < SPEED_LIMIT_KMH * 0.5) return 'critico'
-  if (pct >= 90) return 'critico'
-  if (pct >= 75) return 'intenso'
-  if (pct >= 50) return 'moderado'
-  return 'livre'
-}
 
 /** What one segment shows on the map, in the label and in the ranking. */
 export interface SegmentReading {
@@ -49,10 +40,17 @@ export interface SegmentReading {
 }
 
 /**
- * A segment's level from its estimate and fused view: "sem dado" after 20 s without a reading,
- * "aprendendo" while there is no learned capacity, else the density rule.
+ * A segment's level from its estimate and fused view: "sem dado" after 20 s without metrics, else
+ * the classifier's level (AD-082) - the one the map, the ranking, the tooltip, the selected road
+ * and the diversion all use.
  */
-export function readSegment(id: string, estimate: Estimate | undefined, fused: FusedSegment | undefined, nowMs: number): SegmentReading {
+export function readSegment(
+  id: string,
+  estimate: Estimate | undefined,
+  fused: FusedSegment | undefined,
+  nowMs: number,
+  classifier: SegmentClassifier = ruleClassifier,
+): SegmentReading {
   const stale = !fused || fused.atualizadoEm === null || nowMs - fused.atualizadoEm > STALE_AFTER_MS
   const velocidade = stale ? null : (fused?.velocidadeMedia ?? null)
   const contagem = stale ? null : (fused?.contagem ?? null)
@@ -62,13 +60,9 @@ export function readSegment(id: string, estimate: Estimate | undefined, fused: F
   const capacidade = estimate?.capacidade ?? null
   const base = { id, fluxo, capacidade, velocidade, contagem, densidade, pares }
   if (stale) return { ...base, nivel: 'sem dado', pct: null }
-  if (capacidade === null || capacidade <= 0 || fluxo === null) {
-    // a stopped queue is critical even before its capacity is known (AC 8: whatever the pct)
-    const nivel = velocidade !== null && velocidade < SPEED_LIMIT_KMH * 0.5 ? 'critico' : 'aprendendo'
-    return { ...base, nivel, pct: null }
-  }
-  const pct = Math.round((fluxo / capacidade) * 100)
-  return { ...base, nivel: nivelOf(pct, velocidade), pct }
+  const nivel = classifier.classify({ fluxo, capacidade, velocidade, densidade })
+  const pct = capacidade === null || capacidade <= 0 || fluxo === null ? null : Math.round((fluxo / capacidade) * 100)
+  return { ...base, nivel, pct }
 }
 
 /** veh/h -> cars per minute, rounded. */

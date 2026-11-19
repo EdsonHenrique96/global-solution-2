@@ -1,5 +1,5 @@
 import type { Simulation } from '../decision/Simulation'
-import { sortRoads } from '../render/roads'
+import { compareSaturation } from '../render/levels'
 import type { AgentAction } from './ApprovalQueue'
 
 export const TOOL_NAMES = ['estado_rede', 'propor_desvio', 'propor_semaforo', 'registrar_explicacao'] as const
@@ -27,16 +27,16 @@ export function networkState(sim: Simulation): Record<string, unknown> {
   const { samples: _samples, ...metricas } = sim.metrics.snapshot()
   void _samples
   const apps = sim.fleet.snapshot()
-  const worst = sortRoads(
-    sim.capacity.segments.map((s) => ({ id: s.id, estado: estimates[s.id].estado, velocidade: estimates[s.id].velocidade })),
-  ).slice(0, WORST_SEGMENTS)
+  const levels = sim.readings()
+  // the most saturated first, by the same level the map and the diversion use (AD-082)
+  const worst = Object.values(levels).sort(compareSaturation).slice(0, WORST_SEGMENTS)
   return {
     tempoS: sim.engine.getState().timeMs / 1000,
     pioresTrechos: worst.map(({ id }) => {
       const e = estimates[id]
       return {
         trecho: id,
-        estado: e.estado,
+        nivel: levels[id].nivel,
         velocidadeKmh: round(e.velocidade),
         densidadeVeicKm: round(e.densidade),
         fluxoVeicH: round(e.fluxo),

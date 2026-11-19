@@ -1,4 +1,7 @@
-export const MAX_RATE_PER_MINUTE = 120
+import { DEFAULT_RATE_PER_MINUTE } from '../sim/SimulationEngine'
+
+/** Up to double the default demand: the V1 demonstration (AC 17). */
+export const MAX_RATE_PER_MINUTE = 2 * DEFAULT_RATE_PER_MINUTE
 
 interface Props {
   value: number

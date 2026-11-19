@@ -1,10 +1,17 @@
-export type RouteState = 'fluindo' | 'carregado' | 'congestionado'
-export type RouteStatus = RouteState | 'sem dados'
+import { CYCLE_MS, GREEN_MS } from '../sim/trafficLight'
 
 export const SPEED_LIMIT_KMH = 50
 export const LANES = 1
 export const FORGETTING = 0.98
-export const MIN_SAMPLES = 5
+/** The learned capacity replaces the configured one only after this many samples with a valid fit (AD-087). */
+export const MIN_SAMPLES = 30
+/**
+ * Saturation flow of one lane, veh/h: measured, a standing queue discharges one car every ~1.86 s
+ * at green with the IDM of AD-096 (checked by the capacity test against the engine).
+ */
+export const SATURATION_FLOW_VEH_H = 1940
+/** Every segment's capacity from the start: saturation flow x green / cycle (AD-087). */
+export const CONFIGURED_CAPACITY_VEH_H = (SATURATION_FLOW_VEH_H * GREEN_MS) / CYCLE_MS
 export const STALE_AFTER_MS = 20_000
 export const MAX_PLOTTED = 200
 
@@ -24,25 +31,19 @@ export interface Sample {
 }
 
 export interface Estimate {
-  estado: RouteStatus
+  /** No metrics for more than 20 s (or never). */
+  semDados: boolean
   /** Last reading: density (veh/km), speed (km/h, null when nobody was seen) and flow (veh/h). */
   densidade: number | null
   velocidade: number | null
   fluxo: number
   vf: number | null
   kj: number | null
-  capacidade: number | null
+  /** The configured capacity until the fit is learned (AD-087); never null. */
+  capacidade: number
+  capacidadeFonte: 'configurada' | 'aprendida'
   folga: number | null
   amostras: Sample[]
-}
-
-/** State from speed over the speed limit (AD-006). An empty road flows. */
-export function classify(speedKmh: number | null): RouteState {
-  if (speedKmh === null) return 'fluindo'
-  const ratio = speedKmh / SPEED_LIMIT_KMH
-  if (ratio >= 0.8) return 'fluindo'
-  if (ratio >= 0.5) return 'carregado'
-  return 'congestionado'
 }
 
 /**
@@ -92,24 +93,25 @@ export class CapacityModel {
     this.fitted += 1
   }
 
-  /** `nowMs` is simulated time; a reading older than 20 s leaves the route "sem dados". */
+  /** `nowMs` is simulated time; metrics older than 20 s leave the segment without data. */
   estimate(nowMs: number): Estimate {
     const [a, b] = this.theta
     const known = this.fitted >= MIN_SAMPLES && b < -1e-6 && a > 0
     const vf = known ? a : null
     const kj = known ? -a / b : null
-    const capacidade = known ? (a * (-a / b)) / 4 : null
+    const capacidade = known ? (a * (-a / b)) / 4 : CONFIGURED_CAPACITY_VEH_H
     const fresh = this.last !== null && nowMs - this.last.ts <= STALE_AFTER_MS
     const fluxo = this.last?.q ?? 0
     return {
-      estado: fresh ? classify(this.last!.v) : 'sem dados',
+      semDados: !fresh,
       densidade: this.last?.k ?? null,
       velocidade: this.last?.v ?? null,
       fluxo,
       vf,
       kj,
       capacidade,
-      folga: capacidade === null || this.last === null ? null : CapacityModel.slack(capacidade, fluxo),
+      capacidadeFonte: known ? 'aprendida' : 'configurada',
+      folga: this.last === null ? null : CapacityModel.slack(capacidade, fluxo),
       amostras: [...this.samples],
     }
   }

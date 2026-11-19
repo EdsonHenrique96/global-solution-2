@@ -1,13 +1,14 @@
 import type { SimulationState } from '../sim/SimulationEngine'
 import type { DiversionState } from './DiversionController'
 
-export type IncidentKind = 'colisao' | 'obra' | 'semaforo' | 'congestionamento'
+export type IncidentKind = 'colisao' | 'obra' | 'semaforo' | 'congestionamento' | 'possivel-incidente'
 
 export const INCIDENT_TITLES: Record<IncidentKind, string> = {
   colisao: 'Colisão',
   obra: 'Obra na pista',
   semaforo: 'Semáforo intermitente',
   congestionamento: 'Congestionamento persistente',
+  'possivel-incidente': 'Possível incidente',
 }
 
 export interface Incident {
@@ -28,14 +29,15 @@ export interface Incident {
 const KEEP_HISTORY = 100
 
 /**
- * What needs the operator: the engine's blockages, work zones and flashing corners, and the jam a
- * diversion is active on. `update` diffs them against the last call; whatever disappeared ended then.
+ * What needs the operator: the engine's blockages, work zones and flashing corners, the jam a
+ * diversion is active on, and each "Possível incidente" warning (to be confirmed, AD-091). `update` diffs them against the last call; whatever disappeared ended then.
  */
 export class IncidentLog {
   private readonly open = new Map<string, Incident>()
   private readonly closed: Incident[] = []
 
-  update(state: SimulationState, diversion: DiversionState): void {
+  /** `anomalies`: the segments with a "Possível incidente" warning (AD-091). */
+  update(state: SimulationState, diversion: DiversionState, anomalies: readonly string[] = []): void {
     const now = state.timeMs
     const seen = new Map<string, Omit<Incident, 'startMs' | 'endMs'>>()
     for (const b of state.blockages) {
@@ -50,6 +52,10 @@ export class IncidentLog {
     if (diversion.status === 'ativo') {
       const key = `congestionamento:${diversion.trecho}`
       seen.set(key, { key, kind: 'congestionamento', nivel: 'moderado', refId: null, segmentId: diversion.trecho, intersectionId: null, distance: null, endsAtMs: null })
+    }
+    for (const segmentId of anomalies) {
+      const key = `possivel-incidente:${segmentId}`
+      seen.set(key, { key, kind: 'possivel-incidente', nivel: 'moderado', refId: null, segmentId, intersectionId: null, distance: null, endsAtMs: null })
     }
     for (const [key, inc] of this.open) {
       if (seen.has(key)) continue

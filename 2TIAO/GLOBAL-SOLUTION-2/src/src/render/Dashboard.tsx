@@ -192,6 +192,7 @@ const KIND_COLOR: Record<Incident['kind'], string> = {
   obra: NIVEIS.intenso.color,
   semaforo: NIVEIS.moderado.color,
   congestionamento: NIVEIS.intenso.color,
+  'possivel-incidente': NIVEIS.moderado.color,
 }
 
 /** Camera icon border: online, offline (AD-054). */

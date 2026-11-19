@@ -1,6 +1,8 @@
-import { SPEED_LIMIT_KMH, type Estimate, type RouteStatus } from '../capacity/CapacityModel'
+import { SPEED_LIMIT_KMH, type Estimate } from '../capacity/CapacityModel'
+import type { Nivel } from '../capacity/SegmentClassifier'
 import type { FusedSegment } from '../fusion/FusionService'
 import { segmentName } from '../sensors/segments'
+import { NIVEIS } from './levels'
 import { pairLabel, SEM_DADO } from './tooltip'
 
 const W = 300
@@ -10,8 +12,8 @@ const PAD = { left: 40, right: 10, top: 10, bottom: 30 }
 interface Props {
   segmentId: string
   estimate: Estimate | undefined
-  /** State as the operator sees it (fusedStatus); the estimate's own when absent. */
-  status?: RouteStatus
+  /** The segment's level (AD-082), the same the map paints. */
+  nivel: Nivel
   fused?: FusedSegment
   /** The segment's camera pair; null without one. */
   pair?: readonly [string, string] | null
@@ -21,9 +23,9 @@ const fmt = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 1 
 const orNone = (v: number | null | undefined, unit: string) => (v === null || v === undefined ? SEM_DADO : `${fmt(v)} ${unit}`)
 
 /** The selected segment's metrics (AC 16) and its flow x density curve forming live. */
-export function CapacityPanel({ segmentId, estimate, status, fused, pair = null }: Props) {
-  const estado = status ?? estimate?.estado ?? 'sem dados'
-  const known = estimate && estado !== 'sem dados'
+export function CapacityPanel({ segmentId, estimate, nivel, fused, pair = null }: Props) {
+  const lv = NIVEIS[nivel]
+  const known = estimate && nivel !== 'sem dado'
   // share of the learned capacity in use: flow over capacity
   const ocupacao = known && estimate.capacidade ? Math.round((estimate.fluxo / estimate.capacidade) * 100) : null
   const velocidade = fused?.velocidadeMedia ?? null
@@ -37,8 +39,8 @@ export function CapacityPanel({ segmentId, estimate, status, fused, pair = null 
             <span data-testid="capacity-via">{segmentName(segmentId)}</span>
           </h2>
         </div>
-        <span data-testid="capacity-estado" className={`pill estado ${estado.replace(' ', '-')}`}>
-          {estado === 'sem dados' ? SEM_DADO : estado}
+        <span data-testid="capacity-estado" className="pill" style={{ color: lv.color, background: lv.bg }}>
+          {nivel === 'sem dado' ? SEM_DADO : lv.label}
         </span>
       </div>
 
@@ -48,7 +50,7 @@ export function CapacityPanel({ segmentId, estimate, status, fused, pair = null 
           <strong>{ocupacao === null ? (estimate?.capacidade == null ? 'aprendendo' : '—') : `${ocupacao}%`}</strong>
         </div>
         <div className="track">
-          <span className={`estado-bg ${estado.replace(' ', '-')}`} style={{ width: `${Math.min(100, ocupacao ?? 0)}%` }} />
+          <span style={{ width: `${Math.min(100, ocupacao ?? 0)}%`, background: lv.color }} />
         </div>
       </div>
 
@@ -63,7 +65,7 @@ export function CapacityPanel({ segmentId, estimate, status, fused, pair = null 
         </div>
         <div>
           <dt>Velocidade (pareamento)</dt>
-          <dd data-testid="capacity-velocidade" className={pctLimite === null ? undefined : `estado ${estado.replace(' ', '-')}`}>
+          <dd data-testid="capacity-velocidade" style={pctLimite === null ? undefined : { color: lv.color }}>
             {orNone(velocidade, 'km/h')}
           </dd>
           {pctLimite !== null && <small>{pctLimite}% do limite de {SPEED_LIMIT_KMH} km/h</small>}

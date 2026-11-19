@@ -8,7 +8,6 @@ import { SimulationEngine } from '../sim/SimulationEngine'
 import type { Point } from '../sim/types'
 import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { fitTransform, laneStyle } from './draw'
-import { fusedStatus, sortRoads } from './roads'
 import { segmentTooltip } from './tooltip'
 
 interface Call {
@@ -140,17 +139,6 @@ describe('render cidade', () => {
     expect(laneStyle('critico')).toEqual({ color: '#F0565B', dash: [] })
     expect(laneStyle('sem dado').color).toBe('#5B6676')
     expect(laneStyle('sem dado').dash.length).toBeGreaterThan(0)
-    // the state is the AD-006 rule on the newest fused reading; none for 20 s -> sem dados
-    const f = (v: number | null, at: number | null) => ({ contagem: 1, densidade: 1, velocidadeMedia: v, fluxoVeicMin: 1, pares: 1, alertas: [], demandaOD: null, fontes: [], confianca: 1, atualizadoEm: at, estimado: false })
-    expect(fusedStatus(f(40, 50_000), 60_000)).toBe('fluindo')
-    expect(fusedStatus(f(39.9, 50_000), 60_000)).toBe('carregado')
-    expect(fusedStatus(f(25, 50_000), 60_000)).toBe('carregado')
-    expect(fusedStatus(f(24.9, 50_000), 60_000)).toBe('congestionado')
-    expect(fusedStatus(f(null, 50_000), 60_000)).toBe('fluindo')
-    expect(fusedStatus(f(10, 40_000), 60_000)).toBe('congestionado')
-    expect(fusedStatus(f(10, 39_999), 60_000)).toBe('sem dados')
-    expect(fusedStatus(f(10, null), 60_000)).toBe('sem dados')
-    expect(fusedStatus(undefined, 60_000)).toBe('sem dados')
     // on the map, before any reading: every lane grey and dashed
     const engine = new SimulationEngine({ ratePerMinute: 0 })
     render(<App engine={engine} transport={new FakeTransport(true)} />)
@@ -167,14 +155,15 @@ describe('render cidade', () => {
     const transport = new FakeTransport(true)
     render(<App engine={engine} transport={transport} />)
     act(() => {
-      for (const [trecho, v] of [['I12>I13', 3], ['I13>I12', 45], ['I22>I23', 30]] as const) deliverMetrics(transport, trecho, 0, { k: 4 / 0.12, v, ocupacao: 4 })
+      // flows over the configured capacity (~844 veh/h, AD-087): 300 veh/h is Livre, 540 veh/h Moderado
+      for (const [trecho, v, fluxo] of [['I12>I13', 3, 2], ['I13>I12', 45, 5], ['I22>I23', 30, 9]] as const) deliverMetrics(transport, trecho, 0, { k: 4 / 0.12, v, ocupacao: 4, fluxoVeicMin: fluxo })
     })
     const frame = redraw()
     const at = (id: string) => laneStrokes(engine, frame, id).at(-1)!
-    // 3 km/h is below half the limit: critical; the other direction is still learning its capacity
+    // 3 km/h is below 15 km/h: critical; the other direction, at 36 % of its configured capacity, is free
     expect(at('I12>I13')).toEqual({ points: expect.anything(), style: '#F0565B', dashed: false })
-    expect(at('I13>I12')).toEqual({ points: expect.anything(), style: '#8A96A8', dashed: false })
-    expect(at('I22>I23')).toEqual({ points: expect.anything(), style: '#8A96A8', dashed: false })
+    expect(at('I13>I12')).toEqual({ points: expect.anything(), style: '#3DBE7A', dashed: false })
+    expect(at('I22>I23')).toEqual({ points: expect.anything(), style: '#F5D04E', dashed: false })
     expect(at('I23>I22')).toEqual({ points: expect.anything(), style: '#5B6676', dashed: true })
   })
 
@@ -198,10 +187,10 @@ describe('render cidade', () => {
     expect(within(tip).getByTestId('tooltip-unidade')).toHaveTextContent('estimado')
     expect(within(tip).getByTestId('tooltip-avisos')).toHaveTextContent('Acidente')
     // the segment the diversion steers app drivers away from carries the persistent-congestion warning; its opposite direction does not
-    const jammed = segmentTooltip('I12>I13', null, undefined, 'congestionado', 0, 'I12>I13')
+    const jammed = segmentTooltip('I12>I13', null, undefined, 'critico', 0, 'I12>I13')
     expect(jammed.avisos.some((a) => /Congestionamento persistente/.test(a))).toBe(true)
-    expect(segmentTooltip('I13>I12', null, undefined, 'fluindo', 0, 'I12>I13').avisos).toEqual([])
-    expect(segmentTooltip('I12>I13', null, undefined, 'congestionado', 0, null).avisos).toEqual([])
+    expect(segmentTooltip('I13>I12', null, undefined, 'livre', 0, 'I12>I13').avisos).toEqual([])
+    expect(segmentTooltip('I12>I13', null, undefined, 'critico', 0, null).avisos).toEqual([])
 
     // a covered segment with a fresh reading shows the measured numbers
     const covered = 'I12>I13'
@@ -247,18 +236,6 @@ describe('render cidade', () => {
     for (const t of ['velocidade', 'capacidade', 'folga', 'estado']) expect(within(panel).getByTestId(`capacity-${t}`)).not.toBeEmptyDOMElement()
     expect(within(panel).getByText('No trecho agora')).toBeInTheDocument()
     expect(within(panel).getByText('Velocidade (pareamento)')).toBeInTheDocument()
-  })
-
-  it('orders roads from worst to best', () => {
-    const rows = [
-      { id: 'a', estado: 'fluindo' as const, velocidade: 45 },
-      { id: 'b', estado: 'sem dados' as const, velocidade: null },
-      { id: 'c', estado: 'congestionado' as const, velocidade: 20 },
-      { id: 'd', estado: 'carregado' as const, velocidade: 30 },
-      { id: 'e', estado: 'congestionado' as const, velocidade: 12 },
-      { id: 'f', estado: 'fluindo' as const, velocidade: null },
-    ]
-    expect(sortRoads(rows).map((r) => r.id)).toEqual(['e', 'c', 'd', 'a', 'f', 'b'])
   })
 
   it('shows sem dado before the first reading', () => {

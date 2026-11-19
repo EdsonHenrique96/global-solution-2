@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { METRIC_KEYS, summarise, toCsv } from '../experiments/csv'
-import { ACCIDENT_MINUTES, clampDemand, clampRepetitions, runExperiment, SCENARIOS, type ExperimentParams, type RunMetrics, type RunResult } from '../experiments/ExperimentRunner'
+import { ACCIDENT_MINUTES, clampDemand, clampRepetitions, DEMAND_MAX, DEMAND_MIN, RATE_PER_MINUTE, runExperiment, SCENARIOS, type ExperimentParams, type RunMetrics, type RunResult } from '../experiments/ExperimentRunner'
 
 const LABELS: Record<keyof RunMetrics, string> = {
   tempoMedioViagemS: 'Tempo médio de viagem (s)',
@@ -41,11 +41,11 @@ function download(csv: string, filename: string): void {
 export function ExperimentsPanel({ run = runExperiment, save = download }: Props) {
   const [reps, setReps] = useState(10)
   const [acidenteMin, setAcidenteMin] = useState<ExperimentParams['acidenteMin']>(2)
-  /** Raw text while the operator types; clamped to 10-20 on blur and when the run starts. */
-  const [demandaText, setDemandaText] = useState('15')
+  /** Raw text while the operator types; clamped to DEMAND_MIN-DEMAND_MAX on blur and when the run starts. */
+  const [demandaText, setDemandaText] = useState(String(RATE_PER_MINUTE))
   const demanda = clampDemand(Number(demandaText))
   /** Parameters of the run whose results are shown (the CSV carries these, not the form's). */
-  const [ran, setRan] = useState<ExperimentParams>({ acidenteMin: 2, demanda: 15 })
+  const [ran, setRan] = useState<ExperimentParams>({ acidenteMin: 2, demanda: RATE_PER_MINUTE })
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [results, setResults] = useState<RunResult[]>([])
   const [status, setStatus] = useState<'parado' | 'rodando' | 'concluido' | 'cancelado'>('parado')
@@ -101,7 +101,7 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
     <section className="experiments" aria-label="Experimentos">
       <h2>Experimentos</h2>
       <p className="hint">
-        Três cenários com o mesmo acidente (central, 500 m, aos 5 min, por {status === 'parado' ? acidenteMin : ran.acidenteMin} min) e a mesma semente em cada repetição.
+        Três cenários com o mesmo acidente (central, 500 m, aos 5 min, por {status === 'parado' ? acidenteMin : ran.acidenteMin} min) e a mesma semente em cada repetição, em rodadas de 25 min.
       </p>
       <div className="exp-controls">
         <label>
@@ -122,8 +122,8 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
           Demanda (carros/min)
           <input
             type="number"
-            min={10}
-            max={20}
+            min={DEMAND_MIN}
+            max={DEMAND_MAX}
             value={demandaText}
             onChange={(e) => setDemandaText(e.target.value)}
             onBlur={() => setDemandaText(String(demanda))}
@@ -165,9 +165,13 @@ export function ExperimentsPanel({ run = runExperiment, save = download }: Props
                   <th scope="row">{LABELS[k]}</th>
                   {SCENARIOS.map((c) => {
                     const s = summary[c]?.[k]
+                    // an empty "tempo até normalizar" is a result: the queue did not settle in the run (AD-085)
+                    const unsettled = k === 'tempoNormalizarS' ? results.filter((r) => r.cenario === c && r.metrics.tempoNormalizarS === null).length : 0
+                    const text = !s ? '—' : unsettled > 0 && s.media === null ? 'não normalizou' : `${fmt(s.media)} ± ${fmt(s.desvio)}`
                     return (
                       <td key={c} data-testid={`cell-${k}-${c}`}>
-                        {s ? `${fmt(s.media)} ± ${fmt(s.desvio)}` : '—'}
+                        {text}
+                        {unsettled > 0 && s?.media !== null && ` · ${unsettled} não normalizou`}
                       </td>
                     )
                   })}

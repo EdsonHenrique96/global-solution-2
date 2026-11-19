@@ -59,9 +59,12 @@ export const cameraStatusTopic = (cameraId: string) => `transito/cameras/${camer
 /** `C01E`, `C12S`. */
 export const cameraId = (n: number, papel: Papel) => `C${String(n).padStart(2, '0')}${papel === 'entrada' ? 'E' : 'S'}`
 
+/** The exit camera stands this far before the stop line, past the usual red-light queue (AD-079, AD-083). */
+export const EXIT_BEFORE_STOP_LINE_M = 60
+
 /**
- * The 24 cameras: for each segment `n` of DEFAULT_UNIT_BLOCKS, `C<n>E` at its start and `C<n>S` at
- * its stop line, `stopLineM` before its end. The entry camera looks down the segment, the exit
+ * The 24 cameras: for each segment `n` of DEFAULT_UNIT_BLOCKS, `C<n>E` at its start and `C<n>S`
+ * 60 m before its stop line (the stop line is `stopLineM` before its end). The entry camera looks down the segment, the exit
  * camera back at the cars coming to its line.
  */
 export function defaultPlateCameras(segments: readonly Segment[], stopLineM: number): PlateCamera[] {
@@ -69,7 +72,7 @@ export function defaultPlateCameras(segments: readonly Segment[], stopLineM: num
     const s = segments.find((x) => x.id === `${a}>${b}`)
     if (!s) return []
     const [start, end] = s.points
-    const exitLine = s.length - stopLineM
+    const exitLine = s.length - stopLineM - EXIT_BEFORE_STOP_LINE_M
     return [
       { id: cameraId(i + 1, 'entrada'), trecho: s.id, papel: 'entrada', linhaM: 0, position: pointOnSegment(s, 0), heading: bearing(start, end), fov: UNIT_FOV, range: UNIT_RANGE },
       { id: cameraId(i + 1, 'saida'), trecho: s.id, papel: 'saida', linhaM: exitLine, position: pointOnSegment(s, exitLine), heading: bearing(end, start), fov: UNIT_FOV, range: UNIT_RANGE },

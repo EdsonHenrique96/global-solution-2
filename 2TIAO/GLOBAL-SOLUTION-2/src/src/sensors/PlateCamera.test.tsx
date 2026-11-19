@@ -51,9 +51,10 @@ describe('plate cameras', () => {
       const exit = cameras.find((c) => c.id === id(i + 1, 'S'))!
       expect(entry).toMatchObject({ trecho: seg.id, papel: 'entrada', linhaM: 0 })
       expect(exit).toMatchObject({ trecho: seg.id, papel: 'saida' })
-      expect(exit.linhaM).toBeCloseTo(seg.length - 12, 9)
+      // 60 m before the stop line, which is 12 m before the corner (AD-079, AD-083)
+      expect(exit.linhaM).toBeCloseTo(seg.length - 72, 9)
       expect(entry.position).toEqual(pointOnSegment(seg, 0))
-      const stop = pointOnSegment(seg, seg.length - 12)
+      const stop = pointOnSegment(seg, seg.length - 72)
       expect(exit.position.x).toBeCloseTo(stop.x, 9)
       expect(exit.position.y).toBeCloseTo(stop.y, 9)
     })
@@ -66,11 +67,11 @@ describe('plate cameras', () => {
     expect(unpaired).toHaveLength(36)
     expect(segments.filter((s) => pairOf(cameras, s.id) !== null).map((s) => s.id).sort()).toEqual([...MONITORED].sort())
     for (const s of unpaired) {
-      const content = segmentTooltip(s.id, pairOf(cameras, s.id), undefined, 'sem dados', 0)
+      const content = segmentTooltip(s.id, pairOf(cameras, s.id), undefined, 'sem dado', 0)
       expect(content.estimado).toBe(true)
       expect(content.unidade).toBe('estimado')
     }
-    render(<SegmentTooltip content={segmentTooltip(unpaired[0].id, null, undefined, 'sem dados', 0)} x={0} y={0} />)
+    render(<SegmentTooltip content={segmentTooltip(unpaired[0].id, null, undefined, 'sem dado', 0)} x={0} y={0} />)
     const tip = screen.getByRole('tooltip')
     expect(tip.querySelector('.tag')).toHaveTextContent('estimado')
     expect(screen.getByTestId('tooltip-unidade')).toHaveTextContent('estimado')

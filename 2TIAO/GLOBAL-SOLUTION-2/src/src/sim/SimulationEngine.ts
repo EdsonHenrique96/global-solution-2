@@ -12,7 +12,11 @@ import { phaseFor, SignalController, type LightState } from './trafficLight'
 import type { AppName, Axis, Car, RoadNetwork } from './types'
 
 export const TICK_MS = 100
-export const DEFAULT_RATE_PER_MINUTE = 30
+/**
+ * The smallest network demand (multiple of 5) at which the 12 monitored segments average at least
+ * 5 cars/min, so the pair metrics are not sparse (AD-081, measured with seed 1001).
+ */
+export const DEFAULT_RATE_PER_MINUTE = 75
 /** Stop line, metres before the corner. */
 export const STOP_LINE_M = 12
 /** Cars this close to a corner, free to cross it, take turns entering the same next segment. */

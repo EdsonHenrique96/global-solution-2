@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SimulationEngine, TICK_MS } from './SimulationEngine'
+import { SimulationEngine, STOP_LINE_M, TICK_MS } from './SimulationEngine'
+import { lightAt, phaseFor } from './trafficLight'
 
 const FREE_MS = 50 / 3.6
 
@@ -29,6 +30,38 @@ function minGap(engine: SimulationEngine): number {
 
 describe('sim', () => {
   describe('idm', () => {
+    it('C41 a queue of 10 stopped cars crosses within 20 s of green', () => {
+      const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
+      const phase = () => phaseFor(lightAt('I12', engine.getState().timeMs), 'H')
+      while (phase() !== 'vermelho') engine.tick(TICK_MS)
+      const line = engine.segment('I11>I12')!.length - STOP_LINE_M
+      // 10 cars standing 7 m apart (5 m car + 2 m gap), the first on the stop line
+      const cars = Array.from({ length: 10 }, (_, k) => engine.addCar({ path: ['I11>I12', 'I12>I13'], distance: line - k * 7, velocity: 0 }))
+      const crossedAt = new Map<number, number>()
+      let green: number | null = null
+      let minGap = Infinity
+      for (let i = 0; i < 1_200 && crossedAt.size < 10; i++) {
+        engine.tick(TICK_MS)
+        const now = engine.getState().timeMs
+        const p = phase()
+        if (green === null && p === 'verde') green = now
+        const on = engine.getState().cars.filter((c) => c.path[c.seg] === 'I11>I12').sort((a, b) => a.distance - b.distance)
+        for (let k = 1; k < on.length; k++) minGap = Math.min(minGap, on[k].distance - on[k - 1].distance)
+        for (const c of cars) {
+          const s = engine.getState().cars.find((x) => x.id === c.id)
+          if (crossedAt.has(c.id) || !(!s || s.seg > 0 || s.distance > line)) continue
+          // nobody crosses on red
+          expect(p, `car ${c.id}`).not.toBe('vermelho')
+          crossedAt.set(c.id, now)
+        }
+      }
+      expect(green).not.toBeNull()
+      expect(crossedAt.size).toBe(10)
+      expect(Math.max(...crossedAt.values()) - green!).toBeLessThanOrEqual(20_000)
+      // no collision: never closer than 7 m (5 m car + 2 m standstill gap)
+      expect(minGap).toBeGreaterThanOrEqual(7 - 1e-9)
+    })
+
     it('accelerates a lone car to 50 km/h within 15 s and never above', () => {
       const engine = new SimulationEngine({ ratePerMinute: 0, trafficLights: 'always-green' })
       const around = ['I11>I12', 'I12>I13', 'I13>I14', 'I14>I24', 'I24>I34', 'I34>I44', 'I44>I43', 'I43>I42', 'I42>I41']

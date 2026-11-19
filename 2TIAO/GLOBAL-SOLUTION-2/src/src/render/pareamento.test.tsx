@@ -1,15 +1,15 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
-import { metricsTopic } from '../fusion/PlateMatcher'
+import { anomalyTopic, metricsTopic } from '../fusion/PlateMatcher'
 import { EVENTS_FILTER, type PlateEvent } from '../sensors/PlateCamera'
 import { pointOnSegment, segmentName } from '../sensors/segments'
 import { SimulationEngine } from '../sim/SimulationEngine'
 import type { Point } from '../sim/types'
-import { FakeTransport } from '../telemetry/testing'
+import { deliverMetrics, FakeTransport } from '../telemetry/testing'
 import { topicMatches } from '../telemetry/transport'
 import { fitTransform } from './draw'
-import { readSegment } from './levels'
+import { NIVEIS, readSegment } from './levels'
 import { SelectedRoad } from './Dashboard'
 
 const W = 1000
@@ -178,7 +178,7 @@ describe('pareamento dashboard', () => {
       const seg = engine.segment(c.trecho)!
       const icon = screen.getByRole('img', { name: new RegExp(`^${c.id} · `) })
       expect(icon.getAttribute('aria-label')).toMatch(new RegExp(`^${c.id} · ${PAPEL[c.papel]} · ${segmentName(c.trecho).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} · (online|offline)$`))
-      const at = screenOf(engine, pointOnSegment(seg, c.papel === 'entrada' ? 0 : seg.length - 12))
+      const at = screenOf(engine, pointOnSegment(seg, c.papel === 'entrada' ? 0 : seg.length - 72))
       expect(near(parseFloat(icon.style.left), at.x) && near(parseFloat(icon.style.top), at.y), c.id).toBe(true)
     }
   })
@@ -216,4 +216,95 @@ describe('pareamento dashboard', () => {
     advance(1_000) // 21 s
     expect(card()).toHaveTextContent('0 / 24')
   })
+
+  it('C43 the anomaly shows as Possível incidente in the panel and on the map', () => {
+    const { transport } = setup()
+    advance(15_000)
+    const warn = (ativo: boolean, ts: number) =>
+      act(() => {
+        transport.deliver(anomalyTopic('I12>I13'), JSON.stringify({ trecho: 'I12>I13', ts, ativo, atrasados: 4, fracao: 1 }))
+      })
+    warn(true, 15_000)
+    advance(100)
+    const incidents = screen.getByRole('region', { name: 'Incidentes' })
+    const card = within(incidents).getByTestId('incident-possivel-incidente:I12>I13')
+    expect(card).toHaveTextContent('Possível incidente')
+    expect(card).toHaveTextContent('Moderado')
+    expect(card).toHaveTextContent('Anomalia: carros que entraram não saíram no tempo esperado · aguarda confirmação')
+    expect(screen.getByTestId('marker-possivel-incidente:I12>I13')).toHaveAttribute('aria-label', 'Possível incidente')
+    expect(screen.getAllByRole('note').some((n) => /Possível incidente/.test(n.textContent ?? ''))).toBe(true)
+    warn(false, 15_100)
+    advance(100)
+    expect(within(incidents).queryByTestId('incident-possivel-incidente:I12>I13')).toBeNull()
+    expect(screen.queryByTestId('marker-possivel-incidente:I12>I13')).toBeNull()
+  })
+
+  it('C34 map ranking tooltip and selected road show the same level', () => {
+    // a canvas that records each lane stroke and its colour
+    let strokes: { from: number[]; to: number[]; style: unknown }[] = []
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => {
+      const st: Record<string | symbol, unknown> = {}
+      let path: number[][] = []
+      return new Proxy(st, {
+        get(target, key) {
+          if (key in target) return target[key]
+          return (...args: number[]) => {
+            if (key === 'clearRect') strokes = []
+            else if (key === 'beginPath') path = []
+            else if (key === 'moveTo' || key === 'lineTo') path.push(args)
+            else if (key === 'stroke' && path.length === 2) strokes.push({ from: path[0], to: path[1], style: target.strokeStyle })
+            return key === 'measureText' ? { width: 10 } : undefined
+          }
+        },
+        set(target, key, value) {
+          target[key] = value
+          return true
+        },
+      }) as never
+    })
+    const engine = new SimulationEngine({ ratePerMinute: 0, cameras: [] })
+    const transport = new FakeTransport(true)
+    render(<App engine={engine} transport={transport} />)
+    advance(2_000)
+    const now = engine.getState().timeMs
+    act(() => {
+      // learn 1 250 veh/h on both (Greenshields vf 50, kj 100), then the last metrics
+      for (let i = 0; i < 30; i++) {
+        const k = 5 + (i % 19) * 5
+        for (const id of ['I12>I13', 'I22>I23']) deliverMetrics(transport, id, now - 60 + i, { k, v: 50 * (1 - k / 100) })
+      }
+      deliverMetrics(transport, 'I12>I13', now, { k: 20, v: 14, fluxoVeicMin: 2 })
+      deliverMetrics(transport, 'I22>I23', now, { k: 20, v: 40, fluxoVeicMin: 12.5 })
+    })
+    advance(100)
+    const canvas = document.querySelector('canvas')!
+    const levelOn = (id: string) => {
+      const seg = engine.segment(id)!
+      act(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+      const [a, b] = seg.points.map((p) => screenOf(engine, p))
+      const lane = strokes.filter((x) => near(x.from[0], a.x) && near(x.from[1], a.y) && near(x.to[0], b.x) && near(x.to[1], b.y)).at(-1)!
+      const mapLevel = Object.values(NIVEIS).find((n) => n.color === lane.style)!.label
+      const rua = seg.rua
+      const bar = screen.getByTestId(`rank-${rua}`).querySelector('.track span') as HTMLElement
+      const rankLevel = Object.values(NIVEIS).find((n) => bar.style.background === hexToRgb(n.color) || bar.style.background === n.color)!.label
+      const p = screenOf(engine, pointOnSegment(seg, seg.length / 2))
+      fireEvent.mouseMove(canvas, { clientX: p.x, clientY: p.y })
+      const tipLevel = within(screen.getByRole('tooltip')).getByTestId('tooltip-estado').textContent
+      fireEvent.mouseDown(canvas, { clientX: p.x, clientY: p.y, button: 0 })
+      fireEvent.mouseUp(window, { clientX: p.x, clientY: p.y })
+      const road = screen.getByRole('region', { name: 'Via selecionada' })
+      expect(within(road).getByTestId('selected-name')).toHaveTextContent(segmentName(id))
+      const selectedLevel = within(road).getByTestId('selected-level').textContent
+      return [mapLevel, rankLevel, tipLevel, selectedLevel]
+    }
+    expect(levelOn('I12>I13')).toEqual(['Crítico', 'Crítico', 'Crítico', 'Crítico'])
+    expect(levelOn('I22>I23')).toEqual(['Moderado', 'Moderado', 'Moderado', 'Moderado'])
+  })
 })
+
+function hexToRgb(hex: string): string {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
+  return `rgb(${r}, ${g}, ${b})`
+}

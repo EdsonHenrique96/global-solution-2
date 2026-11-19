@@ -5,10 +5,10 @@
 export const IDM = {
   /** Desired speed, m/s (50 km/h). */
   v0: 50 / 3.6,
-  /** Time headway, s. */
-  T: 1.5,
-  /** Maximum acceleration, m/s². */
-  a: 1.5,
+  /** Time headway, s (1.0: a 10-car queue crosses within 20 s of green, AD-096). */
+  T: 1.0,
+  /** Maximum acceleration, m/s² (2.5: brisk but realistic start-up, AD-088). */
+  a: 2.5,
   /** Comfortable deceleration, m/s². */
   b: 2.0,
   /** Minimum standstill gap, m. */

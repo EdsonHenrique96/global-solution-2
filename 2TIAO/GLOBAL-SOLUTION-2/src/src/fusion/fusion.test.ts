@@ -54,9 +54,9 @@ describe('fusion', () => {
       expect(Object.keys(state).sort()).toEqual(segments.map((s) => s.id).sort())
       for (const s of Object.values(state)) {
         expect(Object.keys(s).sort()).toEqual(
-          ['alertas', 'atualizadoEm', 'confianca', 'contagem', 'demandaOD', 'densidade', 'estimado', 'fluxoVeicMin', 'fontes', 'pares', 'velocidadeMedia'].sort(),
+          ['alertas', 'atualizadoEm', 'confianca', 'contagem', 'demandaOD', 'densidade', 'estimado', 'fluxoVeicMin', 'fontes', 'pares', 'possivelIncidente', 'velocidadeMedia'].sort(),
         )
-        expect(s).toMatchObject({ contagem: null, densidade: null, velocidadeMedia: null, fluxoVeicMin: null, pares: null, alertas: [], demandaOD: null, fontes: [], confianca: 0, atualizadoEm: null, estimado: false })
+        expect(s).toMatchObject({ contagem: null, densidade: null, velocidadeMedia: null, fluxoVeicMin: null, pares: null, possivelIncidente: false, alertas: [], demandaOD: null, fontes: [], confianca: 0, atualizadoEm: null, estimado: false })
       }
     })
 

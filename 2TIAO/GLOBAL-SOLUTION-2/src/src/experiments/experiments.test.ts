@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
+import { DEFAULT_RATE_PER_MINUTE, SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { emissionFactor, IDLE_G_PER_S } from './emission'
 import { CSV_HEADER, summarise, toCsv } from './csv'
-import { ACCIDENT, normalisationS, runExperiment, runScenario, SCENARIOS, seedFor, type RunMetrics } from './ExperimentRunner'
+import { ACCIDENT, normalisationS, RUN_MS, runExperiment, runScenario, SCENARIOS, seedFor, type RunMetrics } from './ExperimentRunner'
 
 const FREE_MS = 50 / 3.6
 
@@ -12,6 +12,20 @@ function runFor(engine: SimulationEngine, ms: number) {
 }
 
 describe('experiments', () => {
+  it('C36 runs last 25 minutes', { timeout: 120_000 }, () => {
+    expect(RUN_MS).toBe(1_500_000)
+    const r = runScenario('sem-sistema', seedFor(1))
+    expect((r.trace.queueBySecond as number[]).length).toBe(1_500)
+  })
+
+  it('C42 the default demand normalises within the run', { timeout: 120_000 }, () => {
+    const r = runScenario('sem-sistema', 1001, { acidenteMin: 2, demanda: DEFAULT_RATE_PER_MINUTE })
+    expect(r.trace.demanda).toBe(75)
+    expect(r.tempoNormalizarS).not.toBeNull()
+    expect(r.tempoNormalizarS!).toBeGreaterThanOrEqual(0)
+    expect(r.tempoNormalizarS!).toBeLessThanOrEqual(1_500 - 300)
+  })
+
   describe('emission', () => {
     it('adds moving emission by speed factor and idle emission per second', () => {
       expect(emissionFactor(10)).toBeGreaterThan(emissionFactor(30))
@@ -132,7 +146,7 @@ describe('experiments', () => {
     })
 
     it('notifies nobody without the system and someone when notifying all', { timeout: 120_000 }, () => {
-      const params = { acidenteMin: 5 as const, demanda: 15 }
+      const params = { acidenteMin: 5 as const, demanda: 75 }
       const none = runScenario('sem-sistema', seedFor(1), params)
       expect(none.trace.notified).toBe(0)
       expect(none.desviadosPct).toBe(0)
@@ -207,24 +221,24 @@ describe('experiments', () => {
       expect(e.addBlockage('I22>I23', 30, 300_000).endsAtMs).toBe(300_000)
 
       const base = runScenario('sem-sistema', 7)
-      expect(base.trace.demanda).toBe(15)
+      expect(base.trace.demanda).toBe(75)
       for (const s of SCENARIOS) {
-        const r = runScenario(s, 7, { acidenteMin: 5, demanda: 20 })
+        const r = runScenario(s, 7, { acidenteMin: 5, demanda: 90 })
         expect(r.trace.blockages).toMatchObject([
           { segmentId: 'I12>I13', ativo: true, ts: 300_000 },
           { segmentId: 'I12>I13', ativo: false, ts: 600_000 },
         ])
-        expect(r.trace.demanda).toBe(20)
-        // 20 cars/min over 15 min: about 300, clearly more than at 15 cars/min
+        expect(r.trace.demanda).toBe(90)
+        // 90 cars/min over 15 min: about 1 350, clearly more than at 75 cars/min
         expect(r.trace.spawned as number).toBeGreaterThan((base.trace.spawned as number) + 40)
       }
     })
 
     it('passes the chosen parameters from the experiment to every run', { timeout: 120_000 }, async () => {
-      const { results } = await runExperiment({ repeticoes: 1, acidenteMin: 5, demanda: 20 })
+      const { results } = await runExperiment({ repeticoes: 1, acidenteMin: 5, demanda: 90 })
       expect(results.map((r) => r.cenario)).toEqual([...SCENARIOS])
       for (const r of results) {
-        const { trace: _t, ...expected } = runScenario(r.cenario, seedFor(1), { acidenteMin: 5, demanda: 20 })
+        const { trace: _t, ...expected } = runScenario(r.cenario, seedFor(1), { acidenteMin: 5, demanda: 90 })
         void _t
         expect(r.metrics).toEqual(expected)
         // and not what the defaults would give

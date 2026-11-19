@@ -207,12 +207,13 @@ describe('operations dashboard', () => {
     expect(screen.getByRole('region', { name: 'Agente' })).toBeInTheDocument()
   })
 
-  it('C9 draws learning grey and no data dashed', () => {
+  it('C9 draws a segment with data by its configured capacity and no data dashed', () => {
     const { engine, transport } = setup()
     advance(1_000)
+    // 10 veh/km at 45 km/h = 450 veh/h of the configured ~844 veh/h: 53 %, Moderado - never Aprendendo (AD-087)
     send(transport, engine.getState().timeMs, [{ trecho: 'I22>I23', contagem: 10, v: 45 }])
     const frame = lastFrame()
-    expect(laneOf(engine, frame, 'I22>I23')).toEqual({ style: LEVEL.aprendendo, dashed: false })
+    expect(laneOf(engine, frame, 'I22>I23')).toEqual({ style: LEVEL.moderado, dashed: false })
     expect(laneOf(engine, frame, 'I23>I22')).toEqual({ style: LEVEL.semDado, dashed: true })
   })
 
@@ -264,7 +265,8 @@ describe('operations dashboard', () => {
     const santos = screen.getByTestId('street-Al. Santos')
     // 20 veh/km x 40 km/h = 800 veh/h = 13 cars/min of 1 250 veh/h = 21 cars/min
     expect(santos).toHaveTextContent('Al. Santos13 / 21 carros/minPista 50 · Média 40 km/h')
-    expect(screen.getByTestId('street-Al. Jaú')).toHaveTextContent('Al. Jaú— / aprendendoPista 50 · Média — km/h')
+    // no data on Al. Jaú: no flow, but its configured capacity (~844 veh/h = 14 cars/min, AD-087)
+    expect(screen.getByTestId('street-Al. Jaú')).toHaveTextContent('Al. Jaú— / 14 carros/minPista 50 · Média — km/h')
     fireEvent.click(santos)
     expect(within(selected()).getByTestId('selected-name')).toHaveTextContent(segmentName('I12>I13'))
   })

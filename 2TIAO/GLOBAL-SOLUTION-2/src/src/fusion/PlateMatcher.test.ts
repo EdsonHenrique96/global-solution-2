@@ -9,7 +9,7 @@ import { SimulationEngine, TICK_MS } from '../sim/SimulationEngine'
 import { FakeTransport } from '../telemetry/testing'
 import { topicMatches } from '../telemetry/transport'
 import { FusionService } from './FusionService'
-import { METRICS_FILTER, metricsTopic, PlateMatcher, type SegmentMetrics } from './PlateMatcher'
+import { anomalyOf, anomalyTopic, METRICS_FILTER, metricsTopic, PlateMatcher, type SegmentAnomaly, type SegmentMetrics } from './PlateMatcher'
 
 const METRIC_KEYS = ['camerasPar', 'densidadeVeicKm', 'entraram', 'fluxoVeicMin', 'janelaS', 'ocupacao', 'pares', 'sairam', 'trecho', 'ts', 'velocidadeMediaKmh']
 const MONITORED = DEFAULT_UNIT_BLOCKS.map(([a, b]) => `${a}>${b}`)
@@ -131,6 +131,23 @@ describe('plate matcher', () => {
       expect(m.densidadeVeicKm).toBe(20)
       expect(m.fluxoVeicMin).toBe(2)
     }
+    // entries without an exit never enter the speed (AD-091): waiting 90 s with no pair -> null
+    {
+      const transport = new FakeTransport(true)
+      const clock = { t: 0 }
+      const m = new PlateMatcher(transport, () => clock.t, [{ trecho: 'L', comprimentoM: 128, camerasPar: ['C01E', 'C01S'] }])
+      m.start()
+      transport.deliver(eventsTopic('L'), JSON.stringify({ cameraId: 'C01E', trecho: 'L', papel: 'entrada', placaHash: 'w', ts: 0, faixa: 1, classe: 'carro' }))
+      const at = (t: number) => {
+        clock.t = t
+        m.tick()
+        return transport.published.map((p) => JSON.parse(p.payload) as SegmentMetrics).filter((x) => x.ts === t).at(-1)!
+      }
+      expect(at(40_000).velocidadeMediaKmh).toBeNull()
+      const blocked = at(90_000)
+      expect(blocked.velocidadeMediaKmh).toBeNull()
+      expect(blocked.pares).toBe(0)
+    }
     // no pair: no speed; more exits than entries: never a negative occupancy
     {
       const { ev, at } = bench()
@@ -142,6 +159,79 @@ describe('plate matcher', () => {
       expect(b.ocupacao).toBe(0)
       expect(b.densidadeVeicKm).toBe(0)
     }
+  })
+
+  it('C35 opens the anomaly warning at 80 percent of overdue cars and closes below 50', () => {
+    const entries = (n: number, inside: number, ts: number) => Array.from({ length: n }, (_, i) => ({ ts, exited: i >= inside }))
+    const T = 100_000
+    // median crossing 5 s -> overdue after max(30 s, 15 s) = 30 s
+    const crossings = [5_000, 5_000, 6_000]
+    // a full block: 4 of 4 overdue cars inside -> opens
+    expect(anomalyOf(entries(4, 4, T - 40_000), crossings, T, false)).toMatchObject({ ativo: true, atrasados: 4, fracao: 1 })
+    // exactly 80 %, 4 of 5 -> opens; 3 of 4 (75 %) -> not
+    expect(anomalyOf(entries(5, 4, T - 40_000), crossings, T, false).ativo).toBe(true)
+    expect(anomalyOf(entries(4, 3, T - 40_000), crossings, T, false).ativo).toBe(false)
+    // 1 or 2 cars that stop while the rest pass: never 3 -> no warning, even at 100 %
+    expect(anomalyOf(entries(2, 2, T - 40_000), crossings, T, false).ativo).toBe(false)
+    expect(anomalyOf(entries(12, 2, T - 40_000), crossings, T, false).ativo).toBe(false)
+    // 3 overdue out of 10 (30 %) -> no warning
+    expect(anomalyOf(entries(10, 3, T - 40_000), crossings, T, false)).toMatchObject({ ativo: false, atrasados: 3, fracao: 0.3 })
+    // not overdue yet (29 s): nothing counts
+    expect(anomalyOf(entries(5, 5, T - 29_000), crossings, T, false)).toMatchObject({ ativo: false, atrasados: 0 })
+    // a slow hour (median 20 s) waits 3 x 20 = 60 s
+    expect(anomalyOf(entries(5, 5, T - 50_000), [20_000, 20_000], T, false).ativo).toBe(false)
+    expect(anomalyOf(entries(5, 5, T - 61_000), [20_000, 20_000], T, false).ativo).toBe(true)
+    // cars that entered more than 2 min ago are out of the window
+    expect(anomalyOf(entries(5, 5, T - 121_000), crossings, T, false)).toMatchObject({ ativo: false, atrasados: 0 })
+    // open: holds at 50 %, closes below it
+    expect(anomalyOf(entries(4, 2, T - 40_000), crossings, T, true).ativo).toBe(true)
+    expect(anomalyOf(entries(5, 2, T - 40_000), crossings, T, true).ativo).toBe(false)
+
+    // through the matcher: 6 normal 5 s crossings early on (the hour's median), then 4 cars enter
+    // and none leaves -> one warning on the door 5 topic, then it closes
+    const { transport, ev, at } = bench()
+    for (let i = 0; i < 6; i++) {
+      ev('A', 'entrada', `n${i}`, i * 1_000)
+      ev('A', 'saida', `n${i}`, i * 1_000 + 5_000)
+    }
+    const B = 200_000
+    for (let i = 0; i < 4; i++) ev('A', 'entrada', `b${i}`, B + 1_000 + i * 1_000)
+    at(B + 30_000)
+    expect(transport.published.filter((p) => p.topic === anomalyTopic('A'))).toHaveLength(0)
+    at(B + 40_000)
+    const opened = transport.published.filter((p) => p.topic === anomalyTopic('A'))
+    expect(opened).toHaveLength(1)
+    expect(opened[0].options).toEqual({ qos: 0, retain: true })
+    const body = JSON.parse(opened[0].payload) as SegmentAnomaly
+    expect(Object.keys(body).sort()).toEqual(['ativo', 'atrasados', 'fracao', 'trecho', 'ts'])
+    expect(body).toMatchObject({ trecho: 'A', ts: B + 40_000, ativo: true, atrasados: 4, fracao: 1 })
+    // the metrics never carry it, and the speed stays the pairs' (none -> null)
+    const m = JSON.parse(transport.published.filter((p) => p.topic === metricsTopic('A')).at(-1)!.payload) as SegmentMetrics
+    expect(m.velocidadeMediaKmh).toBeNull()
+    expect(Object.keys(m)).not.toContain('ativo')
+    // 3 of the 4 leave: 25 % < 50 % -> closes
+    for (let i = 0; i < 3; i++) ev('A', 'saida', `b${i}`, B + 45_000)
+    at(B + 50_000)
+    const all = transport.published.filter((p) => p.topic === anomalyTopic('A')).map((p) => JSON.parse(p.payload) as SegmentAnomaly)
+    expect(all.map((a) => a.ativo)).toEqual([true, false])
+  })
+
+  it('C37 exits after the salt change close the entries from before it', () => {
+    const { transport, matcher, ev, at } = bench()
+    // 5 cars enter at 00:59:50 and leave at 01:00:05; the hour turned, so their exit hashes differ
+    for (let i = 0; i < 5; i++) ev('A', 'entrada', `antes${i}`, 3_590_000)
+    for (let i = 0; i < 5; i++) ev('A', 'saida', `depois${i}`, 3_605_000)
+    expect(matcher.pendentes()).toBe(0)
+    const m = at(3_720_000)!
+    expect(m.sairam).toBe(5)
+    expect(m.pares).toBe(0)
+    expect(m.velocidadeMediaKmh).toBeNull()
+    // and no anomaly from them
+    expect(transport.published.filter((p) => p.topic === anomalyTopic('A'))).toHaveLength(0)
+    // an unmatched exit within the same hour closes nothing
+    ev('A', 'entrada', 'x', 3_700_000)
+    ev('A', 'saida', 'y', 3_710_000)
+    expect(matcher.guarda('x')).toBe(true)
   })
 
   it('C18 while the broker is down no metrics reach the fusion and segments go sem dado', { timeout: 60_000 }, () => {
