@@ -1,2 +1,10 @@
 .env
 .env.*
+
+# V2: dados de treino e modelos gerados (npm run dataset, python -m ml.treinar)
+data/treino/
+ml/modelos/*
+!ml/modelos/.gitkeep
+__pycache__/
+.pytest_cache/
+ml/.venv/
