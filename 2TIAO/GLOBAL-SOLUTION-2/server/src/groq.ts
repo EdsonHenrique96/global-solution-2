@@ -44,8 +44,8 @@ export function groqClient(key: string, request: typeof fetch = fetch) {
     if (typeof messages[0]?.content === 'string') {
       try { event = JSON.parse(messages[0].content) } catch { /* ordinary user text */ }
     }
-    const queueEvent = messages.length === 1 && event?.tipo === 'fila'
-    const reviewDiversion = snapshot && event?.dados?.origem === 'apresentacao'
+    const queueEvent = event?.tipo === 'fila'
+    const reviewDiversion = event?.tipo === 'congestionamento' && event.dados?.origem === 'apresentacao'
     const tools = TOOLS.filter(t => {
       if (queueEvent) return t.name === 'propor_semaforo' || t.name === 'registrar_explicacao'
       if (reviewDiversion) return t.name === 'propor_desvio' || t.name === 'registrar_explicacao'
@@ -55,7 +55,7 @@ export function groqClient(key: string, request: typeof fetch = fetch) {
       method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: MODEL, messages: history(messages), reasoning_effort: 'low',
-        ...((snapshot || queueEvent) && { tool_choice: 'required' }),
+        ...((snapshot || queueEvent || reviewDiversion) && { tool_choice: 'required' }),
         tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: reviewDiversion && t.name === 'registrar_explicacao'
           ? { ...t.input_schema, required: ['texto','decisao'] } : t.input_schema } })) }),
     })

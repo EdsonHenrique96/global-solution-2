@@ -121,10 +121,11 @@ export function executeTool(name: string, input: Record<string, unknown>, ctx: T
       if (input.fracao !== undefined) {
         const numbers = input.numeros as Record<string, unknown> | undefined
         if (input.fracao !== sizing.p || !numbers || Object.entries(proof.numeros).some(([k,v]) => numbers[k] !== v)) {
-          const reason = 'Os números mudaram. Consulte simular_desvio antes de propor novamente.'
+          const reason = 'A proposta diverge do cálculo. Reavalie a fração e os indicadores retornados.'
+          ctx.simulations?.set(trecho, { p: sizing.p, proof })
           ctx.refuse?.(trecho, input.fracao as number, reason)
           ctx.explain(reason)
-          return err(JSON.stringify({ erro: 'simulacao_divergente', mensagem: reason }))
+          return err(JSON.stringify({ erro: 'simulacao_divergente', mensagem: reason, trecho, fracao: sizing.p, numeros: proof.numeros }))
         }
       }
       let why = String(justificativa ?? '')

@@ -28,12 +28,19 @@ describe('V3', () => {
       return Response.json({ choices:[{ finish_reason:'stop', message:{content:'ok'} }] })
     })
     const first = { role:'user' as const, content:JSON.stringify({tipo:'congestionamento',dados:{origem:'apresentacao'}}) }
-    await client([first, {role:'assistant',content:[{type:'tool_use',id:'simular_desvio',name:'simular_desvio',input:{}}]},
-      {role:'user',content:[{type:'tool_result',tool_use_id:'simular_desvio',content:'{}'}]}, {role:'user',content:'{}'}])
-    await client([{role:'user',content:JSON.stringify({tipo:'fila'})}])
+    const diversion: Parameters<typeof client>[0] = [first, {role:'assistant',content:[{type:'tool_use',id:'simular_desvio',name:'simular_desvio',input:{}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'simular_desvio',content:'{}'}]}, {role:'user',content:'{}'}]
+    const queue: Parameters<typeof client>[0] = [{role:'user',content:JSON.stringify({tipo:'fila'})}]
+    for (const [turn, name] of [[diversion, 'propor_desvio'], [queue, 'propor_semaforo']] as const) {
+      await client(turn)
+      await client([...turn, {role:'assistant',content:[{type:'tool_use',id:'retry',name,input:{}}]},
+        {role:'user',content:[{type:'tool_result',tool_use_id:'retry',content:'{"erro":"dados_invalidos"}'}]}])
+    }
+    expect(options[1]).toEqual(options[0])
+    expect(options[3]).toEqual(options[2])
     expect(options[0].map(t=>t.function.name)).toEqual(['propor_desvio','registrar_explicacao'])
     expect(options[0][1].function.parameters.required).toContain('decisao')
-    expect(options[1].map(t=>t.function.name)).toEqual(['propor_semaforo','registrar_explicacao'])
+    expect(options[2].map(t=>t.function.name)).toEqual(['propor_semaforo','registrar_explicacao'])
   })
   it('C17 Proxy converte ferramentas e respostas para gpt-oss-20b; cota e credencial indisponíveis permitem modo regras', async () => {
     const calls: Record<string, any>[] = []
