@@ -40,17 +40,24 @@ export function groqClient(key: string, request: typeof fetch = fetch) {
     if (Date.now() < retryAt) throw new ProviderUnavailable('Cota temporariamente indisponível')
     const snapshot = messages.length === 4 && Array.isArray(messages[1]?.content)
       && messages[1].content.some(b => b.type === 'tool_use' && b.id === 'simular_desvio' && b.name === 'simular_desvio')
-    let queueEvent = false
-    if (messages.length === 1 && typeof messages[0].content === 'string') {
-      try { queueEvent = JSON.parse(messages[0].content)?.tipo === 'fila' } catch { /* ordinary user text */ }
+    let event: { tipo?: string; dados?: { origem?: string } } | null = null
+    if (typeof messages[0]?.content === 'string') {
+      try { event = JSON.parse(messages[0].content) } catch { /* ordinary user text */ }
     }
-    const tools = queueEvent ? TOOLS.filter(t => ['propor_semaforo','registrar_explicacao'].includes(t.name)) : snapshot ? TOOLS.filter(t => ['propor_desvio', 'propor_semaforo', 'registrar_explicacao'].includes(t.name)) : TOOLS
+    const queueEvent = messages.length === 1 && event?.tipo === 'fila'
+    const reviewDiversion = snapshot && event?.dados?.origem === 'apresentacao'
+    const tools = TOOLS.filter(t => {
+      if (queueEvent) return t.name === 'propor_semaforo' || t.name === 'registrar_explicacao'
+      if (reviewDiversion) return t.name === 'propor_desvio' || t.name === 'registrar_explicacao'
+      return !snapshot || ['propor_desvio', 'propor_semaforo', 'registrar_explicacao'].includes(t.name)
+    })
     const res = await request('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: MODEL, messages: history(messages), reasoning_effort: 'low',
         ...((snapshot || queueEvent) && { tool_choice: 'required' }),
-        tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
+        tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: reviewDiversion && t.name === 'registrar_explicacao'
+          ? { ...t.input_schema, required: ['texto','decisao'] } : t.input_schema } })) }),
     })
     if (res.status === 429) {
       const delay = Number(res.headers.get('retry-after'))

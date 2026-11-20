@@ -1,4 +1,5 @@
 import type { AgentEvent } from '../agent/ProposalAudit'
+import { GREEN_MS } from '../sim/trafficLight'
 import type { Simulation } from './Simulation'
 
 const INTERVAL_MS = 30_000
@@ -63,7 +64,7 @@ export class PresentationTraffic {
       this.label = 'Fila no cruzamento ' + entry.to
       return { tipo: 'fila', trecho: entry.id, ts: state.timeMs, dados: {
         intersecao: entry.to, H: engine.queueAt(entry.to,'H'), V: engine.queueAt(entry.to,'V'),
-        controleAdaptativo: engine.getState().adaptiveSignals, origem: 'apresentacao',
+        controleAdaptativo: engine.getState().adaptiveSignals, verdeReferenciaS: GREEN_MS / 1000, origem: 'apresentacao',
       } }
     }
     const trecho = path[1]

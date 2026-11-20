@@ -21,6 +21,20 @@ const post = (url: string, body: unknown, origin = 'http://localhost:5173') =>
   fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: JSON.stringify(body) })
 
 describe('V3', () => {
+  it('C21 limita as ferramentas ao cenário apresentado e permite manter a rota explicitamente', async () => {
+    const options: { function: { name:string; parameters:{required:string[]} } }[][] = []
+    const client = groqClient('teste', async (_url, init) => {
+      options.push(JSON.parse(String(init?.body)).tools)
+      return Response.json({ choices:[{ finish_reason:'stop', message:{content:'ok'} }] })
+    })
+    const first = { role:'user' as const, content:JSON.stringify({tipo:'congestionamento',dados:{origem:'apresentacao'}}) }
+    await client([first, {role:'assistant',content:[{type:'tool_use',id:'simular_desvio',name:'simular_desvio',input:{}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'simular_desvio',content:'{}'}]}, {role:'user',content:'{}'}])
+    await client([{role:'user',content:JSON.stringify({tipo:'fila'})}])
+    expect(options[0].map(t=>t.function.name)).toEqual(['propor_desvio','registrar_explicacao'])
+    expect(options[0][1].function.parameters.required).toContain('decisao')
+    expect(options[1].map(t=>t.function.name)).toEqual(['propor_semaforo','registrar_explicacao'])
+  })
   it('C17 Proxy converte ferramentas e respostas para gpt-oss-20b; cota e credencial indisponíveis permitem modo regras', async () => {
     const calls: Record<string, any>[] = []
     const client = groqClient('teste', async (_url, opts) => {
