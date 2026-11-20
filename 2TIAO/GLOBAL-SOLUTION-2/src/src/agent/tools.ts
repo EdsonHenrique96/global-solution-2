@@ -29,14 +29,15 @@ export function networkState(sim: Simulation): Record<string, unknown> {
   const apps = sim.fleet.snapshot()
   const levels = sim.readings()
   // the most saturated first, by the same level the map and the diversion use (AD-082)
-  const worst = Object.values(levels).sort(compareSaturation).slice(0, WORST_SEGMENTS)
+  const ranked = Object.values(levels).map((r) => ({ ...r, nivel: r.exibido === 'verificacao' ? 'critico' as const : r.exibido }))
+  const worst = ranked.sort(compareSaturation).slice(0, WORST_SEGMENTS)
   return {
     tempoS: sim.engine.getState().timeMs / 1000,
     pioresTrechos: worst.map(({ id }) => {
       const e = estimates[id]
       return {
         trecho: id,
-        nivel: levels[id].nivel,
+        nivel: levels[id].exibido,
         velocidadeKmh: round(e.velocidade),
         densidadeVeicKm: round(e.densidade),
         fluxoVeicH: round(e.fluxo),
@@ -73,7 +74,14 @@ export function executeTool(name: string, input: Record<string, unknown>, ctx: T
         return err('trecho inválido: use um id como I12>I13')
       }
       const sizing = ctx.sim.sizing(trecho)
-      if (!sizing) return { content: JSON.stringify({ calculando: true, mensagem: 'frações em cálculo; consulte de novo na próxima janela' }) }
+      if (!sizing) {
+        ctx.explain(`Desvio de ${trecho} ainda não recomendado: frações em cálculo; reavaliar na próxima janela.`)
+        return { content: JSON.stringify({ calculando: true, mensagem: 'frações em cálculo; consulte de novo na próxima janela' }) }
+      }
+      if (sizing.p === 0) {
+        const baseline = sizing.simulacao.fracoes.find((f) => f.fracao === 0)
+        ctx.explain(`Sem desvio de ${trecho}: ${sizing.simulacao.eficaz ? 'o cenário sem desvio já atende aos limites da simulação' : 'nenhuma fração simulada alivia o trecho sem saturar as alternativas'}. Ocupação máxima sem desvio: ${baseline?.ocupacaoMaxTrecho ?? '—'}%; candidatos com app: ${sizing.evaluations.length}.`)
+      }
       const { n, p, evaluations, simulacao } = sizing
       const resultado = ctx.propose({ tipo: 'desvio', trecho, n, p, justificativa: String(justificativa ?? '') })
       return { content: JSON.stringify({ n, p, candidatos: evaluations.length, simulacao, resultado }) }

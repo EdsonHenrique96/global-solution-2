@@ -2,7 +2,7 @@ import type { Simulation } from '../decision/Simulation'
 import { segmentName } from '../sensors/segments'
 import { AgentLog, type LogOrigin } from './AgentLog'
 import { ApprovalQueue, type AgentAction } from './ApprovalQueue'
-import { LlmRequestError, LlmUnavailable, type AgentMessage, type Block, type LlmTurn } from './llm'
+import { LlmRequestError, type AgentMessage, type Block, type LlmTurn } from './llm'
 import { decideDiversion, decideGreen } from './policy'
 import { executeTool } from './tools'
 
@@ -35,7 +35,10 @@ export class AgentRunner {
   private readonly sim: Simulation
   private readonly llm: LlmTurn
   private busy: Promise<void> | null = null
-  private alertsSeen = 0
+  private alertsSeen = new Set<string>()
+  private situationsSeen = new Set<string>()
+  private pendingTrigger: string | null = null
+  private lastWindow = 0
   private lastSuggestion = 'inativo'
 
   constructor({ sim, llm }: Options) {
@@ -64,12 +67,23 @@ export class AgentRunner {
     }
     this.lastSuggestion = suggestion
 
-    const alerts = Object.values(this.sim.capacity.fusion.state()).reduce((n, s) => n + s.alertas.length, 0)
-    const newAlert = alerts > this.alertsSeen
+    const alerts = new Set(Object.entries(this.sim.capacity.fusion.state())
+      .flatMap(([id, s]) => s.alertas.flatMap((a) => a.ids.map((alertId) => `${id}:${alertId}`))))
+    const situations = new Set(Object.values(this.sim.readings())
+      .filter((r) => r.exibido === 'critico' || r.exibido === 'verificacao')
+      .map((r) => `${r.id}:${r.exibido}`))
+    if ([...alerts].some((id) => !this.alertsSeen.has(id))) this.pendingTrigger = 'alerta novo'
+    else if ([...situations].some((id) => !this.situationsSeen.has(id))) this.pendingTrigger = 'trecho crítico ou incidente'
     this.alertsSeen = alerts
+    this.situationsSeen = situations
+    const window = Math.floor(now / TURN_EVERY_MS)
     if (this.busy) return
-    if (newAlert) this.start('alerta novo')
-    else if (now > 0 && now % TURN_EVERY_MS === 0) this.start('janela de 30 s')
+    if (this.pendingTrigger || window > this.lastWindow) {
+      const trigger = this.pendingTrigger ?? 'janela de 30 s'
+      this.pendingTrigger = null
+      this.lastWindow = window
+      this.start(trigger)
+    }
   }
 
   /** Resolves when no turn is running. */
@@ -92,8 +106,8 @@ export class AgentRunner {
       if (error instanceof LlmRequestError) {
         // not an outage: say so, then still decide this window by the rules
         this.note('regra', `Pedido ao agente recusado pelo proxy (${error.message}); esta janela segue pelas regras.`)
-      } else if (!(error instanceof LlmUnavailable)) {
-        throw error
+      } else {
+        this.note('regra', `Agente indisponível (${error instanceof Error ? error.message : 'falha desconhecida'}); esta janela segue pelas regras.`)
       }
       this.mode = 'regra'
       this.ruleTurn()
@@ -104,22 +118,35 @@ export class AgentRunner {
     const messages: AgentMessage[] = [
       { role: 'user', content: `Tempo ${this.now() / 1000} s. Gatilho: ${trigger}. Avalie a rede e decida.` },
     ]
+    let explained = false
     for (let call = 0; call < MAX_MODEL_CALLS; call++) {
       const response = await this.llm(messages)
       messages.push({ role: 'assistant', content: response.content })
-      if (response.stop_reason !== 'tool_use') return
+      if (response.stop_reason !== 'tool_use') {
+        if (!explained) {
+          const explanation = response.content.filter((b): b is Extract<Block, { type: 'text' }> => b.type === 'text').map((b) => b.text).join(' ').trim()
+          if (explanation) {
+            this.note('agente', explanation)
+            return
+          }
+          messages.push({ role: 'user', content: 'Registre a justificativa da decisão, inclusive por que não desviar e o que fazer com os semáforos nos trechos que exigem ação. Use registrar_explicacao.' })
+          continue
+        }
+        return
+      }
       const results: Block[] = response.content
         .filter((b): b is Extract<Block, { type: 'tool_use' }> => b.type === 'tool_use')
         .map((b) => {
           const r = executeTool(b.name, b.input ?? {}, {
             sim: this.sim,
             propose: (a) => this.propose(a, 'agente'),
-            explain: (t) => this.note('agente', t),
+            explain: (t) => { explained = true; this.note('agente', t) },
           })
           return { type: 'tool_result', tool_use_id: b.id, content: r.content, ...(r.is_error ? { is_error: true } : {}) }
         })
       messages.push({ role: 'user', content: results })
     }
+    if (!explained) this.note('regra', 'O agente atingiu o limite de chamadas sem registrar justificativa; avaliação incompleta. Nova avaliação na próxima janela.')
   }
 
   /** The same decision without the model: the controller's suggestion, explained from a template. */
@@ -131,6 +158,16 @@ export class AgentRunner {
       const why = `${segmentName(d.trecho)} congestionado (${e?.velocidade ?? '—'} km/h); ${d.candidatos} motoristas com app ainda vão passar por ele`
       const outcome = this.propose({ tipo: 'desvio', trecho: d.trecho, n: d.n, p: d.p, justificativa: why }, 'regra')
       this.note('regra', `Desvio pelas regras: ${why}. ${outcome}.`)
+      return
+    }
+    if (d.status === 'ativo') {
+      const reason = d.calculando ? 'frações de desvio ainda em cálculo' : current?.trecho === d.trecho ? 'já existe um desvio aplicado neste trecho' : d.simulacao?.eficaz ? 'o cenário sem desvio já atende aos limites da simulação (fração 0)' : 'nenhuma fração atende aos limites e desviar não melhora o resultado calculado (fração 0)'
+      this.note('regra', `Sem novo desvio de ${segmentName(d.trecho)}: ${reason}.`)
+      return
+    }
+    const incidents = Object.values(this.sim.readings()).filter((r) => r.exibido === 'verificacao' || r.exibido === 'critico')
+    if (incidents.length) {
+      this.note('regra', `Sem desvio nesta janela: ${incidents.map((r) => `${segmentName(r.id)} (${r.exibido}, ${r.velocidade ?? '—'} km/h)`).join('; ')}. O controlador ainda não liberou uma proposta de desvio; incidentes em verificação aguardam confirmação.`)
       return
     }
     this.note('regra', 'Regras (modo sem LLM): nada a mudar nesta janela.')
@@ -148,11 +185,12 @@ export class AgentRunner {
         return 'recusado: desvio parcial desligado'
       }
       if (action.p <= 0) {
-        this.note(origem, `Nada a desviar de ${segmentName(action.trecho)}: sem excesso ou sem folga.`)
+        this.note(origem, `Nada a desviar de ${segmentName(action.trecho)}: fração calculada igual a zero. ${action.justificativa}`)
         return 'nada a desviar: p 0'
       }
       if (decideDiversion(action.p) === 'aplicar') {
         this.apply(action)
+        this.note(origem, `Aplicado: ${describe(action)} - ${action.justificativa}`)
         return `aplicado: ${describe(action)}`
       }
       const card = this.queue.add(action, this.now())
@@ -169,7 +207,9 @@ export class AgentRunner {
       this.note(origem, `Aguardando aprovação (card ${card.id}): ${describe(action)} - ${action.justificativa}`)
       return `aguardando aprovação do operador (card ${card.id})`
     }
-    return this.apply(action) ? `aplicado no próximo verde: ${describe(action)}` : 'recusado: controle de semáforos desligado'
+    if (!this.apply(action)) return 'recusado: controle de semáforos desligado'
+    this.note(origem, `Aplicado no próximo verde: ${describe(action)} - ${action.justificativa}`)
+    return `aplicado no próximo verde: ${describe(action)}`
   }
 
   private apply(action: AgentAction): boolean {
