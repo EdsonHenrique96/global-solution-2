@@ -56,15 +56,21 @@ export const TOOLS = [
   {
     name: 'propor_desvio',
     description:
-      'Propõe avisar, pelo app de mapa, os motoristas que ainda vão passar pelo trecho e têm uma rota pelo menos 10% mais rápida até o destino. O sistema calcula a fração; acima de 30%, a ação aguarda aprovação do operador.',
+      'Propõe avisar, pelo app de mapa, os motoristas que ainda vão passar pelo trecho e têm uma rota pelo menos 10% mais rápida até o destino. Copie escolhida e numeros de simular_desvio; acima de 30%, a ação aguarda aprovação do operador.',
     strict: true,
     input_schema: {
       type: 'object',
       properties: {
         trecho: { type: 'string', enum: SEGMENT_IDS },
+        fracao: { type: 'number', minimum: 0, maximum: 1 },
+        numeros: {
+          type: 'object', additionalProperties: false,
+          properties: Object.fromEntries(['ocupacaoAtualPct', 'ocupacaoPrevistaPct', 'ocupacaoAlternativaPct', 'ganhoTempoS', 'ganhoCo2Kg'].map(k => [k, { type: ['number', 'null'] }])),
+          required: ['ocupacaoAtualPct', 'ocupacaoPrevistaPct', 'ocupacaoAlternativaPct', 'ganhoTempoS', 'ganhoCo2Kg'],
+        },
         justificativa: { type: 'string' },
       },
-      required: ['trecho', 'justificativa'],
+      required: ['trecho', 'fracao', 'justificativa', 'numeros'],
       additionalProperties: false,
     },
   },

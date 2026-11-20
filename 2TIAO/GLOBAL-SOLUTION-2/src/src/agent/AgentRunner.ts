@@ -154,6 +154,7 @@ export class AgentRunner {
     const messages: AgentMessage[] = [
       { role: 'user', content: JSON.stringify(trigger) },
     ]
+    const simulations = new Map<string, { p: number; proof: ReturnType<typeof evidence> }>()
     const startTurn = this.turns
     let explained = false
     for (let call = 0; call < MAX_MODEL_CALLS; call++) {
@@ -177,7 +178,7 @@ export class AgentRunner {
         .filter((b): b is Extract<Block, { type: 'tool_use' }> => b.type === 'tool_use')
         .map((b) => {
           const r = executeTool(b.name, b.input ?? {}, {
-            sim: this.sim,
+            sim: this.sim, simulations,
             refuse: (id, p, reason) => this.audit.add(trigger, 'agente', { tipo: 'desvio', trecho: id, p, n: 0, justificativa: reason }, 'recusada', this.now()),
             propose: (a) => this.propose(a, 'agente', trigger),
             explain: (t) => { explained = true; this.note('agente', t) },
@@ -195,6 +196,12 @@ export class AgentRunner {
     const current = this.sim.active
     const id = event.trecho ?? (d.status === 'ativo' ? d.trecho : null)
     if (id && current?.trecho !== id && !this.queue.pending().some(c => c.acao.tipo === 'desvio' && c.acao.trecho === id)) {
+      if (this.sim.readings()[id].exibido === 'verificacao') {
+        const reason = 'Possível incidente aguarda confirmação.'
+        this.audit.add(event, 'regra', { tipo: 'desvio', trecho: id, p: 0, n: 0, justificativa: reason }, 'recusada', this.now())
+        this.note('regra', `Sem desvio de ${segmentName(id)}: ${reason}`)
+        return
+      }
       const sizing = this.sim.sizing(id)
       if (!sizing) {
         this.deferred.set(id, event)
@@ -285,6 +292,12 @@ export class AgentRunner {
       this.audit.settle(id, 'recusada', this.now())
       this.queue.settle(id, 'nao-aplicada')
       this.note('operador', `Card ${id} aprovado, mas não aplicado: o desvio parcial está desligado.`)
+      return
+    }
+    if (card.acao.tipo === 'desvio' && this.sim.readings()[card.acao.trecho]?.exibido === 'verificacao') {
+      this.queue.settle(id, 'nao-aplicada')
+      this.audit.settle(id, 'recusada', this.now())
+      this.note('operador', `Card ${id} não aplicado: o incidente aguarda confirmação.`)
       return
     }
     const applied = this.apply(card.acao)

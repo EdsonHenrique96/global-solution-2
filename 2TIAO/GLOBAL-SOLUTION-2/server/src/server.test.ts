@@ -2,7 +2,7 @@ import { groqClient, ProviderUnavailable } from './groq.js'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { MODEL, SYSTEM_PROMPT } from './agentConfig.js'
+import { SYSTEM_PROMPT } from './agentConfig.js'
 import { createHandler, TURN_PATH, type ModelClient } from './handler.js'
 
 const servers: Server[] = []
@@ -35,7 +35,8 @@ describe('V3', () => {
     expect(result.content[0]).toMatchObject({ id: 't1', input: { trecho: 'I11>I12' } })
     await post(url, { messages: [first, { role: 'assistant', content: result.content }, { role: 'user',
       content: [{ type: 'tool_result', tool_use_id: 't1', content: '{}' }] }] })
-    expect(calls[1].model).toBe(MODEL)
+    expect(calls[1].model).toBe('openai/gpt-oss-20b')
+    expect(calls[1].tools.find((t: {function:{name:string}}) => t.function.name === 'propor_desvio').function.parameters.required).toEqual(['trecho','fracao','justificativa','numeros'])
     expect(calls[1].messages[0]).toEqual({ role: 'system', content: SYSTEM_PROMPT })
     expect(calls[1].messages.at(-1)).toEqual({ role: 'tool', tool_call_id: 't1', content: '{}' })
     expect(calls[1].tools).toHaveLength(7)

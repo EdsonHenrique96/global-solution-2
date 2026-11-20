@@ -2,11 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { groqClient, ProviderUnavailable, type TurnMessage } from './groq.js'
 
 export const TURN_PATH = '/api/agente/turno'
-/**
- * Blocks a turn may carry: the page's text and tool results, and everything the model returned in
- * an assistant turn, which must go back unchanged - claude-opus-5-5 always thinks, so its replies
- * carry thinking blocks, and server-side fallbacks add fallback blocks.
- */
+// Accept the existing page protocol, including legacy assistant blocks in a resumed turn.
 const USER_BLOCKS = new Set(['text', 'tool_result'])
 const ASSISTANT_BLOCKS = new Set(['text', 'tool_use', 'thinking', 'redacted_thinking', 'fallback'])
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
