@@ -1,5 +1,3 @@
-
-
 export const MODEL = 'openai/gpt-oss-20b'
 
 
@@ -14,8 +12,9 @@ Regras:
 - Os números vêm dos algoritmos determinísticos, nunca de você. Para um desvio, você escolhe só o
   trecho a evitar; o sistema escolhe quais motoristas com app de mapa avisar e por onde. Para um
   semáforo, você propõe um tempo de verde de uma fase; o sistema aplica ou pede aprovação.
-- Para eventos com trecho, consulte consultar_trecho, prever_trecho e simular_desvio antes de propor. Em uma avaliação geral comece chamando estado_rede. Só proponha ação quando o estado mostrar motivo (trecho
+- Para um evento com trecho, as leituras consultar_trecho, prever_trecho e simular_desvio já vêm no histórico. Use seus resultados. Use propor_desvio para registrar a fração calculada, inclusive 0, com os números retornados e a justificativa. Em uma avaliação geral comece chamando estado_rede. Só proponha ação quando o estado mostrar motivo (trecho
   congestionado, acidente, fila).
+- Semáforo: só proponha ajuste quando conhecer as filas das duas fases. Não alegue aplicação sem retorno da ferramenta.
 - Toda decisão tomada ou recusada recebe uma explicação curta com registrar_explicacao, citando os
   números do estado (velocidade, folga, fila).
 - Em todo trecho crítico, acidente ou fila, avalie desvio e semáforos. Se não recomendar desvio,
@@ -24,18 +23,10 @@ Regras:
 - Ações acima dos limites de autonomia vão para aprovação do operador; isso é esperado.
 - Se nada precisa mudar, registre uma explicação curta dizendo isso e termine.`
 
-const GRID = [1, 2, 3, 4]
-/** Corners I11..I44 of the 4×4 grid. */
-export const INTERSECTION_IDS = GRID.flatMap((r) => GRID.map((c) => `I${r}${c}`))
-/** Every directed segment between neighbouring corners: 48. */
-export const SEGMENT_IDS = GRID.flatMap((r) =>
-  GRID.flatMap((c) => {
-    const out: string[] = []
-    if (c < 4) out.push(`I${r}${c}>I${r}${c + 1}`, `I${r}${c + 1}>I${r}${c}`)
-    if (r < 4) out.push(`I${r}${c}>I${r + 1}${c}`, `I${r + 1}${c}>I${r}${c}`)
-    return out
-  }),
-)
+// The simulator validates membership and adjacency locally. Repeating the 48 IDs
+// for every tool on every round needlessly consumes the prototype's token quota.
+const segmentId = { type: 'string', pattern: '^I[1-4][1-4]>I[1-4][1-4]$' }
+const cornerId = { type: 'string', pattern: '^I[1-4][1-4]$' }
 
 export const TOOLS = [
   {
@@ -50,7 +41,7 @@ export const TOOLS = [
     ['prever_trecho', 'Consulta velocidade, fluxo e ocupação previstos em 15 e 30 minutos.'],
     ['simular_desvio', 'Compara sete frações e informa a escolhida.'],
   ].map(([name, description]) => ({ name, description, input_schema: {
-    type: 'object', properties: { trecho: { type: 'string', enum: SEGMENT_IDS } },
+    type: 'object', properties: { trecho: segmentId },
     required: ['trecho'], additionalProperties: false,
   } })),
   {
@@ -61,7 +52,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        trecho: { type: 'string', enum: SEGMENT_IDS },
+        trecho: segmentId,
         fracao: { type: 'number', minimum: 0, maximum: 1 },
         numeros: {
           type: 'object', additionalProperties: false,
@@ -82,7 +73,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        intersecao: { type: 'string', enum: INTERSECTION_IDS },
+        intersecao: cornerId,
         fase: { type: 'string', enum: ['H', 'V'] },
         verde_s: { type: 'integer' },
         justificativa: { type: 'string' },

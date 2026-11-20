@@ -38,11 +38,15 @@ export function groqClient(key: string, request: typeof fetch = fetch) {
   let retryAt = 0
   return async (messages: TurnMessage[]) => {
     if (Date.now() < retryAt) throw new ProviderUnavailable('Cota temporariamente indisponível')
+    const snapshot = messages.length === 4 && Array.isArray(messages[1]?.content)
+      && messages[1].content.some(b => b.type === 'tool_use' && b.id === 'simular_desvio' && b.name === 'simular_desvio')
+    const tools = snapshot ? TOOLS.filter(t => ['propor_desvio', 'propor_semaforo', 'registrar_explicacao'].includes(t.name)) : TOOLS
     const res = await request('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(25000),
       body: JSON.stringify({ model: MODEL, messages: history(messages), reasoning_effort: 'low',
-        tools: TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
+        ...(snapshot && { tool_choice: 'required' }),
+        tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) }),
     })
     if (res.status === 429) {
       const delay = Number(res.headers.get('retry-after'))

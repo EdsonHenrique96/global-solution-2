@@ -34,6 +34,20 @@ function setup(p = 0.3, llm = down) {
 }
 
 describe('V3', () => {
+  it('audita a decisão explícita de manter a rota em uma chamada ao modelo', async () => {
+    const why = 'A simulação mantém o trecho abaixo do limite com 0% de desvio.'
+    const model = vi.fn<LlmTurn>(async messages => {
+      expect(messages.some(m => Array.isArray(m.content) && m.content.some(b => b.type === 'tool_result' && b.tool_use_id === 'simular_desvio'))).toBe(true)
+      return { stop_reason:'tool_use', content:[{type:'tool_use', id:'why', name:'registrar_explicacao', input:{texto:why}}] }
+    })
+    const {agent, sim} = setup(0, model)
+    agent.onEvent(event)
+    await agent.idle()
+    expect(model).toHaveBeenCalledTimes(1)
+    expect(agent.audit.list()).toHaveLength(1)
+    expect(agent.audit.list()[0]).toMatchObject({origem:'agente', decisao:'sem desvio', evento:event, justificativa:why, numeros:{ganhoCo2Kg:0}})
+    expect(sim.active).toBeNull()
+  })
   it('C1 Eventos estruturados de dois trechos abrem dois turnos; o mesmo trecho aguarda 120 s', async () => {
     const seen: unknown[] = []
     const {agent,sim} = setup(0.3, async m => {seen.push(JSON.parse(String(m[0].content))); return {content:[{type:'text',text:'ok'}],stop_reason:'end_turn'}})

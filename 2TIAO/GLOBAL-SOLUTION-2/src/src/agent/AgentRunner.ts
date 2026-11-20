@@ -39,6 +39,7 @@ export class AgentRunner {
   private running = new Set<Promise<void>>()
   private eventAt = new Map<string, number>()
   private deferred = new Map<string, AgentEvent>()
+  private awaitingAssessment = new Map<string, AgentEvent>()
   private offForecast: (() => void) | null = null
   private alertsSeen = new Set<string>()
   private situationsSeen = new Set<string>()
@@ -75,6 +76,14 @@ export class AgentRunner {
   tick(): void {
     const now = this.now()
     this.audit.tick(this.sim, now)
+    for (const [id, event] of this.awaitingAssessment) {
+      if (this.sim.readings()[id].exibido !== 'critico' && !this.sim.forecast?.predicted().some(p => p.trecho === id)) {
+        this.awaitingAssessment.delete(id)
+      } else if (!this.running.size && this.sim.fractionsFor(id)) {
+        this.awaitingAssessment.delete(id)
+        this.start(event)
+      }
+    }
     for (const [id, event] of this.deferred) {
       if (this.sim.readings()[id].exibido !== 'critico' && !this.sim.forecast?.predicted().some(p => p.trecho === id)) {
         this.deferred.delete(id)
@@ -146,6 +155,7 @@ export class AgentRunner {
         this.note('regra', `Agente indisponível (${error instanceof Error ? error.message : 'falha desconhecida'}); esta janela segue pelas regras.`)
       }
       this.mode = 'regra'
+      if (trigger.trecho) this.awaitingAssessment.delete(trigger.trecho)
       this.ruleTurn(trigger)
     }
   }
@@ -155,8 +165,35 @@ export class AgentRunner {
       { role: 'user', content: JSON.stringify(trigger) },
     ]
     const simulations = new Map<string, { p: number; proof: ReturnType<typeof evidence> }>()
+    let noDiversionEvidence: ReturnType<typeof evidence> | undefined
+    if (trigger.trecho && this.sim.engine.segment(trigger.trecho)) {
+      const id = trigger.trecho
+      const input = { trecho: id }
+      const reads = ['consultar_trecho', 'prever_trecho', 'simular_desvio']
+      // Batch the three deterministic reads before inference. The transcript preserves
+      // exactly the values shown to the model without paying for three extra API calls.
+      const readContext = { sim: this.sim, simulations, propose: () => { throw new Error('Ferramenta de leitura') }, explain: () => {} }
+      messages.push({ role: 'assistant', content: reads.map(name => ({ type: 'tool_use', name, input, id: name })) })
+      messages.push({ role: 'user', content: reads.map(name => ({
+        type: 'tool_result', tool_use_id: name, content: executeTool(name, input, readContext).content,
+      })) })
+      const sizing = this.sim.sizing(id)
+      if (!sizing) this.awaitingAssessment.set(id, trigger)
+      else noDiversionEvidence = evidence(this.sim, id, { ...sizing, p: 0 })
+      const corner = this.sim.engine.segment(id)!.to
+      const queues = { intersecao: corner, H: this.sim.engine.queueAt(corner, 'H'), V: this.sim.engine.queueAt(corner, 'V') }
+      messages.push({ role: 'user', content: JSON.stringify({ filasNaSaida: queues }) })
+    }
     const startTurn = this.turns
     let explained = false
+    let diversionEvaluated = false
+    let explanation = ''
+    const recordNoDiversion = () => {
+      if (diversionEvaluated || !noDiversionEvidence || !trigger.trecho || !explanation) return
+      this.audit.add(trigger, 'agente', { tipo: 'desvio', trecho: trigger.trecho, p: 0, n: 0,
+        justificativa: explanation, evidencia: noDiversionEvidence }, 'sem desvio', this.now())
+      diversionEvaluated = true
+    }
     for (let call = 0; call < MAX_MODEL_CALLS; call++) {
       const response = await this.llm(messages)
       // An event overtakes a general network review. Its older snapshot must not apply a late action.
@@ -164,9 +201,10 @@ export class AgentRunner {
       messages.push({ role: 'assistant', content: response.content })
       if (response.stop_reason !== 'tool_use') {
         if (!explained) {
-          const explanation = response.content.filter((b): b is Extract<Block, { type: 'text' }> => b.type === 'text').map((b) => b.text).join(' ').trim()
+          explanation = response.content.filter((b): b is Extract<Block, { type: 'text' }> => b.type === 'text').map((b) => b.text).join(' ').trim()
           if (explanation) {
             this.note('agente', explanation)
+            recordNoDiversion()
             return
           }
           messages.push({ role: 'user', content: 'Registre a justificativa da decisão, inclusive por que não desviar e o que fazer com os semáforos nos trechos que exigem ação. Use registrar_explicacao.' })
@@ -174,17 +212,31 @@ export class AgentRunner {
         }
         return
       }
+      let recorded = false
       const results: Block[] = response.content
         .filter((b): b is Extract<Block, { type: 'tool_use' }> => b.type === 'tool_use')
         .map((b) => {
           const r = executeTool(b.name, b.input ?? {}, {
             sim: this.sim, simulations,
-            refuse: (id, p, reason) => this.audit.add(trigger, 'agente', { tipo: 'desvio', trecho: id, p, n: 0, justificativa: reason }, 'recusada', this.now()),
-            propose: (a) => this.propose(a, 'agente', trigger),
-            explain: (t) => { explained = true; this.note('agente', t) },
+            refuse: (id, p, reason) => {
+              diversionEvaluated ||= id === trigger.trecho
+              this.audit.add(trigger, 'agente', { tipo: 'desvio', trecho: id, p, n: 0, justificativa: reason }, 'recusada', this.now())
+            },
+            propose: (a) => {
+              recorded = true
+              diversionEvaluated ||= a.tipo === 'desvio' && a.trecho === trigger.trecho
+              return this.propose(a, 'agente', trigger)
+            },
+            explain: (t) => { explanation = t; explained = true; this.note('agente', t) },
           })
           return { type: 'tool_result', tool_use_id: b.id, content: r.content, ...(r.is_error ? { is_error: true } : {}) }
         })
+      // Proposals already carry their justification. A final acknowledgement would
+      // spend another request and could turn a completed decision into a fallback.
+      if (trigger.trecho && (diversionEvaluated || explained) && (recorded || explained) && !results.some(r => r.type === 'tool_result' && r.is_error)) {
+        recordNoDiversion()
+        return
+      }
       messages.push({ role: 'user', content: results })
     }
     if (!explained) this.note('regra', 'O agente atingiu o limite de chamadas sem registrar justificativa; avaliação incompleta. Nova avaliação na próxima janela.')
