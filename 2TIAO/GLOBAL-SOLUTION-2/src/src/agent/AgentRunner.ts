@@ -59,8 +59,15 @@ export class AgentRunner {
 
   onEvent(event: AgentEvent): void {
     const id = event.trecho
-    if (!id || this.now() - (this.eventAt.get(id) ?? -Infinity) < 120_000) return
-    this.eventAt.set(id, this.now())
+    if (!id) return
+    const key = event.tipo === 'fila' ? 'fila:' + id : id
+    if (this.now() - (this.eventAt.get(key) ?? -Infinity) < 120_000) return
+    this.eventAt.set(key, this.now())
+    if (event.dados.origem === 'apresentacao' && event.tipo === 'congestionamento' && !this.sim.fractionsFor(id)) {
+      this.note('regra', `Calculando as frações de desvio para ${segmentName(id)}.`)
+      this.awaitingAssessment.set(id, event)
+      return
+    }
     this.start(event)
   }
 
@@ -73,7 +80,7 @@ export class AgentRunner {
   }
 
   /** Call after every simulation tick. */
-  tick(): void {
+  tick(presentationOnly = false): void {
     const now = this.now()
     this.audit.tick(this.sim, now)
     for (const [id, event] of this.awaitingAssessment) {
@@ -110,6 +117,16 @@ export class AgentRunner {
     const situations = new Set(Object.values(this.sim.readings())
       .filter((r) => r.exibido === 'critico' || r.exibido === 'verificacao')
       .map((r) => `${r.id}:${r.exibido}`))
+    // Scheduled presentation events already contain the observed incident/queue.
+    // Keep card expiry, pending calculations and outcome measurement running, but
+    // don't spend another model turn on the same broker echo or periodic review.
+    if (presentationOnly) {
+      this.alertsSeen = alerts
+      this.situationsSeen = situations
+      this.pendingTrigger = null
+      this.lastWindow = Math.floor(now / TURN_EVERY_MS)
+      return
+    }
     let triggered = false
     for (const situation of situations) {
       if (this.situationsSeen.has(situation) || !situation.endsWith(':critico')) continue
@@ -166,7 +183,7 @@ export class AgentRunner {
     ]
     const simulations = new Map<string, { p: number; proof: ReturnType<typeof evidence> }>()
     let noDiversionEvidence: ReturnType<typeof evidence> | undefined
-    if (trigger.trecho && this.sim.engine.segment(trigger.trecho)) {
+    if (trigger.tipo !== 'fila' && trigger.trecho && this.sim.engine.segment(trigger.trecho)) {
       const id = trigger.trecho
       const input = { trecho: id }
       const reads = ['consultar_trecho', 'prever_trecho', 'simular_desvio']
@@ -234,7 +251,7 @@ export class AgentRunner {
         })
       // Proposals already carry their justification. A final acknowledgement would
       // spend another request and could turn a completed decision into a fallback.
-      if (trigger.trecho && (diversionEvaluated || explained) && (recorded || explained) && !results.some(r => r.type === 'tool_result' && r.is_error)) {
+      if (trigger.trecho && (trigger.tipo === 'fila' || diversionEvaluated || explained) && (recorded || explained) && !results.some(r => r.type === 'tool_result' && r.is_error)) {
         recordNoDiversion()
         if (noDiversionEvidence && !diversionEvaluated) this.note('regra', 'Avaliação em aberto: o agente explicou o cenário sem concluir a decisão de desvio.')
         return
@@ -246,6 +263,20 @@ export class AgentRunner {
 
   /** The same decision without the model: the controller's suggestion, explained from a template. */
   private ruleTurn(event: AgentEvent): void {
+    if (event.tipo === 'fila') {
+      const corner = this.sim.engine.segment(event.trecho ?? '')?.to
+      if (!corner) return
+      const h = this.sim.engine.queueAt(corner, 'H'), v = this.sim.engine.queueAt(corner, 'V')
+      if (!this.sim.engine.getState().adaptiveSignals || Math.abs(h - v) < 3) {
+        this.note('regra', `Sem ajuste no ${corner}: filas H ${h} e V ${v}; controle e diferença mínima de 3 veículos necessários.`)
+        return
+      }
+      const fase = h > v ? 'H' : 'V'
+      const verdeS = Math.min(30, 20 + Math.abs(h - v))
+      this.propose({ tipo:'semaforo', intersecao:corner, fase, verdeS,
+        justificativa:`Fila na alameda: ${h}; na rua: ${v}. Priorizar a fase ${fase} no próximo verde.` }, 'regra', event)
+      return
+    }
     const d = this.sim.diversion
     const current = this.sim.active
     const id = event.trecho ?? (d.status === 'ativo' ? d.trecho : null)

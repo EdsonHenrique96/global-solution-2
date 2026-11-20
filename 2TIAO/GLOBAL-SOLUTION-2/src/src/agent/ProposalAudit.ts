@@ -2,7 +2,7 @@ import type { Simulation, Sizing } from '../decision/Simulation'
 import { forecastOccupancy } from '../forecast/ForecastClient'
 import type { AgentAction } from './ApprovalQueue'
 export interface AgentEvent {
-  tipo: 'previsao' | 'congestionamento' | 'janela' | 'alerta'
+  tipo: 'previsao' | 'congestionamento' | 'janela' | 'alerta' | 'fila'
   trecho: string | null
   ts: number
   dados: Record<string, unknown>
