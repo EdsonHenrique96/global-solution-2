@@ -1,7 +1,7 @@
-import type Anthropic from '@anthropic-ai/sdk'
 
-export const MODEL = 'claude-opus-5-5'
-export const MAX_TOKENS = 4_000
+
+export const MODEL = 'openai/gpt-oss-20b'
+
 
 /** Fixed on the server: the page cannot change what the agent is told or what it may call. */
 export const SYSTEM_PROMPT = `Você é o agente de orquestração da central de trânsito de uma cidade.
@@ -14,7 +14,7 @@ Regras:
 - Os números vêm dos algoritmos determinísticos, nunca de você. Para um desvio, você escolhe só o
   trecho a evitar; o sistema escolhe quais motoristas com app de mapa avisar e por onde. Para um
   semáforo, você propõe um tempo de verde de uma fase; o sistema aplica ou pede aprovação.
-- Comece chamando estado_rede. Só proponha ação quando o estado mostrar motivo (trecho
+- Para eventos com trecho, consulte consultar_trecho, prever_trecho e simular_desvio antes de propor. Em uma avaliação geral comece chamando estado_rede. Só proponha ação quando o estado mostrar motivo (trecho
   congestionado, acidente, fila).
 - Toda decisão tomada ou recusada recebe uma explicação curta com registrar_explicacao, citando os
   números do estado (velocidade, folga, fila).
@@ -37,7 +37,7 @@ export const SEGMENT_IDS = GRID.flatMap((r) =>
   }),
 )
 
-export const TOOLS: Anthropic.Beta.BetaTool[] = [
+export const TOOLS = [
   {
     name: 'estado_rede',
     description:
@@ -45,6 +45,14 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
     strict: true,
     input_schema: { type: 'object', properties: {}, required: [], additionalProperties: false },
   },
+  ...[
+    ['consultar_trecho', 'Consulta medidas atuais e nível do trecho.'],
+    ['prever_trecho', 'Consulta velocidade, fluxo e ocupação previstos em 15 e 30 minutos.'],
+    ['simular_desvio', 'Compara sete frações e informa a escolhida.'],
+  ].map(([name, description]) => ({ name, description, input_schema: {
+    type: 'object', properties: { trecho: { type: 'string', enum: SEGMENT_IDS } },
+    required: ['trecho'], additionalProperties: false,
+  } })),
   {
     name: 'propor_desvio',
     description:

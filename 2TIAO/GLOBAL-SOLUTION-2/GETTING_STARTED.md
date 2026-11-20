@@ -79,7 +79,7 @@ flowchart TB
 
     cameras["<b>Câmeras de placa (IoT)</b><br/>[Sistema externo, simulado no MVP]<br/>Um evento por veículo, placa em hash"]
     apps["<b>Apps de navegação</b><br/>[Sistema externo, simulado no MVP]<br/>Waze, Google Maps e outros"]
-    llm["<b>API da Anthropic</b><br/>[Sistema externo]<br/>LLM que orquestra e explica as decisões"]
+    llm["<b>API da Groq</b><br/>[Sistema externo]<br/>LLM que orquestra e explica as decisões"]
 
     operador -- "Monitora e aprova ações<br/>[Navegador]" --> sistema
     cameras -- "Envia eventos por via<br/>[MQTT]" --> sistema
@@ -111,7 +111,7 @@ flowchart LR
         ml["<b>Serviço de ML</b><br/>[Container: Python 3.12 + FastAPI, Docker]<br/>LightGBM (previsão 15/30 min) e K-means (estados)<br/>POST /ml/prever · GET /ml/kmeans · :8788"]
     end
 
-    llm["<b>API da Anthropic</b><br/>[Sistema externo]<br/>Modelo claude-opus-5-5"]
+    llm["<b>API da Groq</b><br/>[Sistema externo]<br/>Modelo openai/gpt-oss-20b"]
 
     operador -- "Usa<br/>[HTTP, :5173]" --> painel
     painel -- "Publica eventos de placa, métricas,<br/>alertas, agregados dos apps e avisos<br/>[MQTT sobre WebSocket]" --> broker
@@ -269,7 +269,7 @@ confirma nessa demanda.
 - **Frontend e simulação:** React, TypeScript, Vite e Canvas; Turf.js para o campo de visão das câmeras; `@noble/hashes` para o HMAC-SHA-256 da placa.
 - **Movimento dos carros:** Intelligent Driver Model (IDM).
 - **IoT:** MQTT com o broker Mosquitto (Docker).
-- **LLM:** API da Anthropic com tool calling, por um proxy Node em `server/` (container Docker) que guarda a chave.
+- **LLM:** API da Groq com tool calling, por um proxy Node em `server/` (container Docker) que guarda a chave.
 - **ML:** Python 3.12, FastAPI, LightGBM e scikit-learn (K-means) no serviço `ml/` (container Docker).
 - **Simulação de frações:** Web Worker no navegador.
 - **Testes:** Vitest e Testing Library.
@@ -298,3 +298,9 @@ Fora de `src/`: `ml/` tem o serviço de ML (API, treino, testes) e `data/treino/
 
 Drones e camada móvel, feed do Waze for Cities, editor de zonas, seletor de canal de notificação,
 integrações reais com apps de navegação e visão computacional real.
+
+### Demonstração da V3
+
+Na aba Desvio, acompanhe o Agente. Ao registrar um acidente no mapa, o sistema avalia o trecho e simula sete frações. Um resultado de 0% é registrado com o motivo. Para uma fração positiva, até 30% a aplicação é automática; acima disso aparece um card de aprovação. A previsão de congestionamento também abre uma avaliação quando há histórico suficiente e o serviço de ML está disponível.
+
+Abra **Relatórios → Auditoria do agente** para ver a origem da decisão, os indicadores disponíveis e o efeito medido dez minutos simulados após uma aplicação. **Baixar auditoria** exporta a sessão em JSON. A chave `GROQ_API_KEY` no servidor habilita o gpt-oss-20b. Sem chave, a mesma política roda em modo regras.

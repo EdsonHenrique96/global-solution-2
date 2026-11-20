@@ -13,7 +13,7 @@ Como rodar o projeto localmente. Para o propósito, as funcionalidades e a arqui
 Na raiz do repositório:
 
 ```bash
-export ANTHROPIC_API_KEY=sua-chave   # opcional
+export GROQ_API_KEY=sua-chave   # opcional
 docker compose up -d --build
 ```
 
@@ -86,7 +86,7 @@ docker compose stop agente
 cd server
 npm install
 npm run build
-ANTHROPIC_API_KEY=sua-chave npm start
+GROQ_API_KEY=sua-chave npm start
 ```
 
 Fora do Docker, o proxy escuta em `127.0.0.1:8787`.
@@ -96,8 +96,7 @@ Fora do Docker, o proxy escuta em `127.0.0.1:8787`.
 | Variável | Onde | Padrão |
 | --- | --- | --- |
 | `VITE_MQTT_URL` | `src` | `ws://localhost:9001` |
-| `ANTHROPIC_API_KEY` | `server` | sem padrão (sem ela, o painel usa o modo sem LLM) |
-| `ANTHROPIC_AUTH_TOKEN` | `server` | alternativa à chave, só fora do Docker (o `docker-compose.yml` repassa apenas `ANTHROPIC_API_KEY`) |
+| `GROQ_API_KEY` | `server` | sem padrão (sem ela, o painel usa o modo sem LLM) |
 | `PORT` | `server` | `8787` |
 | `HOST` | `server` | `127.0.0.1` (no container, `0.0.0.0`) |
 
@@ -126,3 +125,5 @@ simulados e levam alguns segundos cada; a suíte unitária completa leva cerca d
 ```bash
 docker compose down
 ```
+
+O modelo do protótipo é o gpt-oss-20b da OpenAI, servido pela Groq. Use uma chave de uma conta no [plano gratuito](https://console.groq.com/docs/rate-limits). Sem chave ou quando a cota se esgota, o painel usa as regras locais.

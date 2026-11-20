@@ -1,8 +1,10 @@
+import { evidence, forecastFor } from './ProposalAudit'
+import { segmentName } from '../sensors/segments'
 import type { Simulation } from '../decision/Simulation'
 import { compareSaturation } from '../render/levels'
 import type { AgentAction } from './ApprovalQueue'
 
-export const TOOL_NAMES = ['estado_rede', 'propor_desvio', 'propor_semaforo', 'registrar_explicacao'] as const
+export const TOOL_NAMES = ['estado_rede', 'consultar_trecho', 'prever_trecho', 'simular_desvio', 'propor_desvio', 'propor_semaforo', 'registrar_explicacao'] as const
 /** How many segments estado_rede shows: the worst ones. */
 export const WORST_SEGMENTS = 10
 
@@ -10,6 +12,7 @@ export interface ToolContext {
   sim: Simulation
   /** Runs an action through the autonomy policy; returns what happened. */
   propose: (action: AgentAction) => string
+  refuse?: (trecho: string, p: number, reason: string) => void
   explain: (texto: string) => void
 }
 
@@ -66,24 +69,52 @@ const err = (content: string): ToolResult => ({ content, is_error: true })
  */
 export function executeTool(name: string, input: Record<string, unknown>, ctx: ToolContext): ToolResult {
   switch (name) {
+    case 'consultar_trecho':
+    case 'prever_trecho':
+    case 'simular_desvio': {
+      const id = input.trecho
+      if (typeof id !== 'string' || !ctx.sim.engine.segment(id)) return err(JSON.stringify({ erro: 'trecho_desconhecido' }))
+      if (name === 'prever_trecho') return { content: JSON.stringify(forecastFor(ctx.sim, id)) }
+      if (name === 'simular_desvio') return { content: JSON.stringify(ctx.sim.fractionsFor(id) ?? { calculando: true }) }
+      const r = ctx.sim.readings()[id]
+      return { content: JSON.stringify({ trecho: id, nome: segmentName(id), velocidadeKmh: r.velocidade,
+        fluxoVeicMin: r.fluxo === null ? null : r.fluxo / 60, densidadeVeicKm: r.densidade, ocupacaoPct: r.pct,
+        capacidadeVeicMin: r.capacidade === null ? null : r.capacidade / 60, nivel: r.exibido,
+        estimado: !ctx.sim.capacity.fusion.state()[id]?.fontes.length }) }
+    }
     case 'estado_rede':
       return { content: JSON.stringify(networkState(ctx.sim)) }
     case 'propor_desvio': {
       const { trecho, justificativa } = input
       if (typeof trecho !== 'string' || !ctx.sim.capacity.segments.some((s) => s.id === trecho)) {
+        ctx.refuse?.(String(trecho ?? ''), 0, 'Trecho desconhecido')
+        ctx.explain('Desvio recusado: trecho desconhecido.')
         return err('trecho inválido: use um id como I12>I13')
+      }
+      if (input.fracao !== undefined && (typeof input.fracao !== 'number' || !Number.isFinite(input.fracao) || input.fracao < 0 || input.fracao > 1)) {
+        ctx.refuse?.(trecho, Number(input.fracao), 'Fração inválida')
+        ctx.explain('Desvio recusado: fração fora de [0, 1].')
+        return err(JSON.stringify({ erro: 'fracao_invalida' }))
+      }
+      if (ctx.sim.readings()[trecho].exibido === 'verificacao') {
+        const reason = 'Possível incidente aguarda confirmação.'
+        ctx.explain(reason)
+        ctx.refuse?.(trecho, 0, reason)
+        return err(reason)
       }
       const sizing = ctx.sim.sizing(trecho)
       if (!sizing) {
         ctx.explain(`Desvio de ${trecho} ainda não recomendado: frações em cálculo; reavaliar na próxima janela.`)
         return { content: JSON.stringify({ calculando: true, mensagem: 'frações em cálculo; consulte de novo na próxima janela' }) }
       }
+      let why = String(justificativa ?? '')
       if (sizing.p === 0) {
         const baseline = sizing.simulacao.fracoes.find((f) => f.fracao === 0)
-        ctx.explain(`Sem desvio de ${trecho}: ${sizing.simulacao.eficaz ? 'o cenário sem desvio já atende aos limites da simulação' : 'nenhuma fração simulada alivia o trecho sem saturar as alternativas'}. Ocupação máxima sem desvio: ${baseline?.ocupacaoMaxTrecho ?? '—'}%; candidatos com app: ${sizing.evaluations.length}.`)
+        why = `Sem desvio de ${trecho}: ${sizing.simulacao.eficaz ? 'o cenário sem desvio já atende aos limites da simulação' : 'nenhuma fração simulada alivia o trecho sem saturar as alternativas'}. Ocupação máxima sem desvio: ${baseline?.ocupacaoMaxTrecho ?? '—'}%; candidatos com app: ${sizing.evaluations.length}.`
+        ctx.explain(why)
       }
       const { n, p, evaluations, simulacao } = sizing
-      const resultado = ctx.propose({ tipo: 'desvio', trecho, n, p, justificativa: String(justificativa ?? '') })
+      const resultado = ctx.propose({ tipo: 'desvio', trecho, n, p, evidencia: evidence(ctx.sim, trecho, sizing), justificativa: why })
       return { content: JSON.stringify({ n, p, candidatos: evaluations.length, simulacao, resultado }) }
     }
     case 'propor_semaforo': {

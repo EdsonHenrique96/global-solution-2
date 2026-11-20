@@ -1,3 +1,4 @@
+import { evidence, ProposalAudit, type AgentEvent, type AuditEntry } from './ProposalAudit'
 import type { Simulation } from '../decision/Simulation'
 import { segmentName } from '../sensors/segments'
 import { AgentLog, type LogOrigin } from './AgentLog'
@@ -28,13 +29,17 @@ interface Options {
  * When the model can't be reached, the same turn runs on the deterministic rules ("modo sem LLM").
  */
 export class AgentRunner {
+  readonly audit = new ProposalAudit()
   readonly log = new AgentLog()
   readonly queue = new ApprovalQueue()
   mode: 'llm' | 'regra' = 'llm'
   turns = 0
   private readonly sim: Simulation
   private readonly llm: LlmTurn
-  private busy: Promise<void> | null = null
+  private running = new Set<Promise<void>>()
+  private eventAt = new Map<string, number>()
+  private deferred = new Map<string, AgentEvent>()
+  private offForecast: (() => void) | null = null
   private alertsSeen = new Set<string>()
   private situationsSeen = new Set<string>()
   private pendingTrigger: string | null = null
@@ -44,6 +49,18 @@ export class AgentRunner {
   constructor({ sim, llm }: Options) {
     this.sim = sim
     this.llm = llm
+  }
+
+  connect() {
+    this.offForecast ??= this.sim.onPrevisao(({ tipo, trecho, ts, ...dados }) => this.onEvent({ tipo, trecho, ts, dados }))
+    return () => { this.offForecast?.(); this.offForecast = null }
+  }
+
+  onEvent(event: AgentEvent): void {
+    const id = event.trecho
+    if (!id || this.now() - (this.eventAt.get(id) ?? -Infinity) < 120_000) return
+    this.eventAt.set(id, this.now())
+    this.start(event)
   }
 
   private now(): number {
@@ -57,7 +74,19 @@ export class AgentRunner {
   /** Call after every simulation tick. */
   tick(): void {
     const now = this.now()
-    for (const card of this.queue.expire(now)) this.note('regra', `Card ${card.id} expirou sem resposta: ${describe(card.acao)} não aplicado.`)
+    this.audit.tick(this.sim, now)
+    for (const [id, event] of this.deferred) {
+      if (this.sim.readings()[id].exibido !== 'critico' && !this.sim.forecast?.predicted().some(p => p.trecho === id)) {
+        this.deferred.delete(id)
+      } else if (this.sim.fractionsFor(id)) {
+        this.deferred.delete(id)
+        this.ruleTurn(event)
+      }
+    }
+    for (const card of this.queue.expire(now)) {
+      this.audit.settle(card.id, 'expirada', now)
+      this.note('regra', `Card ${card.id} expirou sem resposta: ${describe(card.acao)} não aplicado.`)
+    }
 
     // the rules end a diversion when the controller says the segment recovered
     const suggestion = this.sim.diversion.status
@@ -72,33 +101,40 @@ export class AgentRunner {
     const situations = new Set(Object.values(this.sim.readings())
       .filter((r) => r.exibido === 'critico' || r.exibido === 'verificacao')
       .map((r) => `${r.id}:${r.exibido}`))
-    if ([...alerts].some((id) => !this.alertsSeen.has(id))) this.pendingTrigger = 'alerta novo'
+    let triggered = false
+    for (const situation of situations) {
+      if (this.situationsSeen.has(situation) || !situation.endsWith(':critico')) continue
+      const trecho = situation.split(':')[0]
+      this.onEvent({ tipo: 'congestionamento', trecho, ts: now, dados: { nivel: 'critico' } })
+      triggered = true
+    }
+    if (triggered) this.pendingTrigger = null
+    else if ([...alerts].some((id) => !this.alertsSeen.has(id))) this.pendingTrigger = 'alerta novo'
     else if ([...situations].some((id) => !this.situationsSeen.has(id))) this.pendingTrigger = 'trecho crítico ou incidente'
     this.alertsSeen = alerts
     this.situationsSeen = situations
     const window = Math.floor(now / TURN_EVERY_MS)
-    if (this.busy) return
+    if (this.running.size || triggered) return
     if (this.pendingTrigger || window > this.lastWindow) {
       const trigger = this.pendingTrigger ?? 'janela de 30 s'
       this.pendingTrigger = null
       this.lastWindow = window
-      this.start(trigger)
+      this.start({ tipo: trigger === 'janela de 30 s' ? 'janela' : 'alerta', ts: now, trecho: null, dados: { gatilho: trigger } })
     }
   }
 
   /** Resolves when no turn is running. */
   async idle(): Promise<void> {
-    while (this.busy) await this.busy
+    while (this.running.size) await Promise.all(this.running)
   }
 
-  private start(trigger: string): void {
+  private start(trigger: AgentEvent): void {
     this.turns += 1
-    this.busy = this.runTurn(trigger).finally(() => {
-      this.busy = null
-    })
+    const task = this.runTurn(trigger).finally(() => this.running.delete(task))
+    this.running.add(task)
   }
 
-  private async runTurn(trigger: string): Promise<void> {
+  private async runTurn(trigger: AgentEvent): Promise<void> {
     try {
       await this.llmTurn(trigger)
       this.mode = 'llm'
@@ -110,17 +146,20 @@ export class AgentRunner {
         this.note('regra', `Agente indisponível (${error instanceof Error ? error.message : 'falha desconhecida'}); esta janela segue pelas regras.`)
       }
       this.mode = 'regra'
-      this.ruleTurn()
+      this.ruleTurn(trigger)
     }
   }
 
-  private async llmTurn(trigger: string): Promise<void> {
+  private async llmTurn(trigger: AgentEvent): Promise<void> {
     const messages: AgentMessage[] = [
-      { role: 'user', content: `Tempo ${this.now() / 1000} s. Gatilho: ${trigger}. Avalie a rede e decida.` },
+      { role: 'user', content: JSON.stringify(trigger) },
     ]
+    const startTurn = this.turns
     let explained = false
     for (let call = 0; call < MAX_MODEL_CALLS; call++) {
       const response = await this.llm(messages)
+      // An event overtakes a general network review. Its older snapshot must not apply a late action.
+      if (!trigger.trecho && startTurn !== this.turns) return
       messages.push({ role: 'assistant', content: response.content })
       if (response.stop_reason !== 'tool_use') {
         if (!explained) {
@@ -139,7 +178,8 @@ export class AgentRunner {
         .map((b) => {
           const r = executeTool(b.name, b.input ?? {}, {
             sim: this.sim,
-            propose: (a) => this.propose(a, 'agente'),
+            refuse: (id, p, reason) => this.audit.add(trigger, 'agente', { tipo: 'desvio', trecho: id, p, n: 0, justificativa: reason }, 'recusada', this.now()),
+            propose: (a) => this.propose(a, 'agente', trigger),
             explain: (t) => { explained = true; this.note('agente', t) },
           })
           return { type: 'tool_result', tool_use_id: b.id, content: r.content, ...(r.is_error ? { is_error: true } : {}) }
@@ -150,14 +190,21 @@ export class AgentRunner {
   }
 
   /** The same decision without the model: the controller's suggestion, explained from a template. */
-  private ruleTurn(): void {
+  private ruleTurn(event: AgentEvent): void {
     const d = this.sim.diversion
     const current = this.sim.active
-    if (d.status === 'ativo' && d.p > 0 && current?.trecho !== d.trecho) {
-      const e = this.sim.capacity.snapshot()[d.trecho]
-      const why = `${segmentName(d.trecho)} congestionado (${e?.velocidade ?? '—'} km/h); ${d.candidatos} motoristas com app ainda vão passar por ele`
-      const outcome = this.propose({ tipo: 'desvio', trecho: d.trecho, n: d.n, p: d.p, justificativa: why }, 'regra')
-      this.note('regra', `Desvio pelas regras: ${why}. ${outcome}.`)
+    const id = event.trecho ?? (d.status === 'ativo' ? d.trecho : null)
+    if (id && current?.trecho !== id && !this.queue.pending().some(c => c.acao.tipo === 'desvio' && c.acao.trecho === id)) {
+      const sizing = this.sim.sizing(id)
+      if (!sizing) {
+        this.deferred.set(id, event)
+        this.note('regra', `Sem novo desvio de ${segmentName(id)}: frações de desvio ainda em cálculo.`)
+        return
+      }
+      const data = evidence(this.sim, id, sizing)
+      const why = `${segmentName(id)}: ocupação prevista ${data.numeros.ocupacaoPrevistaPct ?? 'indisponível'}%, fração ${pct(sizing.p)}, ganho estimado ${data.numeros.ganhoTempoS ?? 'indisponível'} s e ${data.numeros.ganhoCo2Kg.toFixed(2)} kg de CO₂.`
+      const reason = sizing.p > 0 ? why : why + (sizing.simulacao.eficaz ? ' O cenário sem desvio já atende aos limites.' : ' Nenhuma fração melhora a pior ocupação.')
+      this.propose({ tipo: 'desvio', trecho: id, n: sizing.n, p: sizing.p, justificativa: reason, evidencia: data }, 'regra', event)
       return
     }
     if (d.status === 'ativo') {
@@ -178,36 +225,45 @@ export class AgentRunner {
     return this.propose(action, 'agente')
   }
 
-  private propose(action: AgentAction, origem: LogOrigin): string {
+  private propose(action: AgentAction, origem: 'agente' | 'regra', event?: AgentEvent): string {
+    const now = this.now()
+    const audit = (decision: AuditEntry['decisao'], cardId?: number) => this.audit.add(event ?? { tipo: 'janela', trecho: action.tipo === 'desvio' ? action.trecho : null, ts: now, dados: {} }, origem, action, decision, now, cardId)
     if (action.tipo === 'desvio') {
       if (!this.sim.isDiversionEnabled()) {
         this.note('regra', `${describe(action)} recusado: o desvio parcial está desligado pelo operador.`)
+        audit('recusada')
         return 'recusado: desvio parcial desligado'
       }
       if (action.p <= 0) {
         this.note(origem, `Nada a desviar de ${segmentName(action.trecho)}: fração calculada igual a zero. ${action.justificativa}`)
+        audit('sem desvio')
         return 'nada a desviar: p 0'
       }
       if (decideDiversion(action.p) === 'aplicar') {
         this.apply(action)
+        audit('automatica')
         this.note(origem, `Aplicado: ${describe(action)} - ${action.justificativa}`)
         return `aplicado: ${describe(action)}`
       }
       const card = this.queue.add(action, this.now())
+      audit('aguardando', card.id)
       this.note(origem, `Aguardando aprovação (card ${card.id}): ${describe(action)} - ${action.justificativa}`)
       return `aguardando aprovação do operador (card ${card.id})`
     }
     const verdict = decideGreen(action.verdeS)
     if (verdict === 'recusar') {
       this.note('regra', `Verde de ${action.verdeS} s no ${action.intersecao} (${action.fase}) recusado: fora de 10 a 60 s.`)
+      audit('recusada')
       return 'recusado: fora de 10 a 60 s'
     }
     if (verdict === 'aprovar') {
       const card = this.queue.add(action, this.now())
+      audit('aguardando', card.id)
       this.note(origem, `Aguardando aprovação (card ${card.id}): ${describe(action)} - ${action.justificativa}`)
       return `aguardando aprovação do operador (card ${card.id})`
     }
-    if (!this.apply(action)) return 'recusado: controle de semáforos desligado'
+    if (!this.apply(action)) { audit('recusada'); return 'recusado: controle de semáforos desligado' }
+    audit('automatica')
     this.note(origem, `Aplicado no próximo verde: ${describe(action)} - ${action.justificativa}`)
     return `aplicado no próximo verde: ${describe(action)}`
   }
@@ -226,11 +282,13 @@ export class AgentRunner {
     const card = this.queue.get(id)
     if (!card || card.estado !== 'aguardando') return
     if (card.acao.tipo === 'desvio' && !this.sim.isDiversionEnabled()) {
+      this.audit.settle(id, 'recusada', this.now())
       this.queue.settle(id, 'nao-aplicada')
       this.note('operador', `Card ${id} aprovado, mas não aplicado: o desvio parcial está desligado.`)
       return
     }
     const applied = this.apply(card.acao)
+    this.audit.settle(id, applied ? 'aprovada' : 'recusada', this.now())
     this.queue.settle(id, applied ? 'aplicada' : 'nao-aplicada')
     this.note(
       'operador',
@@ -241,6 +299,7 @@ export class AgentRunner {
   reject(id: number): void {
     const card = this.queue.get(id)
     if (!card || !this.queue.settle(id, 'rejeitada')) return
+    this.audit.settle(id, 'rejeitada', this.now())
     this.note('operador', `Card ${id} rejeitado: ${describe(card.acao)} não aplicado.`)
   }
 }

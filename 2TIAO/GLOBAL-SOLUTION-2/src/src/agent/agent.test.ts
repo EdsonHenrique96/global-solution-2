@@ -100,7 +100,7 @@ describe('agent', () => {
 
   describe('tools', () => {
     it('exposes segment based tools and rejects invalid targets', () => {
-      expect([...TOOL_NAMES]).toEqual(['estado_rede', 'propor_desvio', 'propor_semaforo', 'registrar_explicacao'])
+      expect([...TOOL_NAMES]).toEqual(['estado_rede', 'consultar_trecho', 'prever_trecho', 'simular_desvio', 'propor_desvio', 'propor_semaforo', 'registrar_explicacao'])
       const { sim, runner } = setup(scripted([]), 30)
       for (let t = 0; t < 60_000; t += TICK_MS) sim.tick()
       const ctx = { sim, propose: (a: Parameters<typeof runner.applyProposal>[0]) => runner.applyProposal(a), explain: () => {} }

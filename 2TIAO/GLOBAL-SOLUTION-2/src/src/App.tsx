@@ -7,6 +7,7 @@ import { formatClock } from './sim/clock'
 import type { Incident } from './decision/IncidentLog'
 import { Simulation } from './decision/Simulation'
 import { workerRunner } from './decision/fractionRunner'
+import { AuditReport } from './render/AuditReport'
 import { AgentPanel } from './render/AgentPanel'
 import { AppPanel } from './render/AppPanel'
 import { CameraEventsPanel } from './render/CameraEventsPanel'
@@ -108,6 +109,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   const [classificacao, setClassificacao] = useState<Classificacao>('carregando')
   const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport, agentControl: true, classifier, prever: ml.prever, fractionRunner: workerRunner() }))
   const [agent] = useState(() => new AgentRunner({ sim, llm: llm ?? proxyLlm() }))
+  useEffect(() => agent.connect(), [agent])
   const [agentView, setAgentView] = useState(() => agentSnapshot(agent))
   const { engine, capacity } = sim
   const [rate, setRate] = useState(() => engine.getRate())
@@ -524,6 +526,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
             <DiversionPanel diversion={diversion} enabled={diversionOn} onToggle={toggleDiversion} />
             <AgentPanel
               {...agentView}
+              automatic={agent.audit.list().find(e => e.decisao === 'automatica' && e.acao.tipo === 'desvio')?.acao}
               onApprove={(id) => {
                 agent.approve(id)
                 setAgentView(agentSnapshot(agent))
@@ -538,6 +541,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
         </section>
 
         <section id="relatorios" className="dash-section" aria-label="Página Relatórios" hidden={tab !== 'relatorios'}>
+          <AuditReport entries={agent.audit.list()} />
           <div className="panel-grid">
             <MetricsPanel metrics={metrics} />
             <CapacityPanel segmentId={selectedSegment} estimate={estimates[selectedSegment]} />
