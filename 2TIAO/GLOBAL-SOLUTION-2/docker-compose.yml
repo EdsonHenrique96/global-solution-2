@@ -22,7 +22,7 @@ services:
     container_name: transito-agente
     environment:
       # sem a chave, o proxy sobe e o painel usa o modo sem LLM
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     ports:
       - "127.0.0.1:8787:8787"
     healthcheck:

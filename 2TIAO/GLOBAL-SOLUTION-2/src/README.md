@@ -12,10 +12,10 @@ A página publica a telemetria dos drones em `transito/drones/<droneId>/telemetr
 `VITE_MQTT_URL` (padrão `ws://localhost:9001`). Sem broker, a simulação roda e o painel mostra
 "MQTT desconectado — tentando reconectar".
 
-Agente LLM (opcional): o proxy em `../server` guarda a chave e fala com a API da Anthropic.
+Agente LLM (opcional): o proxy em `../server` guarda a chave e fala com a API da Groq (modelo openai/gpt-oss-20b).
 
 ```bash
-cd .. && ANTHROPIC_API_KEY=... docker compose up -d --build agente   # :8787; o Vite encaminha /api para ele
+cd .. && GROQ_API_KEY=... docker compose up -d --build agente   # :8787; o Vite encaminha /api para ele
 ```
 
 Para rodar sem Docker, veja o [DEVELOPMENT.md](../DEVELOPMENT.md).

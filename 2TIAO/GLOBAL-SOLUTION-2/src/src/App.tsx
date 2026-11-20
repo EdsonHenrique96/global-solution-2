@@ -5,8 +5,10 @@ import { StateClassifier } from './capacity/StateClassifier'
 import { httpMl, type MlClient } from './forecast/mlClient'
 import { formatClock } from './sim/clock'
 import type { Incident } from './decision/IncidentLog'
+import { PresentationTraffic } from './decision/PresentationTraffic'
 import { Simulation } from './decision/Simulation'
 import { workerRunner } from './decision/fractionRunner'
+import { AuditReport } from './render/AuditReport'
 import { AgentPanel } from './render/AgentPanel'
 import { AppPanel } from './render/AppPanel'
 import { CameraEventsPanel } from './render/CameraEventsPanel'
@@ -107,7 +109,9 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   const [classifier] = useState(() => new StateClassifier())
   const [classificacao, setClassificacao] = useState<Classificacao>('carregando')
   const [sim] = useState(() => new Simulation({ engine: injectedEngine ?? new SimulationEngine(), transport, agentControl: true, classifier, prever: ml.prever, fractionRunner: workerRunner() }))
+  const [presentation] = useState(() => new PresentationTraffic())
   const [agent] = useState(() => new AgentRunner({ sim, llm: llm ?? proxyLlm() }))
+  useEffect(() => agent.connect(), [agent])
   const [agentView, setAgentView] = useState(() => agentSnapshot(agent))
   const { engine, capacity } = sim
   const [rate, setRate] = useState(() => engine.getRate())
@@ -157,7 +161,9 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   useEffect(() => {
     const id = setInterval(() => {
       sim.tick()
-      agent.tick()
+      const event = presentation.tick(sim)
+      if (event) agent.onEvent(event)
+      agent.tick(presentation.active)
       setEstimates(capacity.snapshot())
       setFused(capacity.fusion.state())
       setMetrics(sim.metrics.snapshot())
@@ -166,7 +172,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
       setFrame((f) => f + 1)
     }, TICK_MS)
     return () => clearInterval(id)
-  }, [sim, engine, capacity, agent])
+  }, [sim, engine, capacity, agent, presentation])
 
   const state = engine.getState()
   const now = state.timeMs
@@ -318,6 +324,16 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
   return (
     <div className="app">
       <DashboardHeader connection={connection} simTimeMs={now} pending={agentView.cards.length} active={tab} onNavigate={go} />
+      <section className="presentation-controls" aria-label="Modo apresentação">
+        <button type="button" aria-pressed={presentation.active} onClick={() => {
+          if (presentation.active) presentation.stop(sim)
+          else presentation.start(sim)
+          setSignalsOn(engine.getState().adaptiveSignals)
+          refresh()
+        }}>{presentation.active ? 'Encerrar apresentação' : 'Iniciar apresentação'}</button>
+        <span>{presentation.active ? `${presentation.label || 'Preparando acidente'} · próximo cenário em ${Math.ceil(Math.max(0, presentation.nextAt - now)/1000)} s` : 'Alterna acidente e fila de semáforo a cada 30 s e ativa o controle dos sinais.'}</span>
+        {presentation.active && tab !== 'desvio' && <button type="button" onClick={() => go('desvio')}>Ver decisões do agente</button>}
+      </section>
       <main className="dash">
         {tab === 'mapa' && (
           <>
@@ -524,6 +540,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
             <DiversionPanel diversion={diversion} enabled={diversionOn} onToggle={toggleDiversion} />
             <AgentPanel
               {...agentView}
+              automatic={agent.audit.list().find(e => e.decisao === 'automatica' && e.acao.tipo === 'desvio')?.acao}
               onApprove={(id) => {
                 agent.approve(id)
                 setAgentView(agentSnapshot(agent))
@@ -538,6 +555,7 @@ function App({ engine: injectedEngine, transport: injectedTransport, llm, ml: in
         </section>
 
         <section id="relatorios" className="dash-section" aria-label="Página Relatórios" hidden={tab !== 'relatorios'}>
+          <AuditReport entries={agent.audit.list()} />
           <div className="panel-grid">
             <MetricsPanel metrics={metrics} />
             <CapacityPanel segmentId={selectedSegment} estimate={estimates[selectedSegment]} />

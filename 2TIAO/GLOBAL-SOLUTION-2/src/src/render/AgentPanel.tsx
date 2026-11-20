@@ -1,3 +1,4 @@
+import { Figures } from './AuditReport'
 import type { LogEntry } from '../agent/AgentLog'
 import type { AgentAction, ApprovalCard } from '../agent/ApprovalQueue'
 import { segmentName } from '../sensors/segments'
@@ -14,6 +15,7 @@ function actionText(a: AgentAction): string {
 const time = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`
 
 interface Props {
+  automatic?: AgentAction
   mode: 'llm' | 'regra'
   log: LogEntry[]
   cards: ApprovalCard[]
@@ -22,18 +24,21 @@ interface Props {
 }
 
 /** The agent's explanations and the actions waiting for the operator. */
-export function AgentPanel({ mode, log, cards, onApprove, onReject }: Props) {
+export function AgentPanel({ mode, log, cards, automatic, onApprove, onReject }: Props) {
   return (
     <section className="agent" aria-label="Agente">
       <h2>
         Agente <span className={`mode ${mode}`} data-testid="agent-mode">{mode === 'llm' ? 'modo LLM' : 'modo sem LLM'}</span>
       </h2>
+      {automatic?.tipo === 'desvio' && <article><strong>Aplicada automaticamente · {actionText(automatic)}</strong>
+        <p>{automatic.justificativa}</p>{automatic.evidencia && <Figures data={automatic.evidencia.numeros} />}</article>}
       {cards.length > 0 && (
         <ul className="cards" aria-label="Aguardando aprovação">
           {cards.map((c) => (
             <li key={c.id} data-testid={`card-${c.id}`}>
               <strong>{actionText(c.acao)}</strong>
               <span className="why">{c.acao.justificativa}</span>
+              {c.acao.tipo === 'desvio' && c.acao.evidencia && <Figures data={c.acao.evidencia.numeros} />}
               <div className="actions">
                 <button type="button" onClick={() => onApprove(c.id)}>
                   Aprovar

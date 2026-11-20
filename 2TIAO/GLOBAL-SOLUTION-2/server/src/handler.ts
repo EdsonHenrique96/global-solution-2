@@ -1,21 +1,13 @@
-import Anthropic from '@anthropic-ai/sdk'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { MAX_TOKENS, MODEL, SYSTEM_PROMPT, TOOLS } from './agentConfig.js'
+import { groqClient, ProviderUnavailable, type TurnMessage } from './groq.js'
 
 export const TURN_PATH = '/api/agente/turno'
-/**
- * Blocks a turn may carry: the page's text and tool results, and everything the model returned in
- * an assistant turn, which must go back unchanged - claude-opus-5-5 always thinks, so its replies
- * carry thinking blocks, and server-side fallbacks add fallback blocks.
- */
+// Accept the existing page protocol, including legacy assistant blocks in a resumed turn.
 const USER_BLOCKS = new Set(['text', 'tool_result'])
 const ASSISTANT_BLOCKS = new Set(['text', 'tool_use', 'thinking', 'redacted_thinking', 'fallback'])
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
 
-/** The slice of the SDK client the proxy uses (injected in tests). */
-export interface ModelClient {
-  beta: { messages: { create: (params: Anthropic.Beta.MessageCreateParamsNonStreaming) => Promise<Anthropic.Beta.BetaMessage> } }
-}
+export type ModelClient = ReturnType<typeof groqClient>
 
 function send(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
@@ -29,7 +21,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 /** Only user/assistant turns made of text, tool_use and tool_result blocks. */
-function validMessages(body: unknown): Anthropic.Beta.BetaMessageParam[] | null {
+function validMessages(body: unknown): TurnMessage[] | null {
   if (!body || typeof body !== 'object' || !Array.isArray((body as { messages?: unknown }).messages)) return null
   const messages = (body as { messages: unknown[] }).messages
   if (messages.length === 0 || messages.length > 40) return null
@@ -44,7 +36,7 @@ function validMessages(body: unknown): Anthropic.Beta.BetaMessageParam[] | null 
       if (!b || typeof b !== 'object' || !allowed.has((b as { type?: string }).type ?? '')) return null
     }
   }
-  return messages as Anthropic.Beta.BetaMessageParam[]
+  return messages as TurnMessage[]
 }
 
 /**
@@ -67,24 +59,9 @@ export function createHandler(client: ModelClient | null) {
     if (!messages) return send(res, 400, { erro: 'mensagens inválidas' })
     if (!client) return send(res, 503, { erro: 'sem credencial da API; use o modo sem LLM' })
     try {
-      const response = await client.beta.messages.create({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        system: SYSTEM_PROMPT,
-        tools: TOOLS,
-        messages,
-        output_config: { effort: 'low' },
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default',
-      })
-      return send(res, 200, { content: response.content, stop_reason: response.stop_reason })
+      return send(res, 200, await client(messages))
     } catch (error) {
-      if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
-        return send(res, 503, { erro: 'credencial recusada pela API; use o modo sem LLM' })
-      }
-      if (error instanceof Anthropic.APIError) {
-        return send(res, 502, { erro: `API da Anthropic: ${error.status ?? 'sem resposta'}` })
-      }
+      if (error instanceof ProviderUnavailable) return send(res, 503, { erro: error.message })
       return send(res, 502, { erro: 'falha ao chamar a API' })
     }
   }
@@ -92,10 +69,5 @@ export function createHandler(client: ModelClient | null) {
 
 /** A client when credentials can be resolved, null otherwise (the page then runs without the LLM). */
 export function clientFromEnvironment(): ModelClient | null {
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) return null
-  try {
-    return new Anthropic()
-  } catch {
-    return null
-  }
+  return process.env.GROQ_API_KEY ? groqClient(process.env.GROQ_API_KEY) : null
 }

@@ -1,7 +1,9 @@
+import type { Evidence } from './ProposalAudit'
+
 export const CARD_TTL_MS = 120_000
 
 export type AgentAction =
-  | { tipo: 'desvio'; trecho: string; n: number; p: number; justificativa: string }
+  | { tipo: 'desvio'; evidencia?: Evidence; trecho: string; n: number; p: number; justificativa: string }
   | { tipo: 'semaforo'; intersecao: string; fase: 'H' | 'V'; verdeS: number; justificativa: string }
 
 /** 'nao-aplicada': approved, but the system could not apply it (e.g. signal control off). */
