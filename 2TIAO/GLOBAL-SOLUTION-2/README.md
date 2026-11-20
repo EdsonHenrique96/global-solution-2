@@ -78,7 +78,7 @@ Os caminhos abaixo partem de `2TIAO/GLOBAL-SOLUTION-2/`, a pasta que contém est
 
 ### 🔗 Links do Projeto
 
-* [Vídeo de apresentação](https://youtu.be/dmpfgYqnYWo) — demonstração do painel, do agente e da auditoria.
+* [Vídeo de apresentação](https://youtu.be/Dei3nepob_0) — demonstração do painel, do agente e da auditoria.
 * [Relatório acadêmico em PDF](output/pdf/relatorio-citizentech-transito.pdf) — documento de entrega com integrantes, arquitetura, resultados, testes e limitações.
 * [Especificação funcional](especificacao-funcional.md) — problema, requisitos, hipóteses e critérios de avaliação.
 * [Guia do protótipo](GETTING_STARTED.md) e [guia de desenvolvimento](DEVELOPMENT.md) — material complementar sobre os conceitos de tráfego e o ambiente local.
