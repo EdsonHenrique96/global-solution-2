@@ -186,10 +186,11 @@ export class AgentRunner {
     }
     const startTurn = this.turns
     let explained = false
+    let choseNoDiversion = false
     let diversionEvaluated = false
     let explanation = ''
     const recordNoDiversion = () => {
-      if (diversionEvaluated || !noDiversionEvidence || !trigger.trecho || !explanation) return
+      if (!choseNoDiversion || diversionEvaluated || !noDiversionEvidence || !trigger.trecho || !explanation) return
       this.audit.add(trigger, 'agente', { tipo: 'desvio', trecho: trigger.trecho, p: 0, n: 0,
         justificativa: explanation, evidencia: noDiversionEvidence }, 'sem desvio', this.now())
       diversionEvaluated = true
@@ -204,7 +205,6 @@ export class AgentRunner {
           explanation = response.content.filter((b): b is Extract<Block, { type: 'text' }> => b.type === 'text').map((b) => b.text).join(' ').trim()
           if (explanation) {
             this.note('agente', explanation)
-            recordNoDiversion()
             return
           }
           messages.push({ role: 'user', content: 'Registre a justificativa da decisão, inclusive por que não desviar e o que fazer com os semáforos nos trechos que exigem ação. Use registrar_explicacao.' })
@@ -229,12 +229,14 @@ export class AgentRunner {
             },
             explain: (t) => { explanation = t; explained = true; this.note('agente', t) },
           })
+          if (!r.is_error && b.name === 'registrar_explicacao' && b.input.decisao === 'manter_rota') choseNoDiversion = true
           return { type: 'tool_result', tool_use_id: b.id, content: r.content, ...(r.is_error ? { is_error: true } : {}) }
         })
       // Proposals already carry their justification. A final acknowledgement would
       // spend another request and could turn a completed decision into a fallback.
       if (trigger.trecho && (diversionEvaluated || explained) && (recorded || explained) && !results.some(r => r.type === 'tool_result' && r.is_error)) {
         recordNoDiversion()
+        if (noDiversionEvidence && !diversionEvaluated) this.note('regra', 'Avaliação em aberto: o agente explicou o cenário sem concluir a decisão de desvio.')
         return
       }
       messages.push({ role: 'user', content: results })

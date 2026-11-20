@@ -38,7 +38,7 @@ describe('V3', () => {
     const why = 'A simulação mantém o trecho abaixo do limite com 0% de desvio.'
     const model = vi.fn<LlmTurn>(async messages => {
       expect(messages.some(m => Array.isArray(m.content) && m.content.some(b => b.type === 'tool_result' && b.tool_use_id === 'simular_desvio'))).toBe(true)
-      return { stop_reason:'tool_use', content:[{type:'tool_use', id:'why', name:'registrar_explicacao', input:{texto:why}}] }
+      return { stop_reason:'tool_use', content:[{type:'tool_use', id:'why', name:'registrar_explicacao', input:{texto:why,decisao:'manter_rota'}}] }
     })
     const {agent, sim} = setup(0, model)
     agent.onEvent(event)
@@ -47,6 +47,19 @@ describe('V3', () => {
     expect(agent.audit.list()).toHaveLength(1)
     expect(agent.audit.list()[0]).toMatchObject({origem:'agente', decisao:'sem desvio', evento:event, justificativa:why, numeros:{ganhoCo2Kg:0}})
     expect(sim.active).toBeNull()
+  })
+  it('não registra sem desvio para um comentário genérico ou texto final', async () => {
+    const generic = 'O congestionamento exige nova avaliação.'
+    const cases: LlmTurn[] = [
+      async () => ({ stop_reason:'tool_use', content:[{type:'tool_use', id:'nota', name:'registrar_explicacao', input:{texto:generic}}] }),
+      async () => ({ stop_reason:'end_turn', content:[{type:'text', text:'ok'}] }),
+    ]
+    for (const model of cases) {
+      const {agent} = setup(0.2, model)
+      agent.onEvent(event)
+      await agent.idle()
+      expect(agent.audit.list()).toEqual([])
+    }
   })
   it('C1 Eventos estruturados de dois trechos abrem dois turnos; o mesmo trecho aguarda 120 s', async () => {
     const seen: unknown[] = []
